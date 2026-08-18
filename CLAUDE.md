@@ -310,7 +310,12 @@ an empty view-hierarchy dump means Maestro could not read the tree, not that the
 screen was wrong.
 
 **A Maestro failure can be the DRIVER, not the app — and `viewHierarchy` is
-where it shows.** `career-node` failed four times in phase 14 s2 with
+where it shows.** THE DECIDING EVIDENCE: `career-node` failed four times in one
+session and then passed first time, exit 0, on an idle host — same commit, same
+simulator, load average 10.8 instead of 40+. **Maestro needs an idle machine.**
+Check `uptime` before you run it and before you believe a failure; below about
+load 12 it is reliable, and above 40 the XCUITest runner starts losing view
+hierarchy snapshots. It failed four times in phase 14 s2 with
 `Request for viewHierarchy failed, code: 500`, or a hang inside
 `getHierarchyWithFallback`, at four different points of the flow. Every command
 before the failure COMPLETED, and `practice-hand` — which plays a full hand

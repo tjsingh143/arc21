@@ -90,11 +90,14 @@ pgTAP        422 passed (23 files)  — supabase test db, after a clean reset
              15 daily tie-breaks, 7 migration recovery)
 Server        50 passed against the RUNNING Edge Functions, not skipped —
             the 401 gate was checked immediately before the run
-E2E         every-screen PASSES (exit 0), practice-hand PASSES (exit 0), both
-            on iPhone 17 Pro / iOS 26.5.
-            career-node COULD NOT BE COMPLETED on this host — four attempts,
-            four failures inside Maestro's XCUITest driver rather than in the
-            app. Detail below, because "flaky" is not a diagnosis.
+E2E         ALL THREE PASS (exit 0) on iPhone 17 Pro / iOS 26.5 —
+            every-screen 129s, practice-hand 78s, career-node 304s.
+            career-node could not be completed DURING session 2 and was
+            reported as a suspected driver fault rather than a regression.
+            That diagnosis was confirmed afterwards: re-run on an idle host
+            (load average 10.8, versus 40+ during the session) it passed
+            first time, exit 0, all 28 steps. The cause was host load, not
+            the app and not session 2's changes. Detail below.
 Typecheck   clean (tsc --noEmit)
 Lint        0 errors, 32 warnings — identical count to the tree before this
             session
@@ -107,7 +110,11 @@ Coverage    deterministic and 16x faster: tests/server is excluded from the
 
 Two cautions for re-runners, both learned the expensive way here:
 
-  * career-node's four failures were all the same fault in a different place:
+  * career-node PASSES on an idle host — confirmed after the session, exit 0
+    in 304s at load average 10.8. What follows is why it did not pass during
+    the session, kept because the diagnosis is the reusable part.
+
+    Its four failures were all the same fault in a different place:
     `Request for viewHierarchy failed, code: 500` / a hang inside
     `getHierarchyWithFallback`, raised by the XCUITest runner, at driver
     start-up, after hand 1, after hand 4 and after hand 13 respectively. The
