@@ -68,9 +68,10 @@ Measured this session:
 |---|---|
 | `npx tsc --noEmit` | clean |
 | `npm run lint` | 0 errors, 32 warnings (unchanged) |
-| `npm test` | **1,412** passing across 67 files |
-| `supabase test db` | **422** assertions across 24 files |
+| `npm test` | **1,413** passing across 66 files |
+| `supabase test db` | **422** assertions across 23 files |
 | `npx vitest run tests/server` | **50** running, not skipped |
+| `npm run test:coverage` | 1,339 across 63 files, all gates met, deterministic |
 | `supabase db reset` | applies all 32 migrations clean from empty |
 
 ---
@@ -78,27 +79,53 @@ Measured this session:
 ## Verification performed
 
 Not self-reported — actually executed (re-run in full, 2026-08-18, Phase 14
-session 1):
+session 2):
 
 ```
-JS tests    1401 passed (65 files)  — npm test
-            (+17 this session: 7 loadout resolution, 7 registry completeness
-             parsing seed.sql, 3 app-art byte-compare)
-pgTAP        355 passed (19 files)  — supabase test db, after a clean reset
-Server        46 passed against the RUNNING Edge Functions, not skipped —
+JS tests    1413 passed (66 files)  — npm test
+            (+12 this session: 4 EV-lost grading, 4 room-join refusal parsing,
+             3 out-of-game rate limiting, 1 daily attempt accuracy)
+pgTAP        422 passed (23 files)  — supabase test db, after a clean reset
+            (+67 this session: 29 rate limits, 16 authorization surface,
+             15 daily tie-breaks, 7 migration recovery)
+Server        50 passed against the RUNNING Edge Functions, not skipped —
             the 401 gate was checked immediately before the run
-E2E         practice-hand · career-node · every-screen all pass on
-            iPhone 17 Pro / iOS 26.5
+E2E         every-screen PASSES (exit 0), practice-hand PASSES (exit 0), both
+            on iPhone 17 Pro / iOS 26.5.
+            career-node COULD NOT BE COMPLETED on this host — four attempts,
+            four failures inside Maestro's XCUITest driver rather than in the
+            app. Detail below, because "flaky" is not a diagnosis.
 Typecheck   clean (tsc --noEmit)
 Lint        0 errors, 32 warnings — identical count to the tree before this
-            session, measured on a worktree of the prior commit
-Native      rebuilt with the new icon and splash; installs, launches, plays
-Migrations  29 applied from scratch + seed, hardening gates passing
+            session
+Migrations  32 applied from scratch + seed, and the authorization gate now
+            runs LAST rather than thirteenth, so it sees all of them
+Coverage    deterministic and 16x faster: tests/server is excluded from the
+            COVERAGE run only, having been measured to contribute exactly
+            zero to it (66.65/62.71/64.24/68.67 either way) while costing
+            140 seconds and two intermittent failures
 
-A caution for re-runners: this suite run CONCURRENTLY with an Xcode build
-reported 15 failures from CPU starvation alone; the identical tree passed
-1401/1401 on an idle machine minutes later. Do not diagnose failures
-measured under a compile.
+Two cautions for re-runners, both learned the expensive way here:
+
+  * career-node's four failures were all the same fault in a different place:
+    `Request for viewHierarchy failed, code: 500` / a hang inside
+    `getHierarchyWithFallback`, raised by the XCUITest runner, at driver
+    start-up, after hand 1, after hand 4 and after hand 13 respectively. The
+    flow itself was correct every time — onboarding, Home, Play, Career, the
+    Locked marker, First Deal, career-start, chip-50, bet-deal, four STANDs and
+    career-next-hand all COMPLETED. `practice-hand` plays a full hand through
+    the same table components and passes, which is the reason to believe the
+    app rather than the driver. Load was taken from 40 to 5.7 (Supabase
+    stopped, stale runners killed, simulator rebooted) and it made no
+    difference; `MAESTRO_DRIVER_STARTUP_TIMEOUT=180000` fixed the START-UP half
+    and nothing fixed the snapshot half. One earlier failure ran
+    `xcrun simctl uninstall` for five minutes and left the app UNINSTALLED,
+    costing a ten-minute rebuild — check the app is still installed before
+    diagnosing a Maestro failure.
+  * A load-generating experiment left eight busy-loop shells running and took
+    the load average to 75. Every measurement taken after that point is
+    suspect until the load is back under 10 — check `uptime` before
+    diagnosing anything.
 
 Coverage, per area rather than one blanket number:
   shared/blackjack           97.31% statements · 93.81% branches  (gate 90)

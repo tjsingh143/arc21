@@ -309,6 +309,20 @@ that point — and confirm from the failure screenshot rather than guessing, bec
 an empty view-hierarchy dump means Maestro could not read the tree, not that the
 screen was wrong.
 
+**A Maestro failure can be the DRIVER, not the app — and `viewHierarchy` is
+where it shows.** `career-node` failed four times in phase 14 s2 with
+`Request for viewHierarchy failed, code: 500`, or a hang inside
+`getHierarchyWithFallback`, at four different points of the flow. Every command
+before the failure COMPLETED, and `practice-hand` — which plays a full hand
+through the same table components — passed. Before treating that as an app
+regression: check `~/.maestro/tests/<run>/xctest_runner_*.log` for
+`View hierarchy snapshot` stalling, check `uptime`, kill stale
+`maestro-driver-ios` processes, and set
+`MAESTRO_DRIVER_STARTUP_TIMEOUT=180000` (which fixes the start-up half of it).
+One such failure also ran `xcrun simctl uninstall` for five minutes and left the
+app UNINSTALLED — `xcrun simctl get_app_container <udid> com.arc21.app` before
+diagnosing anything else, because a missing app reads as a broken flow.
+
 **`create or replace function` silently reverts every LATER redefinition.** Five
 functions gained a rate limit this phase, which meant replacing their bodies —
 and two had already been redefined by a later migration than the one that
