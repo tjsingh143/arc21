@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "Arc 21",
+    "slug": "arc21",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "arc21",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#0B0D10",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.arc21.app"
+    },
+    "android": {
+      "package": "com.arc21.app",
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0B0D10",
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-secure-store",
+      "expo-sqlite",
+      "expo-audio",
+      "expo-notifications"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "disclaimer": "Simulated card game. Virtual chips have no monetary value and cannot be redeemed."
+    }
+  }
+}

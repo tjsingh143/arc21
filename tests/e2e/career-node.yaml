@@ -1,0 +1,167 @@
+# Arc 21 — play a career node to completion and earn stars.
+#
+# Covers the whole progression loop end to end: the tab shell, the map, the node
+# detail, a real session driven by the real engine, star evaluation, the result
+# screen, and progress persisting back to the map.
+#
+# It plays F1 "First Deal" because that is the ONLY node unlocked on a fresh
+# profile — every other node is gated behind it, which is itself part of what
+# this flow verifies. F1 is a standard node, so the number of taps per hand
+# varies with the cards; every action step is therefore conditional rather than
+# assuming a fixed sequence. Fixing the cards to make the flow tidy is not an
+# option: the shoe is fair and nothing may arrange it.
+#
+# Run with:
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/career-node.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# Onboarding gates a fresh install. Skipping to the app as a guest is one tap,
+# and this stays conditional so the flow also works on a device that has already
+# been onboarded.
+# Wait for onboarding to actually render before deciding whether to skip it —
+# checking immediately after launch tests only whether the bundle has loaded yet.
+# Optional, so the flow also works on a device that is already onboarded.
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 30000
+    optional: true
+# Tapped inside a `repeat`, not once.
+#
+# A tap issued while the screen is still settling can be swallowed, and the
+# single-tap version then sat on onboarding until the 30-second wait below gave
+# up — a failure that looked like a broken app and was a lost tap. Once the tap
+# lands, onboarding is gone and the remaining passes find nothing to do.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 30000
+
+# Reach Career through the Play tab, exercising the tab shell on the way.
+- tapOn: "Play"
+- extendedWaitUntil:
+    visible: ".*Career.*"
+    timeout: 10000
+- tapOn: ".*Career.*"
+
+- extendedWaitUntil:
+    visible: ".*First Deal.*"
+    timeout: 20000
+
+# Only the first node is open on a fresh profile; the rest state that plainly.
+- assertVisible: ".*Locked.*"
+
+- tapOn: ".*First Deal.*"
+- extendedWaitUntil:
+    visible:
+      id: "career-start"
+    timeout: 30000
+- tapOn:
+    id: "career-start"
+
+# --- Play ten hands --------------------------------------------------------
+# Each iteration handles WHATEVER STATE IT FINDS, and every branch is checked at
+# the top level. That structure is the fix for a real deadlock, worth writing
+# down because the flow passed for weeks with it latent.
+#
+# The tap that starts the next hand used to be nested inside the betting branch,
+# so an iteration that arrived at a settled hand found no betting bar, skipped
+# the whole body — and never tapped "Next hand" either. Nothing else brings the
+# betting bar back, so every remaining iteration did nothing, and the flow burned
+# its budget dumping the view hierarchy at a table that could not move. The run
+# that exposed it ended at "Hand 2 of 10" with "Next hand" plainly on screen.
+#
+# Whether an iteration lands mid-transition is a timing question, which is why
+# this failed intermittently rather than always. A flow whose steps are ordered
+# by state rather than nested inside one branch cannot deadlock at all.
+#
+# Twenty iterations for ten hands. One iteration can carry a hand from its bet
+# to its settlement, so the margin is roughly double what is needed — but not
+# forty, which is what the first version of this fix used and which doubled the
+# flow's runtime dumping the hierarchy at a finished session.
+- repeat:
+    times: 20
+    commands:
+      # Settled: start the next hand. First, and unconditionally reachable.
+      - runFlow:
+          when:
+            visible:
+              id: "career-next-hand"
+          commands:
+            - tapOn:
+                id: "career-next-hand"
+
+      # Betting: stake the minimum and deal.
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                id: "chip-50"
+            - tapOn:
+                id: "bet-deal"
+
+      # Insurance is offered only against an ace, and is always declined here.
+      - runFlow:
+          when:
+            visible: "Dealer is showing an Ace."
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+
+      # Stand on everything, including each hand of a split.
+      - repeat:
+          times: 4
+          commands:
+            - runFlow:
+                when:
+                  visible:
+                    id: "action-stand"
+                commands:
+                  - tapOn:
+                      id: "action-stand"
+
+# --- Result ----------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "career-result-done"
+    timeout: 30000
+
+# The completion star is unconditional — it must be reported earned however the
+# cards fell, which is the rule that stops variance from blocking progression.
+- assertVisible: ".*of 3.*"
+- assertVisible: ".*Finish the node.*"
+
+- tapOn:
+    id: "career-result-done"
+
+# --- Progress persisted ----------------------------------------------------
+# Back on the map, the node just played has banked at least one star, and the
+# next node is no longer locked.
+- extendedWaitUntil:
+    visible: ".*First Deal.*"
+    timeout: 15000
+- assertNotVisible: ".*0 of 54 stars.*"

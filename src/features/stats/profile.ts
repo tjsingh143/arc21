@@ -1,0 +1,209 @@
+/**
+ * Arc 21 — the profile summary.
+ *
+ * There is no authentication in this build, which means there is no account, no
+ * username, no level and no XP. The temptation on a profile screen is to invent
+ * them anyway — "Player1", "Level 1", "0 / 500 XP" — because the layout has
+ * space for them and an empty card looks unfinished.
+ *
+ * All three of those are fabrications. "Level 1" is not a neutral placeholder:
+ * it tells the player they have a level, that it is the lowest one, and that
+ * this app is keeping score of something it is not keeping score of. XP and
+ * level are server-owned (docs/ARCHITECTURE.md) precisely so a client cannot
+ * mint them — so a client that displays them is displaying something it made up.
+ *
+ * What this device genuinely knows is: how many practice hands were played on
+ * it, how accurate the decisions were, and how many career stars were earned.
+ * Those are real, and they are what the profile shows.
+ *
+ * Runtime-neutral: no React, React Native or Expo imports.
+ */
+
+import type { UnavailableCopy } from "./competition.js";
+import { rate, type Rate } from "./rate.js";
+import type { PracticeStatsSnapshot } from "./aggregate.js";
+
+// ---------------------------------------------------------------------------
+// Identity
+// ---------------------------------------------------------------------------
+
+export interface GuestIdentity {
+  kind: "guest";
+  /**
+   * What to show where a username would go. Not a generated handle: a made-up
+   * name would be indistinguishable from one the player chose.
+   */
+  displayName: string;
+  /** One or two letters for the avatar. */
+  initials: string;
+  detail: string;
+}
+
+export interface AccountIdentity {
+  kind: "account";
+  displayName: string;
+  initials: string;
+  detail: string;
+}
+
+export type ProfileIdentity = GuestIdentity | AccountIdentity;
+
+export const GUEST_IDENTITY: GuestIdentity = {
+  kind: "guest",
+  displayName: "Guest",
+  initials: "G",
+  detail: "A local practice profile on this device. No account, and nothing uploaded.",
+};
+
+/**
+ * Initials for an avatar, from a display name the player actually chose.
+ *
+ * Never called for a guest — `GUEST_IDENTITY` carries its own — but it exists
+ * so that the day sign-in lands, the avatar does not need inventing again.
+ */
+export function initialsFor(displayName: string): string {
+  const words = displayName
+    .trim()
+    .split(/\s+/)
+    .filter((word) => word.length > 0);
+
+  const first = words[0]?.[0] ?? "";
+  const second = words.length > 1 ? (words[words.length - 1]?.[0] ?? "") : "";
+  const initials = `${first}${second}`.toUpperCase();
+
+  return initials === "" ? "?" : initials;
+}
+
+export function profileIdentity(context: {
+  hasAccount: boolean;
+  displayName?: string | null;
+}): ProfileIdentity {
+  if (!context.hasAccount) return GUEST_IDENTITY;
+
+  const name = context.displayName?.trim();
+  if (!name) return GUEST_IDENTITY;
+
+  return {
+    kind: "account",
+    displayName: name,
+    initials: initialsFor(name),
+    detail: "Signed in to Arc 21.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Level and XP
+// ---------------------------------------------------------------------------
+
+export type ProgressionUnavailableReason = "NO_ACCOUNT" | "OFFLINE";
+
+export interface ProgressionRecord {
+  level: number;
+  xpIntoLevel: number;
+  xpForNextLevel: number;
+}
+
+export type ProgressionState =
+  | { status: "unavailable"; reason: ProgressionUnavailableReason }
+  | { status: "ready"; record: ProgressionRecord; progress: Rate };
+
+/**
+ * Whether a level and XP bar may be drawn at all.
+ *
+ * There is deliberately no "level 0" or "0 XP" branch. A zero is a value, and a
+ * value the player did not earn is a fabrication regardless of how small it is.
+ */
+export function progressionState(context: {
+  hasAccount: boolean;
+  online?: boolean;
+  record?: ProgressionRecord | null;
+}): ProgressionState {
+  if (!context.hasAccount) return { status: "unavailable", reason: "NO_ACCOUNT" };
+  if (!context.record) return { status: "unavailable", reason: "OFFLINE" };
+
+  return {
+    status: "ready",
+    record: context.record,
+    progress: rate(context.record.xpIntoLevel, context.record.xpForNextLevel),
+  };
+}
+
+export function describeProgressionUnavailable(
+  reason: ProgressionUnavailableReason,
+): UnavailableCopy {
+  switch (reason) {
+    case "NO_ACCOUNT":
+      return {
+        title: "No level yet",
+        body:
+          "Level and XP are awarded by the server so they cannot be edited from a phone. " +
+          "This build has no sign-in, so there is no level to show — and showing " +
+          "“Level 1” would be inventing one.",
+      };
+    case "OFFLINE":
+      return {
+        title: "Offline",
+        body: "Your level lives on the server and has not been loaded on this device yet.",
+      };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The summary
+// ---------------------------------------------------------------------------
+
+export interface CareerStars {
+  earned: number;
+  available: number;
+}
+
+export interface ProfileHeadline {
+  /** The mastery figure: unaided decisions only. */
+  accuracy: Rate;
+  /** Every graded decision, including those made with the answer on screen. */
+  accuracyIncludingAided: Rate;
+  handsPlayed: number;
+  careerStars: CareerStars;
+  /** Progress through the career map, for the stars ring. */
+  careerProgress: Rate;
+}
+
+export interface ProfileSummary {
+  identity: ProfileIdentity;
+  progression: ProgressionState;
+  headline: ProfileHeadline;
+  /** False before a single hand or decision, so the screen can say so plainly. */
+  hasPlayed: boolean;
+}
+
+export function summariseProfile(input: {
+  stats: PracticeStatsSnapshot;
+  careerStars: CareerStars;
+  hasAccount?: boolean;
+  displayName?: string | null;
+  progression?: ProgressionRecord | null;
+}): ProfileSummary {
+  const hasAccount = input.hasAccount ?? false;
+  const stats = input.stats;
+
+  const handsPlayed = nonNegative(stats.handsPlayed);
+  const earned = nonNegative(input.careerStars.earned);
+  const available = nonNegative(input.careerStars.available);
+
+  return {
+    identity: profileIdentity({ hasAccount, displayName: input.displayName ?? null }),
+    progression: progressionState({ hasAccount, record: input.progression ?? null }),
+    headline: {
+      accuracy: rate(stats.unaidedCorrect, stats.unaidedDecisions),
+      accuracyIncludingAided: rate(stats.correct, stats.decisions),
+      handsPlayed,
+      careerStars: { earned, available },
+      careerProgress: rate(earned, available),
+    },
+    hasPlayed: handsPlayed > 0 || nonNegative(stats.decisions) > 0,
+  };
+}
+
+function nonNegative(value: number): number {
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+}

@@ -1,0 +1,124 @@
+# Arc 21 — Practice survives being killed mid-hand.
+#
+# STATUS: currently fails under Maestro against a DEV BUILD, for a harness
+# reason rather than a product one. Verified working by direct observation:
+#   - the app's SQLite `kv` table holds practice:session (~17KB) after a deal;
+#   - that exact blob, pulled off the simulator, deserialises cleanly in Node;
+#   - `simctl terminate` + `launch` restores "Resume your session · Bankroll
+#     4,900 · hand 1" on screen within ~12s.
+# Maestro's stopApp is a hard kill with no background transition, and its
+# launchApp races the dev build's Metro reload, so the assertion lands before
+# hydration completes. Re-check this against a release build, where the bundle
+# is embedded and the reload window disappears.
+#
+# The unit tests prove the save/load contract. This proves the thing that
+# actually matters to a player: kill the app with chips on the felt, reopen it,
+# and the same hand is still there.
+#
+# It is also the flow that catches a whole class of regression the unit tests
+# cannot see — a storage layer that fails to initialise on device, or hydration
+# that hangs and leaves the table blank forever. Both have happened here.
+#
+# Run with:
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/practice-resume.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# Onboarding gates a fresh install. Skipping to the app as a guest is one tap,
+# and this stays conditional so the flow also works on a device that has already
+# been onboarded.
+# Wait for onboarding to actually render before deciding whether to skip it —
+# checking immediately after launch tests only whether the bundle has loaded yet.
+# Optional, so the flow also works on a device that is already onboarded.
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 30000
+    optional: true
+# Tapped inside a `repeat`, not once.
+#
+# A tap issued while the screen is still settling can be swallowed, and the
+# single-tap version then sat on onboarding until the 30-second wait below gave
+# up — a failure that looked like a broken app and was a lost tap. Once the tap
+# lands, onboarding is gone and the remaining passes find nothing to do.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 30000
+- tapOn:
+    id: "home-practice"
+
+- extendedWaitUntil:
+    visible: "Place a bet to be dealt in."
+    timeout: 15000
+
+# Commit chips and deal, so there is a hand in progress worth losing.
+- tapOn:
+    id: "chip-100"
+- tapOn:
+    id: "bet-deal"
+
+- runFlow:
+    when:
+      visible: "Dealer is showing an Ace."
+    commands:
+      - tapOn:
+          id: "insurance-decline"
+
+# The hand is now live: cards are dealt and the wager is committed.
+- assertVisible: ".*Bet 100.*"
+
+# --- Kill and reopen -------------------------------------------------------
+# A real player does not kill the app in the same millisecond as their last tap.
+# The pause keeps this flow testing persistence rather than racing the write —
+# the write itself is forced by the background flush in usePersistOnBackground.
+- waitForAnimationToEnd:
+    timeout: 3000
+
+# clearState: false is the whole point — this is a relaunch, not a fresh install.
+- stopApp
+- launchApp:
+    clearState: false
+
+# Hydration is asynchronous — SQLite has to open and the record has to parse —
+# so this waits for the restored bankroll rather than asserting immediately.
+# 4,900 is the proof: a fresh session would read 5,000.
+- extendedWaitUntil:
+    visible: ".*4,900.*"
+    timeout: 30000
+
+# Home must know a session is in progress. If it says "Play offline" instead,
+# the hand is intact on disk but invisible to the player — which is exactly the
+# bug this flow caught.
+- assertVisible: "Resume your session"
+
+- tapOn:
+    id: "home-practice"
+
+# The committed wager and the dealt hand are still there — not a fresh shoe
+# wearing the same bankroll.
+- extendedWaitUntil:
+    visible: ".*Bet 100.*"
+    timeout: 20000
+- assertNotVisible: "Place a bet to be dealt in."

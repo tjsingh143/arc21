@@ -1,0 +1,475 @@
+/**
+ * Arc 21 — the authoritative command handler.
+ *
+ * ONE transaction, in this order (ARCHITECTURE.md, "Server command model"):
+ *
+ *   authenticate                         identity from the verified JWT
+ *   validate                             Zod, strict, unknown fields rejected
+ *   SELECT engine state FOR UPDATE       the game's serialisation point
+ *   verify session membership            the seat is looked up, never sent
+ *   clientActionId already applied?      return the FIRST committed result
+ *   expectedVersion != current?          return stale + authoritative snapshot
+ *   verify phase, actor and legality     getLegalActions on AUTHORITATIVE state
+ *   apply the shared engine command      no rule is re-implemented here
+ *   move chips ONLY via apply_wallet_delta
+ *   bump version, append events, persist state, record idempotency
+ *   COMMIT
+ *   broadcast the sanitised snapshot
+ *
+ * There is no partial settlement: every write above is in the same transaction,
+ * and anything thrown rolls all of it back.
+ */
+
+import { applyCommand } from "../../../shared/blackjack/index.js";
+import { countsTowardsAccuracy, gradeDecision } from "../_shared/decision-grading.ts";
+import {
+  gameCommandRequestSchema,
+  type AcceptedResponse,
+  type GameCommandRequest,
+  type GameCommandResponse,
+  type PublicGameEvent,
+} from "../../../shared/contracts/index.js";
+import type { PublicGameState } from "../../../shared/blackjack/index.js";
+import {
+  accountForSettlement,
+  isEmptyAccounting,
+  SERVER_DAILY_REPEATABLE_XP_CAP,
+} from "../_shared/settlement-accounting.ts";
+import { authenticate } from "../_shared/identity.ts";
+import { classify, CommandError, toRejectedResponse } from "../_shared/command-errors.ts";
+import {
+  jsonResponse,
+  newRequestId,
+  preflightResponse,
+  readJsonBody,
+} from "../_shared/http-json.ts";
+import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
+import { withTransaction, type Tx } from "../_shared/postgres-client.ts";
+import {
+  appendEvents,
+  findAppliedCommand,
+  findSeat,
+  loadSession,
+  lockEngineState,
+  persistEngineState,
+  recordAppliedCommand,
+  syncSeatRow,
+  recordDecisions,
+  recordHandSettlement,
+  syncSessionRow,
+  totalChipsAtTable,
+} from "../_shared/session-repository.ts";
+import { settleTableClosure } from "../_shared/close-table.ts";
+import { chipsCameFromWallet } from "../_shared/session-economics.ts";
+import { resolveHandBoundary } from "../_shared/session-boundary.ts";
+import { notifyTurnPlayedByTimeout } from "../_shared/notify.ts";
+
+import {
+  assertCommandIsLegal,
+  assertSafeToPublish,
+  canCloseSession,
+  sanitise,
+  serverNow,
+  serverRandom,
+  toEngineCommand,
+} from "../_shared/engine-bridge.ts";
+import { broadcastSnapshot } from "../_shared/realtime-broadcast.ts";
+
+interface HandledCommand {
+  response: GameCommandResponse;
+  /** Present only when authoritative state actually changed. */
+  broadcast?: { publicState: PublicGameState; events: PublicGameEvent[] };
+  outcome: "accepted" | "stale" | "replayed";
+  stateVersion: number;
+  chipDelta?: number;
+}
+
+Deno.serve(async (request: Request): Promise<Response> => {
+  if (request.method === "OPTIONS") return preflightResponse();
+
+  const startedAt = Date.now();
+  const log: LogFields = { requestId: newRequestId(), fn: "game-command" };
+
+  try {
+    // 1. Identity. Never from the payload — there is no user field to send.
+    const identity = await authenticate(request);
+    log.userId = identity.userId;
+
+    // 2. Validation. Strict: an unknown field is a rejection, not a stripped key.
+    const parsed = gameCommandRequestSchema.safeParse(await readJsonBody(request));
+    if (!parsed.success) {
+      // Paths and codes only. Zod issues can echo the offending value back, and
+      // an error message is not a place to reflect attacker-controlled input.
+      const detail = parsed.error.issues
+        .map((issue) => `${issue.path.join(".") || "(root)"}:${issue.code}`)
+        .join(", ");
+      throw new CommandError("INVALID_REQUEST", detail);
+    }
+
+    const command = parsed.data;
+    log.gameId = command.gameId;
+    log.commandId = command.clientActionId;
+    log.commandType = command.type;
+    log.expectedVersion = command.expectedVersion;
+
+    const handled = await withTransaction((tx) => handle(tx, identity.userId, command, log));
+
+    log.outcome = handled.outcome;
+    log.stateVersion = handled.stateVersion;
+    log.durationMs = Date.now() - startedAt;
+    if (handled.chipDelta !== undefined) log.chipDelta = handled.chipDelta;
+    logInfo("command handled", log);
+
+    // 3. Broadcast AFTER the commit, and never in a way that can fail the call.
+    if (handled.broadcast) {
+      await broadcastSnapshot(handled.broadcast.publicState, handled.broadcast.events, log);
+    }
+
+    return jsonResponse(handled.response, 200);
+  } catch (error) {
+    const rejection = classify(error);
+    log.code = rejection.code;
+    log.outcome = "rejected";
+    log.durationMs = Date.now() - startedAt;
+
+    if (rejection.code === "INTERNAL") {
+      // The only place the underlying error's text is recorded. It stays here.
+      logError("command failed", log, error);
+    } else {
+      logWarn("command rejected", log, rejection.internalDetail);
+    }
+
+    return jsonResponse(toRejectedResponse(rejection, log.requestId), rejection.httpStatus);
+  }
+});
+
+/**
+ * Escrow is "chips this table owes back to a wallet", not "chips on the felt".
+ *
+ * A closed-economy table therefore reports zero however large its stacks grow.
+ * `startPrivateTable` already said so in a comment and set 0 at creation, but
+ * every command afterwards overwrote it with the table total — so a private
+ * table read as holding 10,000 chips of escrow that no wallet was owed.
+ */
+function escrowFor(mode: string, state: Parameters<typeof totalChipsAtTable>[0]): number {
+  return chipsCameFromWallet(mode) ? totalChipsAtTable(state) : 0;
+}
+
+/**
+ * Ends a competition session that has just played its last hand.
+ *
+ * No `applyCommand` and no `settleTableClosure`: the boundary module has already
+ * written the placements, the prizes and the rewards, and neither a tournament
+ * stack nor a challenge stack has anywhere to go — they are scoring media, not
+ * escrow. The seat is marked left and the state closed so the client is told
+ * plainly that it is over rather than left polling a table that will not advance.
+ */
+async function closeCompetition(
+  tx: Tx,
+  params: {
+    gameId: string;
+    userId: string;
+    seatId: string;
+    session: { mode: string };
+    state: Parameters<typeof sanitise>[0] & { version: number };
+    command: GameCommandRequest;
+    now: string;
+    log: LogFields;
+    note?: string;
+  },
+): Promise<HandledCommand> {
+  const closed = { ...params.state, version: params.state.version + 1 };
+
+  await persistEngineState(tx, params.gameId, closed as never);
+  await syncSessionRow(tx, params.gameId, closed as never, {
+    status: "completed",
+    endedAt: params.now,
+    // A closed economy owes no wallet anything, however large the stacks got.
+    escrowChips: 0,
+  });
+
+  const seatState = closed.seats.find((candidate) => candidate.seatId === params.seatId);
+  if (seatState) {
+    await syncSeatRow(tx, params.seatId, seatState as never, {
+      status: "left",
+      leftAt: params.now,
+    });
+  }
+
+  const publicState = sanitise(closed);
+  const response: AcceptedResponse = { status: "accepted", publicState, events: [] };
+
+  await recordAppliedCommand(tx, {
+    gameId: params.gameId,
+    userId: params.userId,
+    clientActionId: params.command.clientActionId,
+    commandType: params.command.type,
+    appliedVersion: closed.version,
+    response,
+  });
+
+  params.log.outcome = "accepted";
+  return {
+    response,
+    broadcast: { publicState, events: [] },
+    outcome: "accepted",
+    stateVersion: closed.version,
+  };
+}
+
+async function handle(
+  tx: Tx,
+  userId: string,
+  command: GameCommandRequest,
+  log: LogFields,
+): Promise<HandledCommand> {
+  // --- The write lock ------------------------------------------------------
+  // Taken before anything else is read, exactly as apply_wallet_delta takes the
+  // wallet lock before consulting its idempotency key: under READ COMMITTED two
+  // concurrent replays would otherwise both miss the other's uncommitted row.
+  const locked = await lockEngineState(tx, command.gameId);
+  const session = locked ? await loadSession(tx, command.gameId) : null;
+  const seat = locked && session ? await findSeat(tx, command.gameId, userId) : null;
+
+  // A caller who is not a participant learns nothing about whether the game
+  // exists. Distinguishing the two would let a modified client enumerate live
+  // session ids by timing or by response code.
+  if (!locked || !session || !seat) {
+    throw new CommandError("NOT_A_PARTICIPANT", `no seat for ${userId} in ${command.gameId}`);
+  }
+  log.seatId = seat.id;
+
+  // --- Idempotency ---------------------------------------------------------
+  // Deliberately ahead of the "is this seat still live" check: the command that
+  // closes a table also ends the seat, so its own retry must still resolve.
+  const applied = await findAppliedCommand(tx, command.gameId, command.clientActionId);
+  if (applied) {
+    if (applied.userId !== userId) {
+      // Someone is replaying another account's action id. It is not a hit.
+      throw new CommandError("IDEMPOTENCY_CONFLICT", `action ${command.clientActionId} belongs to another account`);
+    }
+    // Byte-for-byte the first committed result: no recomputation, no second
+    // chip movement, no second card.
+    return { response: applied.response, outcome: "replayed", stateVersion: applied.appliedVersion };
+  }
+
+  if (seat.status === "left" || session.status === "completed" || session.status === "abandoned") {
+    throw new CommandError("SESSION_CLOSED", `session ${command.gameId} is ${session.status}`);
+  }
+
+  const state = locked.state;
+
+  // --- Optimistic concurrency ---------------------------------------------
+  // Nothing is applied. The authoritative snapshot goes back so the client can
+  // resynchronise and decide for itself whether to retry.
+  if (command.expectedVersion !== state.version) {
+    return {
+      response: { status: "stale", publicState: sanitise(state) },
+      outcome: "stale",
+      stateVersion: state.version,
+    };
+  }
+
+  // --- Legality on authoritative state ------------------------------------
+  assertCommandIsLegal(state, seat.id, command);
+
+  // --- The competition boundary -------------------------------------------
+  /*
+   * Runs between hands, before the engine deals the next one, and inside this
+   * same transaction.
+   *
+   * A Daily Challenge stops after its hand count; a Sprint Tournament changes its
+   * bet ceiling, moves the button, eliminates the lowest stack after hand six and
+   * settles placements after hand twelve. Doing any of it after the commit, or on
+   * a schedule, would leave a tournament half-eliminated whenever a connection
+   * dropped at the wrong moment.
+   */
+  const now = serverNow();
+  let boundaryNote: string | undefined;
+
+  if (command.type === "NEXT_HAND") {
+    const boundary = await resolveHandBoundary(tx, {
+      gameId: command.gameId,
+      mode: session.mode,
+      state,
+      now,
+    });
+    boundaryNote = boundary.note;
+    if (boundaryNote) log.boundary = boundaryNote;
+
+    if (boundary.finished) {
+      // The session is over. The engine is deliberately NOT asked to deal again:
+      // a twenty-first hand of a twenty-hand challenge is not a smaller bug than
+      // a wrong payout.
+      return await closeCompetition(tx, {
+        gameId: command.gameId,
+        userId,
+        seatId: seat.id,
+        session,
+        state,
+        command,
+        now,
+        log,
+        note: boundaryNote,
+      });
+    }
+  }
+
+  /*
+   * --- Grade the decision, BEFORE it is applied ----------------------------
+   *
+   * The chart has to be consulted against the cards the player was actually
+   * looking at. Grading after `applyCommand` would compare basic strategy to a
+   * hand that already has the hit card in it.
+   *
+   * Eligibility is decided by mode: Practice never reaches here, tournaments are
+   * excluded because correct tournament play deviates from the chart, and private
+   * tables are excluded because the product calls them unranked.
+   */
+  const grade = countsTowardsAccuracy(session.mode)
+    ? gradeDecision({
+        mode: session.mode,
+        state,
+        seatId: seat.id,
+        action: command.type as never,
+      })
+    : null;
+
+  // --- Apply ---------------------------------------------------------------
+  const engineCommand = toEngineCommand(command, seat.id, now);
+  const { state: nextState, events } = applyCommand(state, engineCommand, {
+    random: serverRandom(),
+    now,
+  });
+
+  const seatState = nextState.seats.find((candidate) => candidate.seatId === seat.id);
+  if (!seatState) throw new CommandError("INTERNAL", "seat vanished from engine state");
+
+  // --- Money ---------------------------------------------------------------
+  // Wagers move inside the table stack, which is why an ordinary HIT or DOUBLE
+  // touches no wallet at all (SECURITY.md: "a table buy-in debits the wallet
+  // once; wagers move within that stack"). The one command that crosses back
+  // over is LEAVE, and only at a phase where no wager is committed.
+  let chipDelta = 0;
+  const closing = command.type === "LEAVE" && canCloseSession(nextState, seat.id);
+  // A seat closing and the TABLE closing are different events. One player
+  // leaving a five-seat table must not end it for the other four.
+  let sessionEnded = false;
+
+  if (closing) {
+    // Shared with the explicit CASH_OUT route, down to the idempotency key, so
+    // a dropped LEAVE response followed by a "cash out" tap credits once. The
+    // closure also decides whether any chips are owed at all: a private table,
+    // a tournament and the daily challenge are closed economies whose stacks
+    // never reach a wallet.
+    const closure = await settleTableClosure(tx, {
+      gameId: command.gameId,
+      userId,
+      seatId: seat.id,
+      state: nextState,
+    });
+    chipDelta = closure.returned;
+    sessionEnded = closure.sessionEnded;
+  }
+
+  // --- Record the hand ------------------------------------------------------
+  // Statistics and XP move in the same transaction as the settlement that
+  // caused them. Doing this afterwards, or on a schedule, would create a second
+  // place for the hand count to be wrong.
+  if (grade?.counted) {
+    // Same transaction as the action itself. Recording accuracy afterwards, or on
+    // a schedule, would create a second place for the count to be wrong.
+    await recordDecisions(tx, {
+      userId,
+      total: 1,
+      optimal: grade.optimal ? 1 : 0,
+      at: now,
+    });
+  }
+  if (grade && !grade.counted && grade.skipped) log.decisionSkipped = grade.skipped;
+
+  const accounting = accountForSettlement(events, seat.id);
+  if (!isEmptyAccounting(accounting)) {
+    await recordHandSettlement(tx, {
+      userId,
+      stats: accounting.stats,
+      xp: accounting.xp,
+      // The UTC calendar day, taken from the SERVER clock. A client-supplied
+      // day would let a player reset their own daily allowance by lying about
+      // their timezone.
+      utcDay: now.slice(0, 10),
+      dailyCap: SERVER_DAILY_REPEATABLE_XP_CAP,
+    });
+  }
+
+  // --- Persist -------------------------------------------------------------
+  await persistEngineState(tx, command.gameId, nextState);
+  await syncSessionRow(tx, command.gameId, nextState, {
+    status: sessionEnded ? "completed" : undefined,
+    endedAt: sessionEnded ? now : null,
+    escrowChips: escrowFor(session.mode, nextState),
+  });
+  await syncSeatRow(tx, seat.id, seatState, closing ? { status: "left", leftAt: now } : {});
+
+  await notifyTimedOutSeats(tx, command.gameId, events);
+
+  const published = await appendEvents(tx, command.gameId, events, nextState);
+
+  // Both halves of the payload are proved against the authoritative state
+  // before either is stored or returned. A refactor that widened the public
+  // shape fails the command rather than publishing the shoe.
+  const publicState = sanitise(nextState);
+  assertSafeToPublish(published, nextState);
+
+  const response: AcceptedResponse = { status: "accepted", publicState, events: published };
+
+  await recordAppliedCommand(tx, {
+    gameId: command.gameId,
+    userId,
+    clientActionId: command.clientActionId,
+    commandType: command.type,
+    appliedVersion: nextState.version,
+    response,
+  });
+
+  log.eventCount = published.length;
+  log.firstSeq = published[0]?.seq;
+  log.lastSeq = published[published.length - 1]?.seq;
+
+  return {
+    response,
+    broadcast: { publicState, events: published },
+    outcome: "accepted",
+    stateVersion: nextState.version,
+    chipDelta,
+  };
+}
+
+/**
+ * Tells a player their hand was played for them.
+ *
+ * Driven by the engine's own `TIMEOUT_RESOLVED` events rather than by a guess at
+ * who is present, so a notification can only exist where a default was actually
+ * applied. Runs inside the command transaction: a rolled-back hand notifies
+ * nobody.
+ */
+async function notifyTimedOutSeats(
+  tx: Tx,
+  gameId: string,
+  events: readonly { type: string; seatId?: string }[],
+): Promise<void> {
+  const seatIds = new Set(
+    events
+      .filter((event) => event.type === "TIMEOUT_RESOLVED" && event.seatId)
+      .map((event) => event.seatId as string),
+  );
+  if (seatIds.size === 0) return;
+
+  for (const seatId of seatIds) {
+    const rows = await tx<{ user_id: string }[]>`
+      select user_id from public.game_session_seats where id = ${seatId}::uuid
+    `;
+    const userId = rows[0]?.user_id;
+    if (userId) await notifyTurnPlayedByTimeout(tx, { gameId, userId });
+  }
+}

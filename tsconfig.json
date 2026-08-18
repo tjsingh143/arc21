@@ -1,0 +1,33 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // The strategy module lives under `supabase/functions/_shared/strategy` and
+    // imports its own files with literal `.ts` specifiers, because that is the
+    // ONLY form the Supabase Edge runtime resolves — a `.js` specifier fails
+    // there even for a file that is certainly present. `exclude` keeps those
+    // files out of root discovery but not out of the program, since
+    // `shared/strategy/index.ts` re-exports them, so the extension has to be
+    // permitted. Safe with `noEmit`: Metro and Deno do the transforms.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    // Expo's base config does not pull in ambient @types automatically here, and
+    // scripts/ is Node tooling (node:fs, node:path) rather than app code.
+    // Listing types explicitly disables auto-inclusion, so react must be named too.
+    "types": ["node", "react"],
+    "paths": {
+      "@/*": ["./src/*"],
+      "@shared/*": ["./shared/*"]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
+  "exclude": ["node_modules", ".expo", "dist", "supabase/functions"]
+}

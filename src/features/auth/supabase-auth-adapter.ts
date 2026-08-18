@@ -1,0 +1,199 @@
+/**
+ * Arc 21 — the Supabase implementation of `AuthAdapter`.
+ *
+ * The only file in `src/features/auth` that knows Supabase exists. Everything it
+ * does is translation: SDK shapes in, `AuthResult` out; SDK errors in,
+ * `AuthFailure` out. No policy decisions are made here — they belong in
+ * `auth-machine.ts`, which is pure and tested.
+ *
+ * Every call is bounded by `withTimeout`. An auth request to a host that
+ * silently drops packets otherwise leaves a "Signing in…" button pressed for
+ * the platform's own timeout, which on mobile can exceed a minute.
+ */
+
+import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
+import {
+  authFailure,
+  classifyAuthError,
+  type AuthFailure,
+} from "./auth-failure.js";
+import { normaliseEmail, normaliseUsername } from "./credentials.js";
+import type {
+  AuthAdapter,
+  AuthResult,
+  AuthSessionSnapshot,
+  AuthVoidResult,
+  SignInRequest,
+  SignUpRequest,
+} from "./auth-adapter.js";
+
+/** The subset of a Supabase session this app is allowed to care about. */
+interface SessionLike {
+  expires_at?: number | null;
+  user: {
+    id: string;
+    email?: string | null;
+    email_confirmed_at?: string | null;
+    confirmed_at?: string | null;
+  };
+}
+
+const NETWORK: AuthFailure = authFailure("NETWORK");
+
+export function createSupabaseAuthAdapter(
+  client: ArcSupabaseClient,
+  options: { readonly timeoutMs?: number } = {},
+): AuthAdapter {
+  const { timeoutMs } = options;
+
+  async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
+    // `Promise.resolve` because PostgREST's builder is a thenable, not a Promise.
+    const result = await withTimeout(Promise.resolve(work), timeoutMs);
+    return isTimedOut(result) ? null : result;
+  }
+
+  return {
+    kind: "supabase",
+
+    async getSession(): Promise<AuthResult> {
+      const result = await bounded(client.auth.getSession());
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return {
+        ok: true,
+        session: toSnapshot(result.data.session as SessionLike | null),
+        verificationRequired: false,
+      };
+    },
+
+    async signIn(request: SignInRequest): Promise<AuthResult> {
+      const result = await bounded(
+        client.auth.signInWithPassword({
+          email: normaliseEmail(request.email),
+          password: request.password,
+        }),
+      );
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return {
+        ok: true,
+        session: toSnapshot(result.data.session as SessionLike | null),
+        verificationRequired: result.data.session === null,
+      };
+    },
+
+    async signUp(request: SignUpRequest): Promise<AuthResult> {
+      const result = await bounded(
+        client.auth.signUp({
+          email: normaliseEmail(request.email),
+          password: request.password,
+          options: {
+            // Read by `public.handle_new_user()`, which normalises it, runs it
+            // through the same reserved-name filter a rename uses, and falls
+            // back to a derived handle if it is taken or refused. The requested
+            // handle is a request, never a guarantee — which is why the store
+            // reads the assigned one back.
+            data: { username: normaliseUsername(request.username) },
+          },
+        }),
+      );
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+
+      /*
+       * When email confirmation is enabled and the address is already
+       * registered, Supabase deliberately returns a success with an obfuscated
+       * user and an empty `identities` array rather than an error, so that
+       * sign-up cannot be used to enumerate accounts.
+       *
+       * We deliberately do NOT unpick that signal to show "email already in
+       * use". Doing so would rebuild the exact oracle the server is protecting
+       * against, in the client, for a marginal copy improvement. The player is
+       * told to check their email — which is correct in both cases, because in
+       * both cases an email is what arrives.
+       */
+      return {
+        ok: true,
+        session: toSnapshot(result.data.session as SessionLike | null),
+        verificationRequired: result.data.session === null,
+      };
+    },
+
+    async signOut(): Promise<AuthVoidResult> {
+      /*
+       * Local scope, not global.
+       *
+       * The default revokes every refresh token for the account, which signs the
+       * player out of their other devices too. SECURITY.md permits being signed
+       * in on several devices; "sign out" on this phone must mean this phone.
+       */
+      const result = await bounded(client.auth.signOut({ scope: "local" }));
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return { ok: true };
+    },
+
+    async deleteAccount(): Promise<AuthVoidResult> {
+      /*
+       * The server erases the account; `delete_own_account()` takes no
+       * arguments and reads the caller from the verified session, so this
+       * cannot be pointed at anyone else.
+       *
+       * The local session is NOT cleared here. The store does that after a
+       * confirmed success, because clearing it first would leave a player whose
+       * deletion was refused — mid-hand, say — signed out of an account that
+       * still exists.
+       */
+      const result = await bounded(client.rpc("delete_own_account"));
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return { ok: true };
+    },
+
+    async requestPasswordReset(email: string): Promise<AuthVoidResult> {
+      const result = await bounded(
+        client.auth.resetPasswordForEmail(normaliseEmail(email)),
+      );
+      if (result === null) return { ok: false, failure: NETWORK };
+      if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return { ok: true };
+    },
+
+    async fetchAssignedUsername(): Promise<string | null> {
+      const session = await bounded(client.auth.getSession());
+      const userId = session?.data.session?.user.id;
+      if (userId === undefined) return null;
+
+      const result = await bounded(
+        client.from("profiles").select("username").eq("id", userId).maybeSingle(),
+      );
+      if (result === null || result.error) return null;
+
+      const username = (result.data as { username?: unknown } | null)?.username;
+      return typeof username === "string" ? username : null;
+    },
+
+    onAuthStateChange(listener): () => void {
+      const { data } = client.auth.onAuthStateChange((_event, session) => {
+        listener(toSnapshot(session as SessionLike | null));
+      });
+      return () => data.subscription.unsubscribe();
+    },
+  };
+}
+
+function toSnapshot(session: SessionLike | null): AuthSessionSnapshot | null {
+  if (session === null) return null;
+  const user = session.user;
+  return {
+    account: {
+      userId: user.id,
+      email: user.email ?? null,
+      emailConfirmed: Boolean(user.email_confirmed_at ?? user.confirmed_at),
+      // Read separately; see `AuthAdapter.fetchAssignedUsername`.
+      username: null,
+    },
+    expiresAt: session.expires_at ?? null,
+  };
+}

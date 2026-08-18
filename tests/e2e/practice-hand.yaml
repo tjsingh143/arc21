@@ -1,0 +1,152 @@
+# Arc 21 — critical E2E flow: play a hand of blackjack to settlement.
+#
+# This is the flow the specification names first, and the one no unit test can
+# cover: it exercises the real native app, the real store, the real engine and
+# the real renderer together. Two defects in this project were invisible to 378
+# passing unit tests and only appeared when the app actually ran.
+#
+# Selectors are testIDs, not visible text. Text is ambiguous — "PRACTICE" is both
+# the Home card's overline and the table's header, and matching the wrong one
+# produced a green step that had verified nothing.
+#
+# Run with:
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/practice-hand.yaml
+#
+# Requires: the dev build installed on a booted simulator, and Metro running.
+
+appId: com.arc21.app
+---
+# clearState makes the run deterministic: no resumed session, no stale
+# onboarding flag. Resume is covered separately by practice-resume.yaml.
+- launchApp:
+    clearState: true
+
+# A system alert (a leftover deep link, or a permission prompt) sits above the
+# app and would fail every later step for a reason unrelated to the app.
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# The dev build has to attach to Metro and render before anything is tappable.
+# Onboarding gates a fresh install. Skipping to the app as a guest is one tap,
+# and this stays conditional so the flow also works on a device that has already
+# been onboarded.
+# Wait for onboarding to actually render before deciding whether to skip it —
+# checking immediately after launch tests only whether the bundle has loaded yet.
+# Optional, so the flow also works on a device that is already onboarded.
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 30000
+    optional: true
+# Tapped inside a `repeat`, not once.
+#
+# A tap issued while the screen is still settling can be swallowed, and the
+# single-tap version then sat on onboarding until the 30-second wait below gave
+# up — a failure that looked like a broken app and was a lost tap. Once the tap
+# lands, onboarding is gone and the remaining passes find nothing to do.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    # Matches every-screen.yaml. The first render after a fresh Metro bundle can
+    # take most of half a minute on a dev build; 30s failed while 40s passed on
+    # the same commit, which is latency rather than a broken screen.
+    timeout: 40000
+
+- tapOn:
+    id: "home-practice"
+
+- extendedWaitUntil:
+    visible: "Place a bet to be dealt in."
+    timeout: 15000
+
+# The table must never offer a chip the table limits forbid: Practice runs the
+# Casual tier, whose maximum is 500.
+- assertVisible:
+    id: "chip-500"
+- assertNotVisible:
+    id: "chip-1000"
+
+# --- Bet -------------------------------------------------------------------
+- tapOn:
+    id: "chip-100"
+
+- tapOn:
+    id: "bet-deal"
+
+# --- Insurance is only ever offered against a dealer ace --------------------
+- runFlow:
+    when:
+      visible: "Dealer is showing an Ace."
+    commands:
+      # Two variants, and which one appears depends on the cards: a player
+      # holding a natural is offered even money instead of ordinary insurance.
+      # Asserting only the 2:1 copy fails whenever the deal happens to be a
+      # blackjack, which is a flaky test rather than a real defect.
+      - runFlow:
+          when:
+            visible: ".*Take Even Money.*"
+          commands:
+            - assertVisible: ".*paid 1:1 now.*"
+      - runFlow:
+          when:
+            notVisible: ".*Take Even Money.*"
+          commands:
+            - assertVisible: ".*It pays 2:1 if the dealer has blackjack.*"
+      - tapOn:
+          id: "insurance-decline"
+
+# --- Act -------------------------------------------------------------------
+# The hand may already be settled (a natural, or a dealer blackjack found at the
+# peek), so every step is conditional. Insurance is handled inside the loop as
+# well as above: which prompts appear, and in what order, depends entirely on
+# the cards, and a fair shoe cannot be arranged to suit the test. Split hands
+# resolve one at a time and four is the rule cap, so six passes is ample.
+- repeat:
+    times: 6
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                id: "action-stand"
+
+# --- Settlement ------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "next-hand"
+    timeout: 15000
+
+# The settled bankroll must be on screen. Matched as a regex because the value
+# is interpolated into the same string ("Bankroll 4,900").
+- assertVisible: ".*Bankroll.*"
+
+# --- The round must be repeatable ------------------------------------------
+- tapOn:
+    id: "next-hand"
+- extendedWaitUntil:
+    visible: "Place a bet to be dealt in."
+    timeout: 10000

@@ -1,0 +1,207 @@
+/**
+ * Arc 21 — rule configuration.
+ *
+ * Every rule-dependent decision in the product flows through a `BlackjackRules`
+ * value. Do not scatter rule assumptions (deck count, S17, payout ratios,
+ * surrender availability) into components, server handlers or strategy code —
+ * read them from the ruleset that is in force for the session.
+ *
+ * Strategy tables are keyed to `id` + `version`. Changing any rule that alters
+ * basic strategy MUST bump `version`, otherwise stale advice will be served.
+ */
+
+// Value import into a module that shoe.ts imports back from — but shoe.ts only
+// takes a *type* from here, which is erased at runtime, so there is no cycle.
+import { assertPenetrationIsCoherent } from "./shoe.js";
+
+export type SplitPolicy = "same_value" | "same_rank";
+
+export interface BlackjackRules {
+  id: string;
+  version: number;
+
+  deckCount: number;
+
+  dealerHitsSoft17: boolean;
+  dealerHoleCard: boolean;
+  dealerPeeksForBlackjack: boolean;
+
+  blackjackPayoutNumerator: number;
+  blackjackPayoutDenominator: number;
+
+  insuranceAllowed: boolean;
+  insuranceFractionNumerator: number;
+  insuranceFractionDenominator: number;
+  insurancePayoutNumerator: number;
+  insurancePayoutDenominator: number;
+
+  lateSurrenderAllowed: boolean;
+
+  doubleAllowed: boolean;
+  doubleOnAnyTwoCards: boolean;
+  doubleAfterSplit: boolean;
+
+  splitPolicy: SplitPolicy;
+  maxSplitHands: number;
+
+  splitAcesAllowed: boolean;
+  resplitAcesAllowed: boolean;
+  hitSplitAcesAllowed: boolean;
+  doubleSplitAcesAllowed: boolean;
+  splitAceTwentyOneIsBlackjack: boolean;
+
+  /** Fraction of the shoe dealt before the cut card. */
+  targetPenetration: number;
+
+  minBet: number;
+  maxBet: number;
+  betIncrement: number;
+}
+
+/**
+ * The Arc Standard ruleset — a legitimate player-friendly six-deck family.
+ * This is a product choice, not a universal definition of blackjack.
+ */
+export const ARC_STANDARD_RULES: BlackjackRules = {
+  id: "arc-standard",
+  version: 1,
+
+  deckCount: 6,
+
+  dealerHitsSoft17: false,
+  dealerHoleCard: true,
+  dealerPeeksForBlackjack: true,
+
+  blackjackPayoutNumerator: 3,
+  blackjackPayoutDenominator: 2,
+
+  insuranceAllowed: true,
+  insuranceFractionNumerator: 1,
+  insuranceFractionDenominator: 2,
+  insurancePayoutNumerator: 2,
+  insurancePayoutDenominator: 1,
+
+  lateSurrenderAllowed: true,
+
+  doubleAllowed: true,
+  doubleOnAnyTwoCards: true,
+  doubleAfterSplit: true,
+
+  splitPolicy: "same_value",
+  maxSplitHands: 4,
+
+  splitAcesAllowed: true,
+  resplitAcesAllowed: false,
+  hitSplitAcesAllowed: false,
+  doubleSplitAcesAllowed: false,
+  splitAceTwentyOneIsBlackjack: false,
+
+  targetPenetration: 0.75,
+
+  minBet: 50,
+  maxBet: 1000,
+  betIncrement: 10,
+};
+
+/** Table tiers differ only in stakes; all other rules stay identical. */
+export interface TableTier {
+  id: "casual" | "standard" | "high";
+  label: string;
+  buyIn: number;
+  minBet: number;
+  maxBet: number;
+  unlockLevel: number;
+}
+
+/**
+ * A private table's fixed session stack.
+ *
+ * Every seat starts here and nothing moves in or out — no buy-in, no cash-out,
+ * no ledger entry. That is the anti-collusion rule: if chips could travel
+ * between a private table and the global wallet, two accounts could transfer a
+ * bankroll by agreeing to lose, and every leaderboard downstream would be
+ * meaningless. A player who busts may reset to this figure between hands,
+ * because the chips are unranked and worth nothing outside the room.
+ */
+export const PRIVATE_TABLE_STACK = 5_000;
+
+/** Stakes for a private table. Unranked, so the band is deliberately gentle. */
+export const PRIVATE_TABLE_MIN_BET = 20;
+export const PRIVATE_TABLE_MAX_BET = 500;
+
+/** Arc Standard at private-table stakes. Rules never differ, only the band. */
+export function privateTableRules(): BlackjackRules {
+  return {
+    ...ARC_STANDARD_RULES,
+    minBet: PRIVATE_TABLE_MIN_BET,
+    maxBet: PRIVATE_TABLE_MAX_BET,
+  };
+}
+
+export const TABLE_TIERS: readonly TableTier[] = [
+  { id: "casual", label: "Casual", buyIn: 2_000, minBet: 20, maxBet: 500, unlockLevel: 1 },
+  { id: "standard", label: "Standard", buyIn: 5_000, minBet: 50, maxBet: 1_000, unlockLevel: 1 },
+  { id: "high", label: "High", buyIn: 20_000, minBet: 200, maxBet: 5_000, unlockLevel: 10 },
+];
+
+export function rulesForTier(tier: TableTier, base: BlackjackRules = ARC_STANDARD_RULES): BlackjackRules {
+  return { ...base, minBet: tier.minBet, maxBet: tier.maxBet };
+}
+
+/**
+ * Stable identity for strategy-table lookups and stat bucketing.
+ * Two rulesets producing the same key must produce the same basic strategy.
+ */
+export function rulesetKey(rules: BlackjackRules): string {
+  return `${rules.id}@${rules.version}`;
+}
+
+/**
+ * Guards against configurations the engine's integer money model cannot settle
+ * exactly. Called at session construction so a bad config fails loudly and
+ * early rather than silently rounding chips away from players.
+ */
+export function assertRulesAreCoherent(rules: BlackjackRules): void {
+  const problems: string[] = [];
+
+  if (rules.deckCount < 1 || !Number.isInteger(rules.deckCount)) {
+    problems.push("deckCount must be a positive integer");
+  }
+  if (rules.betIncrement < 1 || !Number.isInteger(rules.betIncrement)) {
+    problems.push("betIncrement must be a positive integer");
+  }
+  if (rules.minBet % rules.betIncrement !== 0) {
+    problems.push("minBet must be a multiple of betIncrement");
+  }
+  if (rules.maxBet % rules.betIncrement !== 0) {
+    problems.push("maxBet must be a multiple of betIncrement");
+  }
+  if (rules.minBet > rules.maxBet) {
+    problems.push("minBet must not exceed maxBet");
+  }
+  if (rules.maxSplitHands < 1) {
+    problems.push("maxSplitHands must be at least 1");
+  }
+  if (rules.targetPenetration <= 0 || rules.targetPenetration >= 1) {
+    problems.push("targetPenetration must be strictly between 0 and 1");
+  }
+  if (rules.dealerHoleCard === false && rules.dealerPeeksForBlackjack) {
+    problems.push("cannot peek without a hole card");
+  }
+
+  // A blackjack payout on the minimum bet must be exact, or the house is
+  // quietly shaving chips off every natural.
+  const bjProfit = (rules.minBet * rules.blackjackPayoutNumerator) / rules.blackjackPayoutDenominator;
+  if (!Number.isInteger(bjProfit)) {
+    problems.push(
+      `minBet ${rules.minBet} cannot pay ${rules.blackjackPayoutNumerator}:${rules.blackjackPayoutDenominator} in whole chips`,
+    );
+  }
+
+  if (problems.length > 0) {
+    throw new Error(`Incoherent BlackjackRules "${rules.id}": ${problems.join("; ")}`);
+  }
+
+  // Checked last so the clearer field-level messages surface first.
+  assertPenetrationIsCoherent(rules);
+}

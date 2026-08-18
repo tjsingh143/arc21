@@ -1,0 +1,319 @@
+# Arc 21 — visit every screen and assert real content on each.
+#
+# This is the audit flow. Typechecking proves a screen COMPILES; it proves
+# nothing about whether it renders, whether its data source is wired, or whether
+# it is reachable at all. Several screens in this app were written, typechecked,
+# and never once opened.
+#
+# Each stop asserts a string that only appears if that screen genuinely rendered
+# its own content — not a title that a loading state would also show.
+#
+# Run with:
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/every-screen.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# --- Onboarding ------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 40000
+- assertVisible: ".*no monetary value.*"
+# Account routes are real now. Onboarding used to answer both with a note saying
+# Arc 21 had no account service — true when written, false three phases later,
+# and nobody came back to it.
+- assertVisible: "Create Account"
+- assertVisible: "Sign In"
+# Tapped inside a `repeat`: a tap issued while the screen is still settling can
+# be swallowed, and the single-tap version then sat here until the wait below
+# gave up.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 40000
+
+# --- Home ------------------------------------------------------------------
+- assertVisible: ".*Blackjack, without the noise.*"
+
+# --- Play tab --------------------------------------------------------------
+- tapOn: "Play"
+- extendedWaitUntil:
+    visible: ".*Sprint Tournament.*"
+    timeout: 15000
+# Server-dependent modes must read as unavailable, not as broken buttons.
+- assertVisible: ".*Needs an account.*"
+
+# --- Sprint Tournament -----------------------------------------------------
+# `scrollUntilVisible`, not `tapOn`. These are the last two cards on the Play
+# tab and sit below the fold: a bare `tapOn` found "Daily Challenge" in the
+# accessibility tree, tapped where it was NOT on screen, and the flow carried on
+# against an unchanged Play tab. A title present in the tree is not a title the
+# finger can reach.
+- scrollUntilVisible:
+    element: "Sprint Tournament"
+    direction: DOWN
+    timeout: 15000
+- tapOn: "Sprint Tournament"
+- extendedWaitUntil:
+    visible: ".*Four players, equal stacks, one elimination.*"
+    timeout: 20000
+# This build has no server configured, so the screen must SAY that rather than
+# render a format it could not read or an entry button that cannot work.
+#
+# The format itself comes from `sprint_format()`, which is granted to `anon` so a
+# signed-out player on a configured build sees the real structure before deciding
+# to make an account — the specification's "user must know the format before
+# spending". That path needs a server, so it is not what this flow can assert;
+# what it asserts is that the absence is stated honestly.
+- assertVisible: ".*no server configured.*"
+- tapOn:
+    id: "back-bar"
+# Asserted against something ONLY the Play tab renders. ".*Sprint Tournament.*"
+# would match the card here AND the heading on the screen we just left, so a
+# failed back-navigation would still pass — the mistake this flow already made
+# once with private tables. Returning resets the tab's scroll to the top, so the
+# header subtitle is the right thing to look for.
+- extendedWaitUntil:
+    visible: ".*Same rules everywhere.*"
+    timeout: 15000
+
+# --- Daily Challenge -------------------------------------------------------
+- scrollUntilVisible:
+    element: "Daily Challenge"
+    direction: DOWN
+    timeout: 15000
+- tapOn: "Daily Challenge"
+- extendedWaitUntil:
+    visible: ".*Everyone plays the same shoe.*"
+    timeout: 20000
+# Same honesty requirement. A daily attempt cannot exist without a server, and
+# the screen says so instead of showing a commitment hash it invented.
+- assertVisible: ".*no server configured.*"
+- tapOn:
+    id: "back-bar"
+# The footer here, not the header: reaching the Daily Challenge card scrolled the
+# list to its foot, and returning preserves that position — whereas the shorter
+# scroll to Sprint Tournament above came back at the top. Both anchors are text
+# only the Play tab renders; each is the one actually on screen at that point.
+- extendedWaitUntil:
+    visible: ".*same fixed rules in every mode.*"
+    timeout: 15000
+
+# --- Social tab ------------------------------------------------------------
+- tapOn: "Social"
+- extendedWaitUntil:
+    visible: ".*Private table.*"
+    timeout: 15000
+# Private tables are reachable now, so the flow opens the lobby and asserts the
+# economics are stated on screen — a player must not assume their balance is at
+# stake.
+- tapOn:
+    id: "social-private-table"
+- extendedWaitUntil:
+    visible: ".*5,000 table chips.*"
+    timeout: 15000
+- assertVisible: ".*Join with a code.*"
+- tapOn:
+    id: "back-bar"
+# Asserting ".*Private table.*" here proved nothing: it matches BOTH Social's
+# section heading and the lobby's own page title, so a back button that failed
+# to navigate still passed — and the next step then tapped for a tab bar the
+# lobby does not have. Assert something only Social renders.
+- extendedWaitUntil:
+    visible: ".*Friends need a server.*"
+    timeout: 15000
+
+# --- Leaderboards ----------------------------------------------------------
+# Reached from Social. Signed out and with no server configured, the screen must
+# state that plainly — it must never render a board of zeros, which would read as
+# real standings.
+- tapOn: "Social"
+- extendedWaitUntil:
+    visible: ".*Friends need a server.*"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      id: "social-leaderboards"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "social-leaderboards"
+- extendedWaitUntil:
+    visible: ".*Every figure here is recorded by the server.*"
+    timeout: 20000
+# The four boards the specification names, and global bankroll is not one.
+- assertVisible: ".*Weekly XP.*"
+- assertVisible: ".*Strategy Accuracy.*"
+- assertVisible: ".*no server configured.*"
+- tapOn:
+    id: "back-bar"
+# The footer, not the header: reaching the Leaderboards card scrolled Social to
+# its foot and returning keeps that position. Unique to Social either way.
+- extendedWaitUntil:
+    visible: ".*never move chips between accounts.*"
+    timeout: 15000
+
+# --- Notifications ---------------------------------------------------------
+# Reached from Social, and entered from where the Leaderboards block left off:
+# returning from a pushed screen keeps the list at its foot, so re-asserting the
+# header here would fail on a screen that is perfectly correct. Assert what is
+# actually on screen at this point.
+#
+# The inbox is the RECORD of what the server said, not a fallback for push. Push
+# can fail for reasons the app never learns — permission refused, a token
+# expired, a build with no credentials — and a feature that existed only as a
+# banner would silently do nothing. With no server configured the screen must say
+# so rather than render an empty list, which would read as "nobody has ever
+# contacted you".
+- scrollUntilVisible:
+    element:
+      id: "social-notifications"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "social-notifications"
+- extendedWaitUntil:
+    visible: ".*whether or not your device was able to show it.*"
+    timeout: 20000
+- assertVisible: ".*no server configured.*"
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible: ".*never move chips between accounts.*"
+    timeout: 15000
+
+# --- Learn tab -------------------------------------------------------------
+- tapOn: "Learn"
+- extendedWaitUntil:
+    visible: ".*Strategy Guide.*"
+    timeout: 15000
+
+# --- How to Play -----------------------------------------------------------
+- tapOn: ".*How to Play.*"
+- extendedWaitUntil:
+    visible: ".*21.*"
+    timeout: 15000
+# Every pushed screen now carries a back control at the TOP, so leaving one no
+# longer means scrolling to the foot of a long article or knowing the gesture.
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible: ".*Strategy Guide.*"
+    timeout: 15000
+
+# --- Strategy Guide --------------------------------------------------------
+- tapOn: ".*Strategy Guide.*"
+- extendedWaitUntil:
+    visible: ".*dealer stands soft 17.*"
+    timeout: 15000
+# All three chart tabs must render.
+- tapOn: ".*Soft.*"
+- tapOn: ".*Pairs.*"
+- tapOn: ".*Hard.*"
+# Every pushed screen now carries a back control at the TOP, so leaving one no
+# longer means scrolling to the foot of a long article or knowing the gesture.
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible: ".*Strategy Guide.*"
+    timeout: 15000
+
+# --- Decision Drills -------------------------------------------------------
+# NOT conditional. This was a `runFlow: when: visible` block, and when the Learn
+# tab stopped offering Drills it reported SKIPPED and the run still passed — so
+# the audit flow silently stopped visiting one of the screens it exists to
+# check. A screen this flow is responsible for gets an unconditional assertion.
+- tapOn: "Learn"
+- extendedWaitUntil:
+    visible:
+      id: "learn-drills"
+    timeout: 15000
+- tapOn:
+    id: "learn-drills"
+- extendedWaitUntil:
+    visible: ".*Mixed.*"
+    timeout: 15000
+- tapOn:
+    id: "back-bar"
+
+# --- Profile (via the header avatar) ---------------------------------------
+- tapOn:
+    id: "open-profile"
+- extendedWaitUntil:
+    visible: ".*Guest.*"
+    timeout: 15000
+
+# --- Inventory -------------------------------------------------------------
+# Opened from the profile that is already on screen. The important assertion is
+# an absence: nothing here shows a price, because nothing here can be bought.
+- scrollUntilVisible:
+    element:
+      id: "profile-inventory"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "profile-inventory"
+- extendedWaitUntil:
+    visible: ".*none of it changes the game.*"
+    timeout: 20000
+- assertVisible: ".*no server configured.*"
+- assertNotVisible: ".*Buy.*"
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible: ".*Guest.*"
+    timeout: 15000
+
+# --- Stats -----------------------------------------------------------------
+- tapOn: "Statistics"
+- extendedWaitUntil:
+    visible: ".*Nothing recorded yet.*"
+    timeout: 15000
+# Every pushed screen now carries a back control at the TOP, so leaving one no
+# longer means scrolling to the foot of a long article or knowing the gesture.
+- tapOn:
+    id: "back-bar"
+
+# --- Settings --------------------------------------------------------------
+- tapOn: "Settings"
+- extendedWaitUntil:
+    visible: ".*Gameplay.*"
+    timeout: 15000
+
+# --- Fair Play -------------------------------------------------------------
+# Lives in the About section at the foot of Settings.
+# The Account section added real content above this, so Fair Play now sits
+# further down a longer screen. Requiring 100% visibility of the row made the
+# scroll marginal — it reached the link but not fully on screen, intermittently.
+- scrollUntilVisible:
+    element: ".*Fair Play.*"
+    direction: DOWN
+    visibilityPercentage: 60
+    timeout: 40000
+- tapOn: ".*Fair Play.*"
+- extendedWaitUntil:
+    visible: ".*soft 17.*"
+    timeout: 15000
+# The claims a player is entitled to, and which must stay true of the code.
+- assertVisible: ".*3:2.*"
