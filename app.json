@@ -5,6 +5,7 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "arc21",
+    "icon": "./assets/images/icon.png",
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0D10",
     "newArchEnabled": true,
@@ -23,7 +24,9 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#0B0D10",
-          "resizeMode": "contain"
+          "resizeMode": "contain",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200
         }
       ],
       "expo-secure-store",

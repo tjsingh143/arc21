@@ -17,6 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
+import { CosmeticAvatar } from "../../src/features/cosmetics/art";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
 import {
   CATEGORY_COPY,
@@ -150,6 +151,9 @@ export default function Leaderboards() {
                       <AppText variant="bodyStrong" color="textSecondary" numeric style={styles.rank}>
                         {entry.rank}
                       </AppText>
+                      {/* The row's EQUIPPED avatar, from the server's projection.
+                          A null key renders the default mark rather than a gap. */}
+                      <CosmeticAvatar assetKey={entry.avatar_asset_key} size={32} />
                       <View style={styles.who}>
                         <AppText variant="bodyStrong">
                           {entry.is_you ? `${entry.display_name} (you)` : entry.display_name}

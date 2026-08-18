@@ -16,6 +16,7 @@
     "doctor": "npx expo-doctor@latest",
     "strategy:generate": "tsx scripts/generate-strategy-tables.ts",
     "audio:generate": "tsx scripts/generate-audio.ts",
+    "art:generate": "tsx scripts/generate-app-art.ts",
     "db:start": "supabase start",
     "db:reset": "supabase db reset",
     "db:test": "supabase test db"

@@ -105,7 +105,13 @@ export default function WelcomeScreen() {
   }, [complete]);
 
   useEffect(() => {
-    if (!completion) return;
+    // Guest completion ONLY. The account buttons navigate to the auth screens
+    // themselves, and this effect fires on their `complete("account")` too —
+    // when it also replaced to Home for that entry, it clobbered the push
+    // after commit, so "Create Account" LOOKED wired and deterministically
+    // dumped every new player on Home signed out. The E2E flow asserted the
+    // button was visible, not where it led.
+    if (completion?.entry !== "guest") return;
     // `replace` rather than `push` — the introduction must not sit under Home in
     // the back stack, where a system back gesture would return the player to a
     // screen they have already finished with.

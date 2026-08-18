@@ -40,6 +40,27 @@ export const colors = {
 
 export type ColorToken = keyof typeof colors;
 
+/**
+ * Cosmetic art surfaces — the only colours that may appear in cosmetic artwork
+ * beyond `colors` above, kept here so the palette is still audited in one file.
+ *
+ * Each is a near-background dark with one deliberate cast, because a table
+ * theme's job is to disappear behind the cards: distinguishable side by side,
+ * never louder than what sits on it. "Arc Green" honours its name with a
+ * desaturated surface green, not baize.
+ */
+export const cosmeticColors = {
+  arcGreenSurface: "#101913",
+  arcGreenLine: "#1D2C22",
+  workshopOakSurface: "#191309",
+  workshopOakLine: "#2E2412",
+  skylineDuskSurface: "#111426",
+  skylineDuskLine: "#232945",
+  midnightSurface: "#07090E",
+  /** Deep drawing-sheet blue behind the Blueprint card back's info-coloured lines. */
+  blueprintField: "#0F1A26",
+} as const;
+
 /** 4-point spacing scale. Use these, not arbitrary numbers. */
 export const spacing = {
   xs: 4,

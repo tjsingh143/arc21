@@ -39,6 +39,8 @@ import {
 } from "../../src/features/stats/profile";
 import { describeSample, formatPercent, sampleCaveat } from "../../src/features/stats/rate";
 import { useLevelStore } from "../../src/features/stats/level-store";
+import { useLoadoutStore } from "../../src/features/cosmetics";
+import { CosmeticAvatar } from "../../src/features/cosmetics/art";
 import { useAuthStore } from "../../src/features/auth";
 import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
@@ -68,11 +70,18 @@ export default function ProfileScreen() {
     if (!authHydrated) void hydrateAuth();
   }, [authHydrated, hydrateAuth]);
 
+  const avatarKey = useLoadoutStore((state) => state.loadout.avatarKey);
+  const loadLoadout = useLoadoutStore((state) => state.load);
+
   // Re-read on every change of session: signing out must empty this screen, and
-  // a level left over from a previous account is somebody else's figure.
+  // a level left over from a previous account is somebody else's figure. The
+  // loadout follows the same rule — an equipped avatar belongs to an account.
   useEffect(() => {
-    if (authHydrated) void loadLevel();
-  }, [authHydrated, session?.account.userId, loadLevel]);
+    if (authHydrated) {
+      void loadLevel();
+      void loadLoadout();
+    }
+  }, [authHydrated, session?.account.userId, loadLevel, loadLoadout]);
 
   const profile = summariseProfile({
     stats,
@@ -91,7 +100,7 @@ export default function ProfileScreen() {
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.identity}>
-          <Avatar identity={identity} />
+          <Avatar identity={identity} avatarKey={avatarKey} />
           <View style={styles.identityText}>
             <AppText variant="pageTitle">{identity.displayName}</AppText>
             <AppText variant="caption" color="textSecondary">
@@ -216,30 +225,39 @@ export default function ProfileScreen() {
  * A guest gets the same anonymous glyph the header uses, not a generated
  * identicon: a distinctive auto-generated mark reads as an identity the player
  * was given, when in fact there is no identity here at all.
+ *
+ * An account shows its EQUIPPED avatar — the loadout store's answer, which is
+ * the default House Dealer mark until the player equips something else in
+ * Inventory.
  */
-function Avatar({ identity }: { identity: ProfileIdentity }) {
+function Avatar({
+  identity,
+  avatarKey,
+}: {
+  identity: ProfileIdentity;
+  avatarKey: string;
+}) {
+  if (identity.kind !== "guest") {
+    return (
+      <CosmeticAvatar
+        assetKey={avatarKey}
+        size={72}
+        accessibilityLabel={`Profile picture for ${identity.displayName}`}
+      />
+    );
+  }
   return (
-    <View
-      style={styles.avatar}
-      accessible
-      accessibilityLabel={
-        identity.kind === "guest" ? "Guest profile picture" : `Profile picture for ${identity.displayName}`
-      }
-    >
-      {identity.kind === "guest" ? (
-        <Svg width={34} height={34} viewBox="0 0 24 24">
-          <Circle cx="12" cy="9" r="3.4" stroke={colors.textSecondary} strokeWidth={1.6} fill="none" />
-          <Path
-            d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"
-            stroke={colors.textSecondary}
-            strokeWidth={1.6}
-            fill="none"
-            strokeLinecap="round"
-          />
-        </Svg>
-      ) : (
-        <AppText variant="sectionTitle">{identity.initials}</AppText>
-      )}
+    <View style={styles.avatar} accessible accessibilityLabel="Guest profile picture">
+      <Svg width={34} height={34} viewBox="0 0 24 24">
+        <Circle cx="12" cy="9" r="3.4" stroke={colors.textSecondary} strokeWidth={1.6} fill="none" />
+        <Path
+          d="M5 20c0-3.6 3.1-6 7-6s7 2.4 7 6"
+          stroke={colors.textSecondary}
+          strokeWidth={1.6}
+          fill="none"
+          strokeLinecap="round"
+        />
+      </Svg>
     </View>
   );
 }

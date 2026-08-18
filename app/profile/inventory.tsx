@@ -18,7 +18,7 @@ import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
 import { Button } from "../../src/components/ui/Button";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
-import { colors, layout, spacing } from "../../src/design/tokens";
+import { colors, layout, radius, spacing } from "../../src/design/tokens";
 import {
   KIND_TABS,
   canEquip,
@@ -26,8 +26,14 @@ import {
   lockedLabel,
   summarise,
   useCosmeticsStore,
+  type CosmeticItem,
   type CosmeticKind,
 } from "../../src/features/cosmetics";
+import {
+  CosmeticAvatar,
+  cardBackArt,
+  tableThemeArt,
+} from "../../src/features/cosmetics/art";
 
 export default function Inventory() {
   const status = useCosmeticsStore((state) => state.status);
@@ -128,40 +134,50 @@ export default function Inventory() {
                   style={item.equipped ? styles.equipped : null}
                   accessibilityLabel={item.name}
                 >
-                  <View style={styles.itemHeader}>
-                    <AppText variant="bodyStrong" color={item.owned ? "textPrimary" : "textSecondary"}>
-                      {item.name}
-                    </AppText>
-                    {item.equipped ? (
-                      <AppText variant="caption" color="success">
-                        Equipped
-                      </AppText>
-                    ) : null}
+                  <View style={styles.itemRow}>
+                    {/* The actual art, dimmed while locked: what an item looks
+                        like is not a secret, only whether you have earned it. */}
+                    <View style={item.owned ? null : styles.lockedPreview}>
+                      <ItemPreview item={item} />
+                    </View>
+
+                    <View style={styles.itemBody}>
+                      <View style={styles.itemHeader}>
+                        <AppText variant="bodyStrong" color={item.owned ? "textPrimary" : "textSecondary"}>
+                          {item.name}
+                        </AppText>
+                        {item.equipped ? (
+                          <AppText variant="caption" color="success">
+                            Equipped
+                          </AppText>
+                        ) : null}
+                      </View>
+
+                      {item.description ? (
+                        <AppText variant="caption" color="textSecondary">
+                          {item.description}
+                        </AppText>
+                      ) : null}
+
+                      {item.owned ? (
+                        canEquip(item) ? (
+                          <Button
+                            label="Equip"
+                            variant="secondary"
+                            testID={`inventory-equip-${item.code}`}
+                            accessibilityHint={`Equips ${item.name}`}
+                            disabled={busy}
+                            onPress={() => onEquip(item.cosmetic_id)}
+                          />
+                        ) : null
+                      ) : (
+                        /* What to DO, in the server's own words — never a price. */
+                        <AppText variant="caption" color="warning" testID={`inventory-locked-${item.code}`}>
+                          {lockedLabel(item)}
+                        </AppText>
+                      )}
+                    </View>
                   </View>
-
-                  {item.description ? (
-                    <AppText variant="caption" color="textSecondary">
-                      {item.description}
-                    </AppText>
-                  ) : null}
-
-                  {item.owned ? (
-                    canEquip(item) ? (
-                      <Button
-                        label="Equip"
-                        variant="secondary"
-                        testID={`inventory-equip-${item.code}`}
-                        accessibilityHint={`Equips ${item.name}`}
-                        disabled={busy}
-                        onPress={() => onEquip(item.cosmetic_id)}
-                      />
-                    ) : null
-                  ) : (
-                    /* What to DO, in the server's own words — never a price. */
-                    <AppText variant="caption" color="warning" testID={`inventory-locked-${item.code}`}>
-                      {lockedLabel(item)}
-                    </AppText>
-                  )}
                 </SurfaceCard>
               ))}
             </View>
@@ -169,6 +185,27 @@ export default function Inventory() {
         )}
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/** Each kind previews as the thing it is: a badge, a card back, a surface. */
+function ItemPreview({ item }: { item: CosmeticItem }) {
+  if (item.kind === "avatar") {
+    return <CosmeticAvatar assetKey={item.asset_key} size={48} />;
+  }
+  if (item.kind === "card_back") {
+    const Back = cardBackArt(item.asset_key);
+    return (
+      <View style={styles.backPreview}>
+        <Back width={40} height={56} />
+      </View>
+    );
+  }
+  const theme = tableThemeArt(item.asset_key);
+  return (
+    <View style={[styles.themePreview, { backgroundColor: theme.surface }]}>
+      {theme.Element ? <theme.Element width={64} height={44} /> : null}
+    </View>
   );
 }
 
@@ -188,6 +225,26 @@ const styles = StyleSheet.create({
   tab: { flex: 1, paddingHorizontal: spacing.xs, paddingVertical: spacing.sm },
   tabActive: { borderColor: colors.accent },
   grid: { gap: spacing.md },
+  itemRow: { flexDirection: "row", alignItems: "center", gap: spacing.md },
+  itemBody: { flex: 1, gap: spacing.xs },
+  lockedPreview: { opacity: 0.45 },
+  backPreview: {
+    width: 40,
+    height: 56,
+    // Matches the art's own field radius, as the table's compact cards do.
+    borderRadius: radius.small,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  themePreview: {
+    width: 64,
+    height: 44,
+    borderRadius: 8,
+    overflow: "hidden",
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
   itemHeader: {
     flexDirection: "row",
     justifyContent: "space-between",

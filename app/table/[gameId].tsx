@@ -19,6 +19,7 @@ import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
 import { Button } from "../../src/components/ui/Button";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
+import { TableSurface } from "../../src/features/cosmetics/art";
 import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
 import { HandCards } from "../../src/components/table/HandCards";
@@ -273,6 +274,9 @@ export default function SharedTable() {
 function Frame({ children }: { children: React.ReactNode }) {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
+      {/* The equipped table theme, behind everything. Private, public,
+          tournament and daily tables all render through this frame. */}
+      <TableSurface />
       <View style={styles.bar}>
         <BackBar label="Leave table" />
       </View>

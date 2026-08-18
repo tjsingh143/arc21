@@ -14,6 +14,7 @@ import { create } from "zustand";
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toItems, type CosmeticItem } from "./cosmetics.js";
+import { useLoadoutStore } from "./loadout-store.js";
 
 export type InventoryStatus =
   | { readonly kind: "loading" }
@@ -104,7 +105,9 @@ export const useCosmeticsStore = create<CosmeticsStoreState>((set, get) => ({
     }
 
     // Re-read rather than patching locally: what is equipped is the server's
-    // answer, and one slot changing can unequip another.
-    await get().load();
+    // answer, and one slot changing can unequip another. The loadout store is
+    // refreshed too, so the avatar, card back and table across the app change
+    // with the same tap that changed the inventory.
+    await Promise.all([get().load(), useLoadoutStore.getState().load()]);
   },
 }));

@@ -24,6 +24,7 @@ import { HandCards } from "../../../src/components/table/HandCards";
 import { InsuranceSheet } from "../../../src/components/table/InsuranceSheet";
 import { StrategyPanel } from "../../../src/components/table/StrategyPanel";
 import { PlayingCard } from "../../../src/components/cards/PlayingCard";
+import { TableSurface } from "../../../src/features/cosmetics/art";
 import { colors, layout, radius, spacing } from "../../../src/design/tokens";
 import { formatChips } from "../../../src/design/typography";
 import { getLegalActions } from "../../../shared/blackjack/legal-actions.js";
@@ -103,6 +104,8 @@ function StandardSession() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      {/* The equipped table theme — the career table is a table like any other. */}
+      <TableSurface />
       <SessionHeader
         title={node.title}
         progress={`Hand ${Math.min(session.totals.handsPlayed + 1, target)} of ${target}`}
@@ -208,6 +211,8 @@ function DrillSession() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      {/* Drills deal scenarios onto the same themed surface as the hand table. */}
+      <TableSurface />
       <SessionHeader
         title={node.title}
         progress={`Decision ${Math.min(session.totals.decisions + 1, target)} of ${target}`}

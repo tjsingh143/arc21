@@ -32,6 +32,7 @@ import {
   ChallengeFeedback,
   StrategyPanel,
 } from "../../src/components/table/StrategyPanel";
+import { TableSurface } from "../../src/features/cosmetics/art";
 import { actionLabel, computeAdvice, NO_ADVICE } from "../../src/features/practice/advice";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
 import { usePersistOnBackground } from "../../src/features/practice/use-persist-on-background";
@@ -108,6 +109,7 @@ export default function PracticeTableScreen() {
   if (!game) {
     return (
       <SafeAreaView style={styles.screen}>
+        <TableSurface />
         <View style={styles.centered}>
           <AppText color="textSecondary">Shuffling…</AppText>
         </View>
@@ -136,6 +138,9 @@ export default function PracticeTableScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      {/* The equipped table theme — the default Arc Green for a guest, with no
+          fetch in the way: practice renders offline and signed out. */}
+      <TableSurface />
       <View style={styles.header}>
         <Pressable
           onPress={() => router.back()}

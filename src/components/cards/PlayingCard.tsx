@@ -10,12 +10,13 @@
  * distinguishable by outline weight for users who cannot separate the hues.
  */
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { StyleSheet, View, Text, type ViewStyle } from "react-native";
-import Svg, { Path, Rect, G, Line } from "react-native-svg";
 
 import { cardAccessibilityLabel } from "../../../shared/blackjack/cards.js";
 import type { Card, Suit } from "../../../shared/blackjack/types.js";
+import { cardBackArt } from "../../features/cosmetics/art/registry.js";
+import { useLoadoutStore } from "../../features/cosmetics/loadout-store.js";
 import { cardSizes, colors, radius, type CardSize } from "../../design/tokens";
 
 const SUIT_GLYPH: Record<Suit, string> = {
@@ -104,8 +105,13 @@ export interface CardBackProps {
 }
 
 /**
- * An original card back: concentric rounded frames over a diagonal lattice.
- * Built entirely from geometric primitives — nothing is traced or copied.
+ * The face-down card, drawn with whichever back is equipped.
+ *
+ * The art lives in `src/features/cosmetics/art/card-backs.tsx`, keyed by the
+ * catalogue's `asset_key` — every drawing is original geometric construction.
+ * This component subscribes to the loadout store, so every table shows the
+ * change the moment a back is equipped, and a guest gets the Arc Standard
+ * default without any fetch.
  */
 export const CardBack = memo(function CardBack({
   size = "hero",
@@ -113,13 +119,13 @@ export const CardBack = memo(function CardBack({
   accessibilityLabel = "Face-down card",
 }: CardBackProps) {
   const { width, height } = cardSizes[size];
-  const inset = width * 0.09;
-  const latticeStep = width * 0.18;
 
-  const lattice: number[] = [];
-  for (let offset = -height; offset < width + height; offset += latticeStep) {
-    lattice.push(offset);
-  }
+  /*
+   * Derived with `useMemo` from subscribed state rather than by calling a store
+   * getter during render — that freezes the value under the React Compiler.
+   */
+  const cardBackKey = useLoadoutStore((state) => state.loadout.cardBackKey);
+  const Back = useMemo(() => cardBackArt(cardBackKey), [cardBackKey]);
 
   return (
     <View
@@ -128,48 +134,7 @@ export const CardBack = memo(function CardBack({
       accessibilityRole="image"
       accessibilityLabel={accessibilityLabel}
     >
-      <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-        <Rect
-          x={0}
-          y={0}
-          width={width}
-          height={height}
-          rx={radius.small}
-          fill={colors.surfaceRaised}
-        />
-        <G opacity={0.35}>
-          {lattice.map((offset, index) => (
-            <Line
-              key={index}
-              x1={offset}
-              y1={0}
-              x2={offset + height}
-              y2={height}
-              stroke={colors.accent}
-              strokeWidth={1}
-            />
-          ))}
-        </G>
-        <Rect
-          x={inset}
-          y={inset}
-          width={width - inset * 2}
-          height={height - inset * 2}
-          rx={radius.small * 0.6}
-          fill="none"
-          stroke={colors.accent}
-          strokeWidth={1.5}
-          opacity={0.8}
-        />
-        {/* The "arc" motif: a single sweep, echoing the product name. */}
-        <Path
-          d={`M ${width * 0.28} ${height * 0.66} Q ${width * 0.5} ${height * 0.22} ${width * 0.72} ${height * 0.66}`}
-          fill="none"
-          stroke={colors.accent}
-          strokeWidth={2}
-          strokeLinecap="round"
-        />
-      </Svg>
+      <Back width={width} height={height} />
     </View>
   );
 });

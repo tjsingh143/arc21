@@ -265,6 +265,35 @@ correct test. Same lesson as the pgTAP one above, one layer up: assert the
 relationship (`my_leaderboard_position` agrees with the board when the player is
 on the page) rather than the position.
 
+**A navigation effect keyed on store state fires for every writer of that
+state.** Onboarding's guest path set `completion` and let an effect
+`router.replace` to Home; the account buttons set the same state and then
+`router.push`ed the auth screen — and the effect fired after commit and
+replaced the auth screen with Home, deterministically, on every tap. "Create
+Account" looked wired for a whole phase because `every-screen.yaml` asserted
+the button was *visible*, not where it led. The effect now checks WHICH
+completion it is reacting to. When a screen navigates in two ways, make each
+trigger name its own case.
+
+**The app icon and splash do not appear in `npx expo export`.** The export
+bundles runtime assets only (the `require()`d PNGs and WAVs). Icon and splash
+are consumed by `expo prebuild` into `ios/Arc21/Images.xcassets` and ship in
+the native `Assets.car` — verify them with
+`assetutil --info <built app>/Assets.car` and by looking at the springboard,
+not by grepping the export.
+
+**`textContentType="newPassword"` blocks programmatic typing on the
+simulator.** iOS raises the strong-password overlay and Maestro's `inputText`
+lands nothing in the field, silently. The sign-IN screen's plain
+`textContentType="password"` types fine. Workaround for flows that must fill
+the create-account form: `simctl pbcopy` + long-press + "Paste". Fast
+`inputText` also drops characters in ordinary fields — paste anything that
+must arrive exactly.
+
+**Maestro text matching is case-sensitive against the RENDERED text.** An
+overline that uppercases via `textTransform` matches "STRATEGY ACCURACY", not
+"Strategy accuracy". Assert on ids or on the exact rendered case.
+
 **Maestro `tapOn` does not scroll.** A title below the fold is present in the
 accessibility tree, so `tapOn` "succeeds", taps empty space, and the flow carries
 on against an unchanged screen. Use `scrollUntilVisible` first. Also: returning

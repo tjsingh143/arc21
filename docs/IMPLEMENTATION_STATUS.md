@@ -4,14 +4,71 @@
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.
 
-Last updated: 2026-08-17
+Last updated: 2026-08-18
 
 ---
 
 ## Current phase
 
-**Notifications, audio and polish landed — and the audit found three screens
-still describing a build that stopped existing five phases ago.**
+**Phase 14 has begun. Session 1 of 6: the cosmetics system is visible, and the
+app has a face.**
+
+Twenty-four cosmetics were earnable, ownable and equippable — and **not one of
+them rendered anything**. Equipping changed a database row and nothing else
+happened anywhere in the app. `my_loadout()` was granted to `authenticated`
+and had zero client consumers: the same defect class as the audio adapter, at
+larger scale.
+
+All 24 now render, from hand-authored `react-native-svg` components in
+`src/features/cosmetics/art/` — flat vector geometry in the token palette, a
+drafting vocabulary (set square, compass, hex nut, stepped footing) that tracks
+the three career chapters. Not a face, not a felt texture, not a casino. The
+equipped loadout flows through a new `loadout-store` consumed by Profile, every
+leaderboard row, `CardBack` at every table, and a `TableSurface` layer behind
+the practice, career and shared tables (private, public, tournament and daily
+all render through the shared frame). A guest, a signed-out player and a fresh
+account all resolve to the three `unlock_type = default` items; an asset key
+this build cannot draw falls back to the slot's default rather than a blank.
+
+The proof that this cannot silently regress:
+`tests/cosmetics/registry.test.ts` parses the catalogue out of
+`supabase/seed.sql` and asserts every `asset_key` resolves to a component with
+no orphans in either direction — the test that would have caught the audio
+adapter.
+
+Verified on device, not just in tests: an account was created, given XP
+server-side, and the real `grant_earned_cosmetics()` path granted 11 items on
+opening Inventory. Equipping First Chip, Brass and Midnight visibly changed
+the Profile avatar, the dealer's hole-card back at the practice table, the
+table surface (pixel-sampled at exactly `#07090E`), and the player's own
+leaderboard row — while the other rows showed the default mark from their
+empty loadouts.
+
+The app also has an icon and a splash now: an arch over the numerals 21,
+generated deterministically by `scripts/generate-app-art.ts` (a
+signed-distance rasteriser writing PNGs through `node:zlib`, the audio
+palette's policy applied to pixels). `tests/art` regenerates both and compares
+byte for byte. Verified in the native pipeline — `expo config` resolves both,
+prebuild wrote them into `Images.xcassets`, the built `Assets.car` carries
+AppIcon at 1024 and the splash logo, and both were photographed on the
+simulator's home screen and at launch. **They do not appear in `npx expo
+export`, correctly:** the export bundles runtime assets only, and icon/splash
+are native build-time assets.
+
+### The ninth built-but-never-connected defect
+
+Driving the new account flow end to end found it: **onboarding's "Create
+Account" and "Sign In" buttons deterministically dumped every new player on
+Home, signed out.** The buttons set `complete("account")` and pushed the auth
+route — but the guest path's navigation effect fired on *any* completion and
+replaced to Home after commit, clobbering the push on every tap. Last phase's
+audit had marked account reachability fixed, and `every-screen.yaml` asserted
+the buttons were *visible* — not where they led. The effect now reacts only to
+the guest completion, and the fix was verified by creating an account through
+the screen.
+
+**Before this: notifications, audio and polish** — and the audit that found
+three screens still describing a build that stopped existing five phases ago.
 
 Sound is real. Every cue is synthesised from oscillators, envelopes and filtered
 noise by `scripts/generate-audio.ts`: nine files, 103 KiB, nothing sampled,
@@ -120,7 +177,7 @@ complete.
 | 11 | Tournaments and daily challenge | ✅ **Done** — a real four-player twelve-hand sprint with elimination, sudden death and paid placements; a deterministic daily shoe proved identical across two accounts. Three defects underneath it found and closed |
 | 12 | Leaderboards and cosmetics | ✅ **Done** — four server-recorded boards, decisions graded by the server against the real advisor, and the cosmetic catalogue earnable, equippable and provably inert |
 | 13 | Notifications, audio, polish | ✅ **Done** — a server-written notification pipeline with an honest delivery record, nine generated sound cues, deep links, and an audit that found three screens describing a build from five phases ago |
-| 14 | Quality and production hardening | ⬜ Not started |
+| 14 | Quality and production hardening | 🔶 **In progress — session 1 of 6 done**: all 24 cosmetics render and the equipped loadout is live everywhere; original app icon and splash generated, catalogued and photographed on device; onboarding's broken account routing found and fixed. Remaining: rate limiting, network fault behaviour, accessibility audit, CI/EAS/store metadata, final acceptance sweep |
 
 No placeholder or "Coming Soon" routes have been created. Modes that require
 server authority are absent rather than teased.
@@ -129,18 +186,28 @@ server authority are absent rather than teased.
 
 ## Verification performed
 
-Not self-reported — actually executed:
+Not self-reported — actually executed (re-run in full, 2026-08-18, Phase 14
+session 1):
 
 ```
-JS tests    1384 passed (62 files)  — npm test
-pgTAP        355 passed (19 files)  — supabase test db
-Server        46 passed against the RUNNING Edge Functions, not skipped
+JS tests    1401 passed (65 files)  — npm test
+            (+17 this session: 7 loadout resolution, 7 registry completeness
+             parsing seed.sql, 3 app-art byte-compare)
+pgTAP        355 passed (19 files)  — supabase test db, after a clean reset
+Server        46 passed against the RUNNING Edge Functions, not skipped —
+            the 401 gate was checked immediately before the run
 E2E         practice-hand · career-node · every-screen all pass on
             iPhone 17 Pro / iOS 26.5
 Typecheck   clean (tsc --noEmit)
-Lint        0 errors
-Native      builds, installs, launches and plays on a simulator
+Lint        0 errors, 32 warnings — identical count to the tree before this
+            session, measured on a worktree of the prior commit
+Native      rebuilt with the new icon and splash; installs, launches, plays
 Migrations  29 applied from scratch + seed, hardening gates passing
+
+A caution for re-runners: this suite run CONCURRENTLY with an Xcode build
+reported 15 failures from CPU starvation alone; the identical tree passed
+1401/1401 on an idle machine minutes later. Do not diagnose failures
+measured under a compile.
 
 Coverage, per area rather than one blanket number:
   shared/blackjack           97.31% statements · 93.81% branches  (gate 90)
