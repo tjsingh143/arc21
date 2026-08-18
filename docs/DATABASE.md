@@ -347,6 +347,90 @@ suite.
 
 ---
 
+## Reversibility and recovery
+
+The specification asks that migrations be "reversible where reasonable or include
+documented recovery". This is the position for every one of the thirty-two, so
+that a bad deploy is answered by reading rather than by improvising.
+
+**There is no down-migration framework, and adding one would be worse than not
+having it.** A `down.sql` that nobody runs is a file that describes a rollback
+somebody believes in; the recovery below is what would actually be done.
+
+### The shape of the history
+
+| Class | Count | Reversal |
+|---|---|---|
+| Additive DDL — new tables, columns, indexes, policies, functions, triggers | 29 | `drop` the objects it created. Losing whatever those objects hold |
+| `alter type … add value` | 1 | **Not reversible.** Postgres has no `drop value` |
+| Backfills that TRANSFORMED existing rows | 2 | Not reversible. Both are re-derivable, which is the recovery |
+
+### The three that are not a plain `drop`
+
+**`20260815190000_starting_wallet_and_recovery_reason.sql`** adds
+`recovery_grant` to the `ledger_reason` enum. Postgres cannot remove an enum
+value, and removing one would mean rewriting every column of that type.
+
+*Recovery:* none is needed. An unused label costs nothing and breaks nothing. The
+failure that WOULD matter is the reverse — a future migration recreating the type
+without a label that ledger rows still use — and
+`supabase/tests/22_migration_recovery.test.sql` asserts every reason the server
+writes is still present, and that no ledger row refers to a label the type has
+lost.
+
+**`20260817320000_derive_level_from_xp.sql`** backfills `profiles.level` from
+`xp`. The prior values are gone, and they were all `1` — the column had been
+stored since the first migration and never written by anything.
+
+*Recovery:* re-derive. The backfill is the same statement the trigger runs, so
+running it again is safe and idempotent:
+
+```sql
+update public.profiles set level = public.level_from_total_xp(xp)
+where level <> public.level_from_total_xp(xp);
+```
+
+`22_migration_recovery.test.sql` asserts that no row currently disagrees, which
+is what makes that statement a recovery rather than a hope.
+
+**`20260818100000_rate_limits.sql`** seeds `rate_limit_events` from
+`profiles.username_changed_at`, so that moving rename enforcement from the column
+to the table did not hand every recently-renamed player a free second rename.
+
+*Recovery:* re-derive, from a column that is still there and is still stamped on
+every rename. Rolling the whole migration back is `drop table rate_limit_events,
+rate_limit_policies cascade` plus restoring the five function bodies it replaced;
+the events lost are one window of rate-limit history, which by construction stops
+mattering after `window_length`.
+
+### What the additive twenty-nine actually mean by "reversible"
+
+Dropping a table drops its rows. So "reversible" here means the SCHEMA returns to
+its prior shape, not that the data comes back. In practice that distinction only
+bites on three of them, and it is worth naming which:
+
+- `20260813120200_wallets.sql` — dropping `wallet_ledger` destroys the only
+  record from which balances can be rebuilt. Every other table in this schema is
+  derivable or replaceable; this one is the record of account.
+- `20260813120500_games.sql` and `private.game_state_private` — dropping either
+  ends every table in progress. There is no partial recovery for a session whose
+  engine state is gone; the closed-economy modes lose nothing, and a
+  wallet-backed table's escrow would need reconciling from `game_sessions.escrow_chips`
+  against the ledger.
+- `20260813120900_daily.sql` — dropping `daily_entries` loses a day's ranked
+  attempts, and they cannot be replayed: one ranked attempt per UTC date is
+  enforced by never writing a second row, so re-playing would produce nothing.
+
+### The forward guarantee, which is the one that is actually tested
+
+`supabase db reset` applies all thirty-two from an empty database on every run of
+the test suite, and `20260818120000_authorization_gate.sql` fails the migration
+if the authorization surface is wrong when it finishes. A migration that cannot
+apply cleanly from scratch is caught before it is ever deployed, which is the
+half of this that gets exercised daily.
+
+---
+
 ## Tests
 
 ```
@@ -412,16 +496,10 @@ What is genuinely absent today:
   compile error rather than a runtime rejection. When
   `supabase gen types typescript --local` is adopted, derive from it with `Pick`
   rather than replacing that narrowing.
-- **Rate limiting.** Application-level limits (friend requests per hour, room
-  creation per minute) are named in the specification and are not enforced in the
-  database. Idempotency keys and the per-room and per-pair dedupe keys blunt the
-  obvious abuse, but they are not a limiter.
 - **A scheduler for the push sender.** `send-notifications` is invokable and
   drains a bounded slice per call; nothing calls it on a timer. Notifications
   therefore reach the in-app inbox immediately and a device only when something
   invokes the sender.
-- **The daily challenge's own accuracy.** A daily entry does not record the
-  accuracy or EV lost of its attempt, so that board ranks on score then
-  submission time and the specification's tie-breaks above that are absent rather
-  than approximated. Decisions ARE graded server-side and feed the weekly
-  strategy board — the gap is the per-entry figure, not the grading.
+- **A down-migration framework.** There is none, and this project does not need
+  one — see "Reversibility and recovery" above, which states the position for
+  every migration individually.

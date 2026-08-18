@@ -545,3 +545,29 @@ export async function recordDecisions(
     )
   `;
 }
+
+/**
+ * Applies a graded decision to the DAILY ATTEMPT that owns this session.
+ *
+ * Separate from `recordDecisions`, and not a replacement for it: that one buckets
+ * by ISO week for the strategy leaderboard, mixing every ranked mode together,
+ * which is exactly why it cannot answer the daily board's tie-break. This one
+ * belongs to a single attempt.
+ *
+ * Keyed by the session, so an unranked replay — which has no entry row at all —
+ * writes nothing without anything here having to know that it was a replay.
+ */
+export async function recordDailyAttemptDecisions(
+  tx: Tx,
+  params: { gameId: string; total: number; optimal: number; evLostMicros: number },
+): Promise<void> {
+  if (params.total <= 0) return;
+  await tx`
+    select public.record_daily_attempt_decisions(
+      ${params.gameId}::uuid,
+      ${params.total}::integer,
+      ${params.optimal}::integer,
+      ${params.evLostMicros}::bigint
+    )
+  `;
+}

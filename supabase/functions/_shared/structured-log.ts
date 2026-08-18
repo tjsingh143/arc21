@@ -56,6 +56,11 @@ export interface LogFields {
    * leaking through the logs.
    */
   decisionSkipped?: string;
+  /**
+   * How long a rate-limited caller has to wait. A duration, never the limit's
+   * identity or the target of the refused action.
+   */
+  retryAfterSeconds?: number;
 }
 
 function emit(level: "info" | "warn" | "error", message: string, fields: LogFields, detail?: string): void {

@@ -94,16 +94,31 @@ select is(
 set local request.jwt.claims to
   '{"sub":"eeeeeeee-0000-4000-8000-000000000003","role":"authenticated"}';
 
-select throws_ok(
-  $$ select public.join_private_room((select code from invite)) $$,
-  'P0001', null,
-  'a full table is refused'
+-- These two used to assert two DIFFERENT exceptions — P0001 for a full table and
+-- P0002 for an unknown code. That is a stronger claim than it looks, and it was
+-- the wrong one: it says a caller working through six-character codes can tell
+-- "this code names a real, live table that happens to be full" from "this code
+-- names nothing". That is the oracle the friend graph's shared "no such player"
+-- wording exists to prevent, one feature over.
+--
+-- `join_private_room` now returns NO ROW for every reason a code does not admit
+-- you — unknown, expired, blocked, full — so the assertions below are the same
+-- test made stricter: not merely that each is refused, but that the two refusals
+-- are INDISTINGUISHABLE.
+--
+-- Returning rather than raising is also what makes the per-minute join limit
+-- real: a raise rolls the whole call back, including the record of the attempt,
+-- so a guesser would never be charged for a guess. See 19_rate_limits.test.sql,
+-- which asserts that ten failed guesses are counted.
+
+select ok(
+  (select public.join_private_room((select code from invite))) is null,
+  'a full table admits nobody'
 );
 
-select throws_ok(
-  $$ select public.join_private_room('ZZZZZZ') $$,
-  'P0002', null,
-  'an unknown code is refused'
+select ok(
+  (select public.join_private_room('ZZZZZZ')) is null,
+  'and an unknown code is refused the same way, so the two cannot be told apart'
 );
 
 -- --------------------------------------------------------------------------

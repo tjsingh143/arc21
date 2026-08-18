@@ -4,183 +4,74 @@
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.
 
-Last updated: 2026-08-18
+Last updated: 2026-08-18 (phase 14, session 2)
 
 ---
 
 ## Current phase
 
-**Phase 14 has begun. Session 1 of 6: the cosmetics system is visible, and the
-app has a face.**
+**Phase 14, session 2 of 6: security hardening.**
 
-Twenty-four cosmetics were earnable, ownable and equippable — and **not one of
-them rendered anything**. Equipping changed a database row and nothing else
-happened anywhere in the app. `my_loadout()` was granted to `authenticated`
-and had zero client consumers: the same defect class as the audio adapter, at
-larger scale.
+Rate limiting is built. It was named in the specification's acceptance criteria,
+described in `docs/SECURITY.md` in the present tense, and **did not exist** —
+including `RATE_LIMITED`, which has had a message and an HTTP 429 mapping in the
+command contract since it was written and had never been thrown by anything. All
+six named actions are now limited from a single table, `rate_limit_policies`:
+friend requests (20/hour), room creation (5/minute and 40/hour), room joins
+(10/minute), matchmaking enrolments (10/minute, 60/hour), username renames
+(1/30 days), display-name renames (5/hour) and game commands outside an active
+game (30/minute). Windows roll rather than resetting on a boundary, refusals are
+not themselves recorded so a limit can never become a ban, and every refusal is
+consumed before the target is looked at so it cannot report anything about one.
+Refusals reach the client as **HTTP 429** through SQLSTATE `PT429` — the
+pre-existing username limit raised `55000`, which PostgREST renders as a 500, so
+a player who renamed twice in a month was told the server had broken.
 
-All 24 now render, from hand-authored `react-native-svg` components in
-`src/features/cosmetics/art/` — flat vector geometry in the token palette, a
-drafting vocabulary (set square, compass, hex nut, stepped footing) that tracks
-the three career chapters. Not a face, not a felt texture, not a casino. The
-equipped loadout flows through a new `loadout-store` consumed by Profile, every
-leaderboard row, `CardBack` at every table, and a `TableSurface` layer behind
-the practice, career and shared tables (private, public, tournament and daily
-all render through the shared frame). A guest, a signed-out player and a fresh
-account all resolve to the three `unlock_type = default` items; an asset key
-this build cannot draw falls back to the slot's default rather than a blank.
+The systematic RLS audit found that **the authorization gate had stopped running
+sixteen migrations ago.** `20260813121200_hardening.sql`'s DO blocks fail the
+migration if a client role gains an unexpected privilege — and they execute once,
+thirteenth of thirty-two, so nothing applied after them had ever been checked.
+Behind it, `anon` could execute **seventeen** public functions against a
+documented rule of one, including all four leaderboards. The cause was not a
+grant anybody wrote: a new function's default ACL is `EXECUTE TO PUBLIC`, and
+sixteen migrations wrote `grant … to authenticated` without the matching
+`revoke … from public`. Narrowed to **one** function for `anon` and 63 → **54**
+for `authenticated`, every survivor traced to an RLS policy, a CHECK constraint
+or a real `.rpc(` call site. The gate is now
+`assert_client_authorization_surface()`, called at migration time and from pgTAP,
+and its strongest check is mechanical rather than a list: no function in `public`
+may be executable by `PUBLIC`.
 
-The proof that this cannot silently regress:
-`tests/cosmetics/registry.test.ts` parses the catalogue out of
-`supabase/seed.sql` and asserts every `asset_key` resolves to a component with
-no orphans in either direction — the test that would have caught the audio
-adapter.
+All **34 tables** (32 before this phase, plus the two rate-limit tables) carry an
+audit row in `docs/SECURITY.md` — RLS, policies, client grants, and a
+justification per grant — and the same claims are asserted mechanically, so a
+seventh client-writable table fails the suite.
 
-Verified on device, not just in tests: an account was created, given XP
-server-side, and the real `grant_earned_cosmetics()` path granted 11 items on
-opening Inventory. Equipping First Chip, Brass and Midnight visibly changed
-the Profile avatar, the dealer's hole-card back at the practice table, the
-table surface (pixel-sampled at exactly `#07090E`), and the player's own
-leaderboard row — while the other rows showed the default mark from their
-empty loadouts.
+The Daily Challenge's tie-breaks are no longer ABSENT. The grading was never the
+missing part: every decision at a ranked table has been graded since phase 12 and
+`daily_challenge` was already eligible. The gap was that a daily ENTRY recorded
+nothing about its own attempt, and the week bucket it fed mixes in every solo and
+public-table decision from the same week. Entries now carry `decisions_total`,
+`decisions_optimal` and `ev_lost_micros` — the last an integer in millionths,
+because no floating-point column exists in this schema and a float ordering key
+can rank two identical records differently on two machines — and the board orders
+by score, accuracy, EV lost, then submission time.
 
-The app also has an icon and a splash now: an arch over the numerals 21,
-generated deterministically by `scripts/generate-app-art.ts` (a
-signed-distance rasteriser writing PNGs through `node:zlib`, the audio
-palette's policy applied to pixels). `tests/art` regenerates both and compares
-byte for byte. Verified in the native pipeline — `expo config` resolves both,
-prebuild wrote them into `Images.xcassets`, the built `Assets.car` carries
-AppIcon at 1024 and the splash logo, and both were photographed on the
-simulator's home screen and at launch. **They do not appear in `npx expo
-export`, correctly:** the export bundles runtime assets only, and icon/splash
-are native build-time assets.
+`docs/DATABASE.md` states the recovery position for every one of the 32
+migrations: 29 additive DDL, one irreversible `alter type … add value`, and two
+backfills, both re-derivable. No down-migration framework was added; a `down.sql`
+nobody runs describes a rollback somebody believes in.
 
-### The ninth built-but-never-connected defect
+Measured this session:
 
-Driving the new account flow end to end found it: **onboarding's "Create
-Account" and "Sign In" buttons deterministically dumped every new player on
-Home, signed out.** The buttons set `complete("account")` and pushed the auth
-route — but the guest path's navigation effect fired on *any* completion and
-replaced to Home after commit, clobbering the push on every tap. Last phase's
-audit had marked account reachability fixed, and `every-screen.yaml` asserted
-the buttons were *visible* — not where they led. The effect now reacts only to
-the guest completion, and the fix was verified by creating an account through
-the screen.
-
-**Before this: notifications, audio and polish** — and the audit that found
-three screens still describing a build that stopped existing five phases ago.
-
-Sound is real. Every cue is synthesised from oscillators, envelopes and filtered
-noise by `scripts/generate-audio.ts`: nine files, 103 KiB, nothing sampled,
-bought, borrowed or traced. The output is deterministic, so `tests/audio`
-re-synthesises each one and compares it byte for byte with the committed file —
-which is what makes "originally generated" a checked claim rather than an
-assertion in a licence document. The palette is asserted to be restrained too: a
-loss is quieter than a win, a win is quieter than a blackjack, and the two cues
-that repeat most are the quietest of all.
-
-The audio adapter had been "wired" since phase 4 with a comment saying the call
-sites were correct. **There were no call sites.** `playSound` was exported and
-never once invoked. There are nine now, one per cue, including at the
-server-authoritative table — which meant plumbing the event stream through the
-gateway and the store, because a shared table renders snapshots and feedback
-driven by a diff between two snapshots cannot tell the second card of a deal from
-a redraw.
-
-Notifications are real end to end. A friend request writes a row inside the
-command's own transaction, the sender drains it, and the delivery is recorded
-honestly — `mocked`, never `sent`, because this build has no push credentials and
-a sender that claimed otherwise would make its own audit trail worthless. Two
-structural guarantees hold underneath: `notify_user` is revoked from every client
-role, so a modified client cannot post itself a tournament win; and
-`notifications.data` is constrained to allowlisted keys holding short scalars, so
-a daily-challenge seed or a shoe cannot leave through a push payload. The 1100
-migration asserted the second of those in a comment. A comment is not a
-constraint.
-
-### What the audit found, and what it cost
-
-Three screens were still telling players that Arc 21 had no accounts:
-
-1. **Onboarding** answered "Create Account" and "Sign In" with a note explaining
-   there was nothing to sign up to. `app/(auth)/` had been signing people in
-   since phase 8. The account screens were unreachable from the one place every
-   new player looks.
-2. **Profile** passed `hasAccount: false` as a literal. Every signed-in player
-   saw the guest profile, and the level bar — which `progressionState` has been
-   able to render since phase 6 — could not appear for anybody.
-   `my_level_progress`, built last phase, had no caller.
-3. **Settings → Privacy** claimed nothing was uploaded because there was no
-   account. That one was a false privacy claim, which is the worst kind of stale
-   copy to ship.
-
-Each had a test passing beside it the whole time, because each test asserted that
-the copy still said what it said. The onboarding test now asserts *reachability*
-instead.
-
-### And one deadlock that had been latent for months
-
-`career-node.yaml` tapped "Next hand" from inside its betting branch. An
-iteration arriving at a settled hand found no betting bar, skipped the body — and
-so did every iteration after it, because nothing else brings the betting bar
-back. It failed intermittently, looked like flakiness, and was diagnosed from its
-own hierarchy dump: "Hand 2 of 10", with "Next hand" plainly on screen. Each
-state is now handled at the top level of the iteration, so a pass cannot leave
-the table stuck.
-
-**Before this: leaderboards and cosmetics, and the strategy board is real.**
-
-The specification's bar for that board is "minimum 100 eligible
-SERVER-AUTHORITATIVE decisions in period", and until phase 12 there was no
-server-side grading at all — `player_stats.decisions_total` had existed since the
-first migration and was never written. It is now: every action at a ranked table
-is graded against the same advisor the learning screens use, from the
-authoritative state as it stood BEFORE the action, and bucketed by ISO week.
-
-Getting there required solving the module-resolution problem this repository had
-written off as unfixable, and this phase finally found the actual mechanism: each
-function directory carries a generated `deno.json` import map, and that map is
-what resolves a `shared/**` specifier. Adding a new function without a copy of it
-takes the entire stack down at `supabase start` — which is how the discovery was
-made.
-
-**Before that: tournaments and the Daily Challenge — and three defects underneath
-them were found and closed.**
-
-The Sprint Tournament is real: four accounts enter for 500 chips each, are seated
-on four equal 10,000 stacks, and play twelve scheduled hands with the button
-moving one seat per hand, a 2,000 bet ceiling that opens to 5,000 at the ninth
-scheduled hand, the lowest stack eliminated after hand six, sudden death when
-that boundary ties, and placements paid once at the end.
-
-The Daily Challenge is real too, and its central claim is measured rather than
-described: two independent accounts were dealt the **identical shoe**, card for
-card, from an HMAC-SHA-256 counter stream over a seed that never leaves the
-database.
-
-Before all of this, friends, private tables, presence, Realtime, public
-matchmaking and the whole single-player product and server economy were already
-complete.
-
-| # | Phase | Status |
-|---|-------|--------|
-| 1 | Repository and architecture | ✅ **Done** |
-| 2 | First playable vertical slice | ✅ **Done** |
-| 3 | Complete blackjack engine | ✅ **Done** |
-| 4 | Polished local table | ✅ **Done** — table, persistence, animation (Reanimated, reduced-motion aware), haptics, and as of phase 13 nine originally generated sound cues with call sites |
-| 5 | Learning and strategy | ✅ **Done** — assistance modes, How to Play, Strategy Guide, Decision Drills with spaced repetition |
-| 6 | App shell and career | ✅ **Done** — onboarding, four tabs, Home/Play/Learn/Social, Profile, Stats, Settings, Fair Play, Career map + playable sessions |
-| 7 | Supabase foundation | ✅ **Done** — schema, RLS, seed and 237 pgTAP assertions |
-| 8 | Server-authoritative solo and economy | ✅ **Done** — attacked five ways and clean; 25,000 opening wallet, Recovery Grant, account deletion, server-side statistics and XP all wired and verified against the live stack |
-| 9 | Friends and private tables | ✅ **Done** — friends, presence, private tables seating 2–5 on a shared shoe with the wallet provably untouched, a live table over Realtime, a free reset for a broke seat, and lobby expiry |
-| 10 | Public matchmaking | ✅ **Done** — queue, per-tier allocation, buy-in escrow and cash-out, all verified against the live stack. Chips conserved to the unit |
-| 11 | Tournaments and daily challenge | ✅ **Done** — a real four-player twelve-hand sprint with elimination, sudden death and paid placements; a deterministic daily shoe proved identical across two accounts. Three defects underneath it found and closed |
-| 12 | Leaderboards and cosmetics | ✅ **Done** — four server-recorded boards, decisions graded by the server against the real advisor, and the cosmetic catalogue earnable, equippable and provably inert |
-| 13 | Notifications, audio, polish | ✅ **Done** — a server-written notification pipeline with an honest delivery record, nine generated sound cues, deep links, and an audit that found three screens describing a build from five phases ago |
-| 14 | Quality and production hardening | 🔶 **In progress — session 1 of 6 done**: all 24 cosmetics render and the equipped loadout is live everywhere; original app icon and splash generated, catalogued and photographed on device; onboarding's broken account routing found and fixed. Remaining: rate limiting, network fault behaviour, accessibility audit, CI/EAS/store metadata, final acceptance sweep |
-
-No placeholder or "Coming Soon" routes have been created. Modes that require
-server authority are absent rather than teased.
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run lint` | 0 errors, 32 warnings (unchanged) |
+| `npm test` | **1,412** passing across 67 files |
+| `supabase test db` | **422** assertions across 24 files |
+| `npx vitest run tests/server` | **50** running, not skipped |
+| `supabase db reset` | applies all 32 migrations clean from empty |
 
 ---
 

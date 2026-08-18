@@ -149,3 +149,68 @@ describe("the diagnostic", () => {
     }
   });
 });
+
+/**
+ * What a decision COST, which is the daily board's second tie-break.
+ *
+ * The grade already answered "did this match the chart". Ranking two players who
+ * made the same NUMBER of mistakes needs the other half: how expensive they were.
+ * `evMistakeForDecision` has priced that since the strategy tables were
+ * generated; nothing on the server asked it until the daily entry needed it.
+ *
+ * Millionths of one unit wagered, as an integer, because the column it lands in
+ * is a `bigint` — no floating-point column exists anywhere in the public schema,
+ * and an ordering key computed in floating point can rank two identical records
+ * differently on two machines.
+ */
+describe("what a decision cost", () => {
+  it("charges nothing for playing the chart", () => {
+    const state = tableAt("10S 10D 6H 7C");
+    const graded = (["HIT", "STAND", "DOUBLE", "SURRENDER"] as const)
+      .map((action) => gradeDecision({ mode: "solo", state, seatId: "s1", action }))
+      .filter((grade) => grade.counted);
+
+    const best = graded.find((grade) => grade.optimal);
+    expect(best).toBeDefined();
+    expect(best!.evLostMicros).toBe(0);
+  });
+
+  it("charges a real price for a real mistake", () => {
+    const state = tableAt("10S 10D 6H 7C");
+    const mistakes = (["HIT", "STAND", "DOUBLE", "SURRENDER"] as const)
+      .map((action) => gradeDecision({ mode: "solo", state, seatId: "s1", action }))
+      .filter((grade) => grade.counted && !grade.optimal);
+
+    expect(mistakes.length).toBeGreaterThan(0);
+    // Every wrong play costs something. A mistake priced at zero would be
+    // indistinguishable from the right answer in the tie-break, which is the one
+    // thing this number exists to prevent.
+    for (const mistake of mistakes) {
+      expect(mistake.evLostMicros).toBeGreaterThan(0);
+    }
+  });
+
+  it("is always a non-negative integer", () => {
+    const state = tableAt("10S 10D 6H 7C");
+    for (const action of ["HIT", "STAND", "DOUBLE", "SURRENDER"] as const) {
+      const grade = gradeDecision({ mode: "solo", state, seatId: "s1", action });
+      expect(Number.isInteger(grade.evLostMicros)).toBe(true);
+      expect(grade.evLostMicros).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it("charges nothing for a decision it did not count", () => {
+    const state = tableAt("10S 10D 6H 7C");
+    // A tournament decision, a timeout default and a hand the chart cannot price
+    // all reach the entry as zero rather than as an unknown. Zero is right here:
+    // the tie-break has to be a number, and an ungraded decision must not move
+    // it in either direction.
+    expect(
+      gradeDecision({ mode: "tournament", state, seatId: "s1", action: "STAND" }).evLostMicros,
+    ).toBe(0);
+    expect(
+      gradeDecision({ mode: "solo", state, seatId: "s1", action: "STAND", wasTimeout: true })
+        .evLostMicros,
+    ).toBe(0);
+  });
+});

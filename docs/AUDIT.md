@@ -1,6 +1,7 @@
 # Arc 21 — Audit
 
 Date: 2026-08-15 · cosmetics, app art and onboarding rows updated 2026-08-18 (phase 14, session 1)
+· rate limiting, the authorization surface, migration recovery and the daily tie-breaks updated 2026-08-18 (phase 14, session 2)
 
 An end-to-end check of whether this project is actually where the status
 documents claim it is. Written because a fair question was asked: the server
@@ -85,7 +86,14 @@ a test passed.
 | Registry completeness | **TESTED** | `tests/cosmetics/registry.test.ts` parses the catalogue out of `supabase/seed.sql` and asserts a bijection with the art registry and the key list — a cosmetic added without art, or art orphaned by a removal, fails the suite. Also asserts every slot's fallback is an `unlock_type = default` item |
 | App icon + splash | **RAN** | Generated deterministically (`scripts/generate-app-art.ts`), byte-compare tested (`tests/art`), resolved by `expo config`, written into `Images.xcassets` by prebuild, present in the built `Assets.car` (AppIcon 1024 + multisized, splash logo), photographed on the springboard and at launch. NOT in `npx expo export` — correctly, as the export carries runtime assets only |
 | No gameplay advantage | **TESTED** | Asserted structurally: no gameplay or economy table carries a foreign key to `cosmetics`, so nothing about play can read one |
-| Daily accuracy tie-break | **ABSENT** | The daily board ranks on score then submission time. The specification's accuracy and EV-lost tie-breaks above that are still not implemented — decisions are now graded, but the daily challenge's own per-attempt accuracy is not yet recorded against its entry |
+| Daily accuracy tie-break | **RAN** | Was **ABSENT**: the board ranked on score then submission time. A daily ENTRY now records its own graded decisions and the EV they cost, written in the same transaction as the decision. Measured end to end — a real twenty-hand attempt through the live function recorded `decisions_total > 0`, `decisions_optimal <= decisions_total` and a non-zero integer `ev_lost_micros`. The ORDERING is asserted in `21_daily_tiebreak.test.sql` over six entries differing in one field each, because two accounts playing the identical shoe the identical way cannot separate a tie-break |
+| Rate limiting | **RAN** | Was **ABSENT** — and `docs/SECURITY.md` described it in the present tense. All six actions the specification names are limited, from one table: friend requests, room creation, room joins, matchmaking enrolments, both renames, and game commands outside an active game. Measured over HTTP against the live stack: the 11th room-code guess in a minute returns **429**, the 2nd rename in 30 days returns **429**, and the 31st out-of-game command returns **429/RATE_LIMITED** while a second player's first command is unaffected. 29 pgTAP assertions cover the boundary, the rolling window and per-user isolation |
+| `RATE_LIMITED` rejection code | **RAN** | Was **COMPILES with zero producers** — declared in `CommandRejectionCode`, mapped to a message and to HTTP 429 in `command-errors.ts`, and never thrown by anything since the contract was written. The tenth instance of this project's built-but-never-connected pattern. Now thrown by `game-command`, and asserted over HTTP |
+| Authorization surface | **RAN** | The `anon` role could execute **17** public functions, including all four leaderboards, against a documented rule of one. Not a grant anybody wrote: a new function's default ACL is `EXECUTE TO PUBLIC`, and sixteen migrations wrote `grant … to authenticated` without the matching `revoke … from public`. Narrowed to **1** for `anon` and 63 → **54** for `authenticated`, each survivor traced to an RLS policy, a CHECK constraint or a real `.rpc(` call site |
+| The authorization gate | **RAN** | `20260813121200_hardening.sql`'s DO blocks run once, **13th of 32**, and had not seen anything applied after them — the surface above accumulated behind a gate that had stopped being asked. Now `assert_client_authorization_surface()`, called at migration time AND from pgTAP, with a new mechanical rule that no `public` function may be executable by `PUBLIC`. Proved to FAIL on seven separate breaches before being trusted |
+| RLS audit, all tables | **RAN** | All 34 tables (32 pre-existing plus two new) audited against the live database: RLS enabled on every one, every policy enumerated, every client grant traced to a feature. Recorded per table in `docs/SECURITY.md` with a justification per grant, and asserted mechanically in `20_authorization_surface.test.sql` — six tables take a client write and adding a seventh fails the suite |
+| Room-join refusal | **RAN** | `join_private_room` raised P0001 for a full table and P0002 for an unknown code, so a caller working through six-character codes could tell a real live room from a wrong guess. It now returns no row for every reason a code does not admit you. This is also what makes the join limit real: a raise rolls back the record of the attempt, so a guesser would never be charged. Measured — ten failed guesses are all counted, the eleventh is refused |
+| Migration recovery | **TESTED** | The position for all 32 migrations is written out in `docs/DATABASE.md`: 29 additive DDL, one irreversible `alter type … add value`, two backfills. `22_migration_recovery.test.sql` asserts the three properties recovery actually rests on — every wallet balance equals the sum of its ledger, every `profiles.level` agrees with the function that derives it, and no ledger row refers to an enum label the type has lost |
 | Audio assets | **RAN** | Nine cues generated by `scripts/generate-audio.ts`, 103 KiB, present in the iOS export's `metadata.json`. `tests/audio` re-synthesises each and compares it byte for byte with the committed file, and asserts the ordering — loss quieter than win, win quieter than blackjack, cards and chips quietest of all |
 | Audio call sites | **RAN** | Was **COMPILES with zero call sites** — `playSound` was exported and never once invoked, under a comment claiming the call sites were correct. Nine now: deal, flip, chip, button, three outcomes, tournament advance, friend invite. Played through `every-screen` and `practice-hand` on device |
 | Notification writes | **RAN** | A friend request through the live REST API wrote one row to the RECIPIENT and none to the sender, carrying `from_user_id` and nothing else; accepting wrote `friend_accepted` back and closed the original as read |
@@ -108,6 +116,129 @@ a test passed.
 ---
 
 ## What this audit found and fixed
+
+### The authorization gate had stopped running sixteen migrations ago
+
+`20260813121200_hardening.sql` is the strongest idea in this schema: DO blocks
+that **fail the migration** if a client role gains a privilege it should not
+have. A check that runs on deploy beats a test somebody might not run.
+
+It runs thirteenth of thirty-two. Everything applied after it — friends, rooms,
+matchmaking, the daily challenge, leaderboards, cosmetics, notifications — has
+never been checked by anything. The gate did not weaken. It simply stopped being
+asked, and nothing said so.
+
+Measured against the running database:
+
+```
+gate asserts: anon may execute exactly ONE public function
+reality:      anon could execute SEVENTEEN
+```
+
+including `leaderboard_weekly_xp`, `leaderboard_daily_challenge`,
+`my_leaderboard_position`, `my_strategy_accuracy_progress` and
+`caller_is_room_member`.
+
+The cause is one missing line, and it is a line that is easy to leave out because
+the migration reads correctly without it. A newly created function carries
+Postgres's **default ACL, which is `EXECUTE TO PUBLIC`**. The early migrations
+all wrote
+
+```sql
+revoke execute on function … from public, anon;
+grant  execute on function … to authenticated;
+```
+
+and the later ones wrote only the `grant` — which adds a privilege without
+removing the default one.
+
+Nothing was exploitable through it: the leaderboard store refuses to read a board
+without a session, and every "my …" function derives the caller from `auth.uid()`
+and raises when it is null. But the grant said one thing and the product did
+another, which is the same shape as every other defect in this document.
+
+The fix is not a longer allowlist. It is one mechanical rule —
+**no function in `public` may be executable by `PUBLIC`** — which catches every
+instance of this mistake including the ones nobody has made yet. The gate is now
+a callable function, run at migration time and from pgTAP, and each of its eight
+checks was proved to fail on a real breach before it was trusted.
+
+### `RATE_LIMITED` had a message, an HTTP status, and no producer
+
+The tenth instance of the pattern this document exists to track.
+`CommandRejectionCode` has carried `RATE_LIMITED` since the contract was written.
+`command-errors.ts` maps it to "Too many requests. Try again in a moment." and to
+HTTP 429. `grep` across the whole repository found **no throw site anywhere** —
+the only other matches were the auth store handling Supabase's own 429, which is
+a different thing entirely.
+
+`docs/SECURITY.md` meanwhile described the application's rate limiting in the
+present tense: "Application-level limits cover friend requests per hour, room
+creation per minute and hour, room join attempts per minute…". None of it
+existed. Stale copy in a security document is the same defect as the onboarding
+screen that told players accounts did not exist, and it is worse in kind: it is
+the one a reader is most entitled to rely on.
+
+### A rate limit consumed in the caller's transaction charges nobody for a failed guess
+
+Found while building it, and it changed the design.
+
+Five of the six limited actions charge an attempt that then SUCCEEDS, so
+consuming inside the caller's transaction is fine. A room join is the opposite:
+the attempt worth limiting is the one that FINDS NOTHING, because that limit is
+what makes guessing a six-character code impractical. And an unknown code raised
+— which rolls the whole call back, including the row recording the attempt.
+
+Written that way, `join_private_room` would have had a rate limit that charged
+only successful joins: a guesser's budget would have been infinite, and the
+limit would have existed and enforced nothing. A pgTAP test of the boundary would
+have passed.
+
+`join_private_room` now returns no row rather than raising, so the attempt
+commits and counts. That also closed a small oracle already present: "that table
+is full" told a guesser their code had hit a real live room, while "that table is
+not available" told them it had not. There is now one answer for every reason a
+code does not admit you.
+
+### `create or replace function` silently reverts every later redefinition
+
+Self-inflicted, caught by the integration suite, and worth writing down because
+it will happen again.
+
+Adding a limit to five existing functions meant replacing their bodies. Two of
+them had already been redefined by a LATER migration than the one they were first
+written in — and the first draft copied the earlier version of each:
+
+- `send_friend_request` lost the `notify_user` call that
+  `20260817400000_notification_delivery.sql` added, so a friend request stopped
+  producing a notification. Six integration tests failed and said so.
+- `create_private_room` lost the `expire_stale_rooms()` call that
+  `20260816130000_expire_rooms_on_use.sql` exists entirely to add. **Nothing
+  failed.** No test covers that path, and it would have shipped: abandoned
+  lobbies would have started holding their six-character codes for ever again,
+  silently undoing a whole migration.
+
+The lesson is mechanical. Before redefining a function,
+`grep -l 'create or replace function public.<name>' supabase/migrations/*.sql`
+and start from the LAST file, not the one where it was introduced.
+`19_rate_limits.test.sql` now asserts both calls are still present in their
+function bodies — not behaviour, just that the call is still there, which is
+exactly what a wholesale replacement removes.
+
+### The daily challenge graded every decision and recorded none of them against the attempt
+
+The grading was not the missing part, which is why this stayed ABSENT for a
+phase. `decision-grading.ts` has graded every decision at a ranked table since
+phase 12, `daily_challenge` is in `ACCURACY_ELIGIBLE_MODES`, and every one of
+those decisions went into `player_decision_periods` for the weekly strategy
+board.
+
+But the week bucket mixes in every solo and public-table decision the player made
+that week, so it cannot answer the question the daily board asks. The ENTRY had
+to carry its own figures and carried none. `evMistakeForDecision` — which prices
+exactly what a wrong play cost — had been sitting in the strategy module with one
+caller, a learning drill, since the tables were generated.
+
 
 ### The sound adapter had no call sites at all
 

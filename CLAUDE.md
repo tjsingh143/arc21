@@ -78,6 +78,12 @@ or service credential.
   from oscillators and filtered noise written in this repository. Nothing is
   sampled, bought or borrowed, and `tests/audio` re-synthesises each cue and
   compares it byte for byte with the committed file.
+- **Every rate limit is a row in `public.rate_limit_policies`**, read through
+  `rate_limit_for(action)`. No enforcement point carries a window of its own, and
+  `19_rate_limits.test.sql` asserts none does by pattern-matching the function
+  bodies. Windows ROLL; a refusal is never itself recorded, or the window cannot
+  drain and the limit becomes a ban. The limit is consumed BEFORE the target is
+  looked at, so a refusal cannot differ by target and become a probe.
 - **Competition shape lives in `_shared/session-boundary.ts`**, runs on
   `NEXT_HAND` before the engine deals, and is in the same transaction as the
   command. It changes posted bet limits, seating order and who is sitting out —
@@ -153,7 +159,7 @@ npm run test:coverage                   # per-area gates, not global
 npm run strategy:generate               # regenerate tables after a rules change
 npm run audio:generate                  # re-synthesise the sound palette
 
-supabase db reset && supabase test db   # 355 pgTAP assertions
+supabase db reset && supabase test db   # 422 pgTAP assertions
 supabase functions serve --no-verify-jwt   # the FUNCTION still enforces auth
 
 JAVA_HOME=/opt/homebrew/opt/openjdk maestro test tests/e2e/every-screen.yaml
@@ -303,6 +309,60 @@ that point — and confirm from the failure screenshot rather than guessing, bec
 an empty view-hierarchy dump means Maestro could not read the tree, not that the
 screen was wrong.
 
+**`create or replace function` silently reverts every LATER redefinition.** Five
+functions gained a rate limit this phase, which meant replacing their bodies —
+and two had already been redefined by a later migration than the one that
+introduced them. Copying the earlier version dropped the `notify_user` call from
+`send_friend_request` (six integration tests failed and said so) and the
+`expire_stale_rooms()` call from `create_private_room`, which is the entire
+content of `20260816130000` — **nothing failed for that one**, and abandoned
+lobbies would have started holding their codes for ever again. Before redefining
+anything: `grep -l 'create or replace function public.<name>'
+supabase/migrations/*.sql` and start from the LAST file.
+
+**A new function's default ACL is `EXECUTE TO PUBLIC`.** So
+`grant execute … to authenticated` alone leaves it callable by `anon`, and the
+migration reads as if it did not. Sixteen migrations did this, and `anon` could
+execute seventeen public functions including all four leaderboards. Always write
+the pair:
+
+```sql
+revoke execute on function … from public, anon;
+grant  execute on function … to authenticated;
+```
+
+`public.assert_client_authorization_surface()` now refuses any `public` function
+executable by `PUBLIC`, so this fails the migration rather than the audit.
+
+**A migration-time DO block only ever checks the state at its own position in
+the ordering.** `20260813121200_hardening.sql` is thirteenth of thirty-two and
+had not seen anything applied after it — sixteen migrations of new grants
+accumulated behind a gate that had simply stopped being asked. The checks are now
+a function called from both the migration and pgTAP; **a migration that changes a
+grant should call it as its last line.**
+
+**A rate limit consumed inside the caller's transaction is rolled back by the
+caller's exception.** So a limit on an action whose ABUSE path raises charges
+nobody: `join_private_room` raising on an unknown code would have given a
+code-guesser an unlimited budget, and a boundary test would still have passed. It
+returns no row instead, so the attempt commits and counts. Where the limit itself
+refuses, raising is correct — a refusal must NOT be recorded, or the window never
+drains and the limit becomes a permanent ban.
+
+**PostgREST maps SQLSTATE `PTnnn` to HTTP nnn.** Use `PT429` for a rate-limit
+refusal. The username limit raised `55000`, which PostgREST renders as **HTTP
+500**: a player who renamed twice in a month was told the server had broken.
+
+**pgTAP's `throws_ok` runs its argument through `EXECUTE`, which refuses
+transaction commands.** To assert that a gate fails on a breach, issue the
+`savepoint` and the breach OUTSIDE `throws_ok`, then `rollback to savepoint`
+after it.
+
+**A new table must have a single-column `uuid` primary key and no float
+column.** `00_schema.test.sql` asserts both across the whole schema, so a
+`bigint generated always as identity` key or a `real` column fails a suite that
+looks unrelated to what you changed.
+
 ---
 
 ## Product rules that are easy to get wrong
@@ -314,9 +374,18 @@ screen was wrong.
 - Private tables use isolated session chips — no global wallet in or out. This
   is anti-collusion design, not a shortcut.
 - Tournament decisions are excluded from basic-strategy accuracy, because
-  correct tournament play differs from basic strategy. Currently true by
-  construction: nothing records decision accuracy server-side at all (see the
-  strategy-mount note above), so this must be re-checked when Phase 12 wires it.
+  correct tournament play differs from basic strategy. This was once true "by
+  construction" because nothing recorded accuracy at all; it is now true by an
+  ALLOWLIST — `ACCURACY_ELIGIBLE_MODES` in `_shared/decision-grading.ts` names
+  `solo`, `public_table` and `daily_challenge`, so a new mode counts for nothing
+  until somebody adds it there on purpose.
+- **The daily board's tie-breaks come from the ATTEMPT, not the week bucket.**
+  `player_decision_periods` mixes in every ranked decision of the week, so it
+  cannot answer "who played this challenge better". `daily_entries` carries its
+  own `decisions_total`, `decisions_optimal` and `ev_lost_micros`. EV lost is in
+  millionths as a `bigint` — no floating-point column exists in this schema, and
+  a float ordering key can rank two identical records differently on two
+  machines.
 - **Tournament and daily-challenge stacks are a scoring medium.** A sprint's
   10,000 and a challenge's 5,000 never touch a wallet. The only wallet events are
   the 500 entry fee out, and a prize or the daily reward back in — each through

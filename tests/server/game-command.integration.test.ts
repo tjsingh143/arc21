@@ -1058,6 +1058,177 @@ suite("the daily challenge", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("completed");
   }, 120_000);
+
+  /**
+   * The daily board's tie-breaks are accuracy and then EV lost, and neither can
+   * come from `player_decision_periods` — that bucket mixes in every solo and
+   * public-table decision the player made that week. The ATTEMPT has to carry
+   * its own figures, and until this phase it carried none: the grading ran, the
+   * week bucket was written, and the entry beside it stayed at zero.
+   *
+   * `playOut` stands on every hand, which is wrong often enough to guarantee a
+   * mixture — a run that recorded 100% would prove far less.
+   *
+   * The ORDERING those numbers drive is asserted in
+   * `supabase/tests/21_daily_tiebreak.test.sql`, where each entry's fields can be
+   * chosen. Two accounts playing the identical shoe the identical way produce
+   * identical accuracy, so a real attempt cannot separate the tie-breaks.
+   */
+  it("records the attempt's own accuracy and EV lost against its entry", async () => {
+    const token = signToken(await createUser());
+    const opened = await start(token);
+
+    const played = await playOut(
+      token,
+      opened.body.gameId as string,
+      opened.body.seatId as string,
+      opened.body.publicState as PublicSnapshot,
+    );
+    expect(played.state.phase).toBe("SESSION_COMPLETE");
+
+    const entries = await fetch(
+      `${REST}/daily_entries?select=status,decisions_total,decisions_optimal,ev_lost_micros`,
+      { headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` } },
+    );
+    const rows = (await entries.json()) as Array<{
+      status: string;
+      decisions_total: number;
+      decisions_optimal: number;
+      ev_lost_micros: number;
+    }>;
+
+    const entry = rows[0];
+    expect(entry?.status).toBe("completed");
+
+    // Twenty hands of standing produce a decision on most of them. The exact
+    // count depends on the shoe — a blackjack needs no decision — so this asserts
+    // the relationship rather than a number that would expire with a new seed.
+    expect(entry!.decisions_total).toBeGreaterThan(0);
+    expect(entry!.decisions_optimal).toBeLessThanOrEqual(entry!.decisions_total);
+
+    // Standing on a stiff hand against a high upcard is a real mistake with a
+    // real price, so a run of nothing but STAND cannot cost zero. Zero here would
+    // mean the EV term was never computed — which is exactly the state this test
+    // exists to stop returning to.
+    expect(entry!.ev_lost_micros).toBeGreaterThan(0);
+
+    // An integer, in millionths. No float reaches a column in this schema.
+    expect(Number.isInteger(entry!.ev_lost_micros)).toBe(true);
+  }, 120_000);
+});
+
+/**
+ * The sixth action the specification asks to be rate limited: "game commands
+ * outside an active game".
+ *
+ * This is the Edge Function half of the limiter — the other five run in the
+ * database and are covered by `supabase/tests/19_rate_limits.test.sql`. It has to
+ * be tested here because it cannot be tested there: the charge is applied in a
+ * SEPARATE transaction, after the command's own has rolled back, and that
+ * two-transaction shape only exists in the function.
+ *
+ * `RATE_LIMITED` has been in `CommandRejectionCode` since the contract was
+ * written, with a message and a 429 mapping, and nothing has ever thrown it.
+ */
+suite("game commands outside an active game", () => {
+  it("refuses a caller who keeps naming a table they hold no seat at", async () => {
+    const token = signToken(await createUser());
+    const ghost = crypto.randomUUID();
+
+    const send = () =>
+      call("game-command", token, {
+        gameId: ghost,
+        clientActionId: crypto.randomUUID(),
+        type: "STAND",
+        expectedVersion: 1,
+        clientSentAt: iso(),
+      });
+
+    const codes: string[] = [];
+    for (let attempt = 0; attempt < 31; attempt += 1) {
+      const result = await send();
+      codes.push(`${result.status}:${result.body.code as string}`);
+    }
+
+    // The configured ceiling is thirty a minute. Thirty refusals name the real
+    // reason; the thirty-first stops answering the question at all.
+    expect(codes.slice(0, 30).every((code) => code === "403:NOT_A_PARTICIPANT")).toBe(true);
+    expect(codes[30]).toBe("429:RATE_LIMITED");
+
+    // The refusal describes the caller's own behaviour and nothing about whether
+    // that game id names anything. A rate limit that answered differently for a
+    // real table would be a better session-id oracle than the one the
+    // NOT_A_PARTICIPANT wording exists to avoid.
+    const refused = await send();
+    expect(refused.body.message).toMatch(/Too many requests/);
+    expect(refused.raw).not.toMatch(/game_command_outside_game/);
+  }, 120_000);
+
+  it("charges the limit per player, so one caller cannot lock out another", async () => {
+    const noisy = signToken(await createUser());
+    const quiet = signToken(await createUser());
+    const ghost = crypto.randomUUID();
+
+    for (let attempt = 0; attempt < 31; attempt += 1) {
+      await call("game-command", noisy, {
+        gameId: ghost,
+        clientActionId: crypto.randomUUID(),
+        type: "STAND",
+        expectedVersion: 1,
+        clientSentAt: iso(),
+      });
+    }
+
+    const theirs = await call("game-command", quiet, {
+      gameId: ghost,
+      clientActionId: crypto.randomUUID(),
+      type: "STAND",
+      expectedVersion: 1,
+      clientSentAt: iso(),
+    });
+
+    expect(theirs.status).toBe(403);
+    expect(theirs.body.code).toBe("NOT_A_PARTICIPANT");
+  }, 120_000);
+
+  /**
+   * The happy path must not pay for any of this.
+   *
+   * The check is deliberately on the REJECTION path only — inside the branch
+   * that is about to throw — so a command that lands on a live seat never runs
+   * it. An accepted command that charged the limit would eventually refuse a
+   * player for playing.
+   */
+  it("never charges a command that lands on a live seat", async () => {
+    const token = signToken(await createUser());
+    const opened = await call("create-session", token, {
+      action: "OPEN",
+      clientRequestId: crypto.randomUUID(),
+      tier: "casual",
+      clientSentAt: iso(),
+    });
+    expect(opened.status).toBe(200);
+
+    const gameId = opened.body.gameId as string;
+    let version = (opened.body.publicState as PublicSnapshot).version;
+
+    // Comfortably more commands than the thirty-a-minute ceiling.
+    for (let hand = 0; hand < 40; hand += 1) {
+      const result = await call("game-command", token, {
+        gameId,
+        clientActionId: crypto.randomUUID(),
+        // Legal or not, this reaches the seat — which is the point. An illegal
+        // action is refused by the ENGINE, not by the out-of-game limiter.
+        type: "PLACE_BET",
+        payload: { amount: 20 },
+        expectedVersion: version,
+        clientSentAt: iso(),
+      });
+      expect(result.body.code).not.toBe("RATE_LIMITED");
+      const state = result.body.publicState as PublicSnapshot | undefined;
+      if (state) version = state.version;
+    }
+  }, 120_000);
 });
 
 /**

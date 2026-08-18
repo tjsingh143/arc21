@@ -15,7 +15,7 @@
 import { getLegalActions } from "../../../shared/blackjack/index.js";
 import type { EngineState, PlayerActionType } from "../../../shared/blackjack/index.js";
 import { activeHandOf } from "../../../shared/blackjack/legal-actions.js";
-import { adviseAction, describeStrategyState } from "./strategy/index.ts";
+import { adviseAction, describeStrategyState, evMistakeForDecision } from "./strategy/index.ts";
 
 /**
  * Modes whose decisions count towards strategy accuracy.
@@ -57,6 +57,21 @@ export interface DecisionGrade {
   /** Whether it matched the chart. Meaningless unless `counted`. */
   optimal: boolean;
   /**
+   * What this decision cost, in MILLIONTHS of one unit wagered, measured against
+   * the best action that was actually legal.
+   *
+   * Millionths because the column it lands in is a `bigint`: no floating-point
+   * column exists anywhere in the public schema, and an ordering key computed in
+   * floating point can rank two identical records differently on two machines.
+   *
+   * Zero when the chart prices nothing for this decision — `evMistakeForDecision`
+   * answers null there rather than claiming the play was free, and a tie-break
+   * has to be a number, so the unpriced case contributes nothing rather than
+   * being counted as a mistake. It is the same contract as `unpriced` above: an
+   * unknown is never rendered as a fault.
+   */
+  evLostMicros: number;
+  /**
    * Why it was not counted, for the structured log. Never a card and never the
    * recommended action — a diagnostic that named the right play would be a hint
    * leaking through the logs.
@@ -67,8 +82,12 @@ export interface DecisionGrade {
 const NOT_COUNTED = (skipped: DecisionGrade["skipped"]): DecisionGrade => ({
   counted: false,
   optimal: false,
+  evLostMicros: 0,
   skipped,
 });
+
+/** One unit of EV expressed in the integer scale the database stores. */
+const EV_MICROS = 1_000_000;
 
 /**
  * Grades one action.
@@ -111,12 +130,14 @@ export function gradeDecision(params: {
   });
   if (!strategyState) return NOT_COUNTED("no-hand");
 
+  // The chart is consulted against what was actually available. A "correct"
+  // play the player could not have made is not a mistake on their part.
+  const legalActions = getLegalActions(params.state, params.seatId).actions;
+
   const recommendation = adviseAction({
     rules: params.state.rules,
     state: strategyState,
-    // The chart is consulted against what was actually available. A "correct"
-    // play the player could not have made is not a mistake on their part.
-    legalActions: getLegalActions(params.state, params.seatId).actions,
+    legalActions,
   });
 
   // The advisor declined. Not counted either way: the contract everywhere else in
@@ -124,5 +145,22 @@ export function gradeDecision(params: {
   // the player was wrong".
   if (!recommendation) return NOT_COUNTED("unpriced");
 
-  return { counted: true, optimal: recommendation.action === params.action };
+  /*
+   * What the play cost, against the best action the player could actually have
+   * taken — `recommendation.decision` is the cell the served advice came from,
+   * which under a TOTAL_ROW resolution is the hard/soft row rather than the pair
+   * cell, and grading against a cell the advisor did not use would price a
+   * different decision from the one the player faced.
+   *
+   * Rounded rather than truncated: at six decimal places the difference is
+   * nothing, but rounding is the operation that does not systematically favour
+   * the player.
+   */
+  const evLost = evMistakeForDecision(recommendation.decision, params.action, legalActions);
+
+  return {
+    counted: true,
+    optimal: recommendation.action === params.action,
+    evLostMicros: evLost === null ? 0 : Math.max(0, Math.round(evLost * EV_MICROS)),
+  };
 }

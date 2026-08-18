@@ -54,6 +54,16 @@ export interface RoomsGateway {
 }
 
 const UNREACHABLE = "Could not reach the server, so the table could not be opened.";
+/**
+ * The single answer for every reason a code does not admit you.
+ *
+ * `join_private_room` returns no row — rather than raising a different message
+ * per cause — so that a caller working through six-character codes learns
+ * nothing from the difference between "no such table", "it expired", "it is
+ * full" and "the host has blocked you". This sentence is the client half of
+ * that: one refusal, whatever happened.
+ */
+const NO_SUCH_TABLE = "That table is not available.";
 const SIGNED_OUT =
   "Private tables need an account, so your seat survives a reconnect. Practice stays available without one.";
 
@@ -117,10 +127,16 @@ export function createSupabaseRoomsGateway(
         client.rpc("join_private_room", { p_code: code.replace(/\s/g, "").toUpperCase() }),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      // The server's own wording for a refusal it DID raise — today that is the
+      // rate limit, which says when to try again.
       if (result.error) return { ok: false, reason: "refused", message: result.error.message };
 
       const room = toRoom(result.data);
-      if (!room) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      // No row is a refusal, not a transport failure. The server answers this
+      // way for an unknown code, an expired table, a full one and a block
+      // alike, so telling the player the server was unreachable would be both
+      // wrong and the only place the difference could leak.
+      if (!room) return { ok: false, reason: "refused", message: NO_SUCH_TABLE };
       return { ok: true, room };
     },
 

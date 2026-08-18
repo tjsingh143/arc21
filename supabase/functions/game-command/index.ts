@@ -44,6 +44,7 @@ import {
   readJsonBody,
 } from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
+import { checkRateLimit, consumeRateLimit, OUTSIDE_GAME_ACTION } from "../_shared/rate-limit.ts";
 import { withTransaction, type Tx } from "../_shared/postgres-client.ts";
 import {
   appendEvents,
@@ -55,6 +56,7 @@ import {
   recordAppliedCommand,
   syncSeatRow,
   recordDecisions,
+  recordDailyAttemptDecisions,
   recordHandSettlement,
   syncSessionRow,
   totalChipsAtTable,
@@ -131,6 +133,16 @@ Deno.serve(async (request: Request): Promise<Response> => {
     log.code = rejection.code;
     log.outcome = "rejected";
     log.durationMs = Date.now() - startedAt;
+
+    // A command that named a table the caller holds no live seat at. Charged
+    // here, outside the transaction that just unwound, because a write made
+    // inside it would have unwound with it.
+    if (
+      typeof log.userId === "string" &&
+      (rejection.code === "NOT_A_PARTICIPANT" || rejection.code === "SESSION_CLOSED")
+    ) {
+      await chargeOutsideGame(log.userId, log);
+    }
 
     if (rejection.code === "INTERNAL") {
       // The only place the underlying error's text is recorded. It stays here.
@@ -217,6 +229,44 @@ async function closeCompetition(
   };
 }
 
+/**
+ * The specification's sixth limited action: "game commands outside an active
+ * game".
+ *
+ * Read-only on purpose. It is called from the two branches that are about to
+ * throw, so the transaction it runs in is going to unwind either way — and a
+ * read has nothing to lose by that. An accepted command never reaches it, so
+ * ordinary play pays nothing for this check.
+ *
+ * The attempt itself is charged after the rollback, by `chargeOutsideGame`.
+ */
+async function refuseIfHammering(tx: Tx, userId: string, log: LogFields): Promise<void> {
+  const verdict = await checkRateLimit(tx, userId, OUTSIDE_GAME_ACTION);
+  if (verdict.allowed) return;
+
+  log.retryAfterSeconds = verdict.retryAfterSeconds;
+  throw new CommandError(
+    "RATE_LIMITED",
+    `${OUTSIDE_GAME_ACTION} exhausted; ${verdict.retryAfterSeconds}s remaining`,
+  );
+}
+
+/**
+ * Charges one out-of-game command, in a transaction of its own.
+ *
+ * This runs after the command transaction has rolled back, which is the only
+ * point at which the record can survive. It must never fail the response: the
+ * caller is already being told their command was refused, and a limiter that
+ * turns a 403 into a 500 is worse than no limiter.
+ */
+async function chargeOutsideGame(userId: string, log: LogFields): Promise<void> {
+  try {
+    await consumeRateLimit(userId, OUTSIDE_GAME_ACTION);
+  } catch (error) {
+    logWarn("could not record an out-of-game command", log, String(error));
+  }
+}
+
 async function handle(
   tx: Tx,
   userId: string,
@@ -235,6 +285,7 @@ async function handle(
   // exists. Distinguishing the two would let a modified client enumerate live
   // session ids by timing or by response code.
   if (!locked || !session || !seat) {
+    await refuseIfHammering(tx, userId, log);
     throw new CommandError("NOT_A_PARTICIPANT", `no seat for ${userId} in ${command.gameId}`);
   }
   log.seatId = seat.id;
@@ -254,6 +305,7 @@ async function handle(
   }
 
   if (seat.status === "left" || session.status === "completed" || session.status === "abandoned") {
+    await refuseIfHammering(tx, userId, log);
     throw new CommandError("SESSION_CLOSED", `session ${command.gameId} is ${session.status}`);
   }
 
@@ -385,6 +437,19 @@ async function handle(
       optimal: grade.optimal ? 1 : 0,
       at: now,
     });
+
+    // The daily board's tie-breaks are accuracy and then EV lost, and neither can
+    // come from the week bucket above — that one mixes in every solo and
+    // public-table decision the player made this week. The attempt carries its
+    // own counters, written here, in the same transaction as the decision.
+    if (session.mode === "daily_challenge") {
+      await recordDailyAttemptDecisions(tx, {
+        gameId: command.gameId,
+        total: 1,
+        optimal: grade.optimal ? 1 : 0,
+        evLostMicros: grade.evLostMicros,
+      });
+    }
   }
   if (grade && !grade.counted && grade.skipped) log.decisionSkipped = grade.skipped;
 
