@@ -299,6 +299,16 @@ and whether either player has blocked the other. The refusal wording is
 deliberately the same for all of those, so a link cannot be used to probe whether
 a table exists.
 
+**A password-recovery code is not a session, and only GoTrue verifies it.**
+`arc21://auth/recovery`'s `code` query parameter is a one-time PKCE
+authorization code the client never inspects, decodes or trusts — it is handed
+straight to `exchangeCodeForSession`, and the server rejects a used, expired or
+mismatched one (`RECOVERY_LINK_INVALID`) rather than the client guessing at
+its validity. `additional_redirect_urls` in `supabase/config.toml` lists this
+exact string, not a `arc21://**` glob, so GoTrue itself refuses to redirect a
+recovery flow anywhere else — the allowlist is what stops the link being
+retargeted, not client-side handling of wherever it happens to land.
+
 **The push sender is service-role only.** `send-notifications` reads other
 players' notification titles and bodies by design, so a signed-in player's token
 is refused as firmly as no token at all. The comparison against the service key

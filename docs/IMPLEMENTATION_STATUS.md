@@ -4,13 +4,153 @@
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.
 
-Last updated: 2026-08-18 (phase 14, session 2)
+Last updated: 2026-08-21 (phase 14, session 3)
 
 ---
 
 ## Current phase
 
-**Phase 14, session 2 of 6: security hardening.**
+**Phase 14, session 3 of 6: resilience and network faults.**
+
+The specification names four fault scenarios and requires each implemented
+explicitly. Three were genuinely fixed or newly proved this session; one — no
+internet at launch — was verified by code inspection rather than re-driven
+through the simulator, and that gap is stated below rather than papered over.
+
+**Server unavailable / connection lost mid-hand.** `src/lib/supabase/with-timeout.ts`
+bounded one call; nothing retried, and a silent failure and a server refusal
+rendered as the same generic notice. Both fixed:
+
+- `src/lib/supabase/with-retry.ts` — bounded exponential backoff (three
+  attempts, ~0.4s then ~0.8s apart, equal jitter from the same CSPRNG the shoe
+  uses). Retry is a property of the FAILURE, never of the call: only a
+  `reason: "unreachable"` outcome retries, a server refusal (including
+  `RATE_LIMITED`) never does, and `clientActionId` is minted once per intent
+  outside the retry loop so a retried attempt cannot become a second bet. The
+  gateway now distinguishes a parsed server rejection from true silence by
+  reading the rejection envelope off the `Response` `functions.invoke` hands
+  back on error — a 503 with the Edge runtime down, a captive portal's HTML, or
+  a body that fails the schema are all "unreachable", never guessed as
+  "refused".
+- `online-table-store.ts` gained a `connection` field (`live` / `reconnecting`)
+  kept deliberately separate from `status`: a reconnecting client still renders
+  its last snapshot — blanking the felt would hide the cards, the wager and
+  whose turn it was — but every command control disables, and the banner states
+  the two things a player cannot see for themselves: the hand has not stopped,
+  and the server will stand and decline insurance by default if this seat's
+  turn passes. The three-second poll passes `retry: false` explicitly, so a
+  struggling server never sees several backoff loops stacked on its own poll
+  cadence; a command in flight fires `onRetry` from its FIRST silent attempt
+  so the banner appears before the whole backoff has run out, not after.
+
+  This was **found mid-session, not designed up front**: the previous session
+  left the retry/backoff machinery built and typechecking cleanly (`npx tsc
+  --noEmit` failed on a missing `connection` field in the store's initial
+  state — the tree was NOT green at this session's baseline check) with the
+  connection state scaffolded but never wired into `enter`/`refresh`/
+  `lockBet`/`act`/`nextHand`, and one existing test asserting the OLD,
+  pre-this-session behaviour (a generic notice on a silent poll failure).
+  Finished the wiring, updated that test to assert the specification's actual
+  behaviour with the reasoning written into the test itself, and added
+  coverage for the poll-recovery and command-retry paths. 27 tests across
+  `tests/table/online-table-store.test.ts` and the new
+  `tests/table/with-retry.test.ts`.
+
+**Reconnect and stale-version recovery**, believed working, now proved against
+the running stack rather than reasoned about from the code
+(`tests/server/realtime.integration.test.ts`): a second client subscribed to
+`game:<gameId>` and never polled or sent a command received the host's
+`PLACE_BET` over its channel at the exact new version — the "reconnect"
+mechanism, demonstrated by a client that only listens. In the same run, that
+client's own command at its now-stale version returned `status: "stale"` with
+the authoritative snapshot and applied nothing — "stale versions recover".
+Real output pasted in the session report.
+
+**Malformed room code**, typed rather than a deep link: `app/table/lobby.tsx`
+already called `looksLikeRoomCode` before any request — verified against the
+code, not assumed, and given regression coverage in
+`tests/rooms/rooms-store.test.ts`, which had no tests at all before this
+session.
+
+**The password-reset deep link — genuinely broken, not merely unhandled.**
+`requestPasswordReset` called `resetPasswordForEmail` with no `redirectTo`, so
+GoTrue fell back to `site_url` (`http://127.0.0.1:3000`, a URL this app never
+serves) — the email sent, and looked sent, and its link pointed nowhere the
+app could catch. Fixed with `PASSWORD_RECOVERY_REDIRECT_URL` in
+`supabase-auth-adapter.ts`, matching the exact string
+`supabase/config.toml`'s `additional_redirect_urls` already carried from the
+previous session's work. `app/auth/recovery.tsx` is the new route — a literal
+`auth/` directory, not the `(auth)` route GROUP `sign-in.tsx` lives in, because
+this path is registered by exact match with Supabase and cannot be renamed
+unilaterally. It follows the same deep-link discipline as
+`app/room/[code].tsx`: a missing code is refused locally with no request, a
+server-side error on the URL is shown as the server's own reason, and a good
+code drives `completePasswordReset` (new on `AuthAdapter`) — `exchangeCodeForSession`
+then `updateUser`, with a new `RECOVERY_LINK_INVALID` failure code for a used,
+expired or foreign one.
+
+Proved end to end against the local stack, not merely typechecked:
+`tests/server/password-recovery.integration.test.ts` requests a real reset,
+reads the real email from Mailpit, follows the real verify link (capturing its
+redirect rather than fetching an `arc21://` URL, which no HTTP client can
+open), exchanges the code, sets a new password, and confirms it by signing in
+— the OLD password refused, the NEW one accepted. Building this test caught a
+second, sharper mistake: the test's first Supabase client did not set
+`flowType: "pkce"`, so the redirect came back as an implicit-flow hash
+fragment (`#access_token=…`) instead of PKCE's `?code=…` — a real difference in
+server behaviour driven entirely by client configuration, and a reminder that
+a test client must mirror the real client's auth options, not just its URL and
+key.
+
+**No internet at launch** — verified by reading the code across the gateway
+pattern shared by the table, rooms, and friends features (each classifies a
+failure into `not-configured` / `signed-out` / `unreachable` / `refused`, and
+every consuming screen renders a stated "unavailable" note) and confirming
+Practice and the Strategy Guide have zero Supabase imports. **Not re-driven
+through the simulator with the stack stopped** — the weakest-verified of the
+four scenarios this session, and left that way rather than claimed RAN.
+
+**`tests/e2e/practice-resume.yaml` reconfirmed still flaky**, same failure as
+previously diagnosed: the `.*4,900.*` bankroll assertion after a kill/relaunch
+times out while every step before it — including the kill and relaunch
+themselves — completes. Not re-attempted against a release build this session
+(EAS/production builds are session 5's territory). It was already excluded
+from the standard three-flow gate by omission — no script anywhere in this
+repository globs `tests/e2e/*.yaml` — and that exclusion is now stated
+explicitly in the flow's own header and in `docs/AUDIT.md`, not left implicit.
+
+Measured this session, stack live throughout, freshly reset before the final
+run:
+
+| Check | Result |
+|---|---|
+| `npx tsc --noEmit` | clean |
+| `npm run lint` | 0 errors, 32 warnings (identical count to before this session) |
+| `npm test` | **1,439** passing across 70 files (stack live, so `tests/server` ran within it) |
+| `npm run test:coverage` | 1,363 across 65 files, all per-area gates met |
+| `supabase test db` | **422** assertions across 23 files, from a clean reset |
+| `npx vitest run tests/server` | **52** running, not skipped |
+| `supabase db reset` | applies all 32 migrations clean from empty |
+| Maestro `every-screen.yaml` | exit 0, 84 steps |
+| Maestro `practice-hand.yaml` | exit 0 |
+| Maestro `career-node.yaml` | exit 0, all 20 hand iterations, stars progressed |
+| Maestro `practice-resume.yaml` | **fails**, reconfirmed — see above |
+
+One Maestro-harness lesson from this session, worth carrying forward: **an
+exit code alone is not proof a flow ran.** The first `every-screen.yaml`
+attempt exited 0 after the simulator had shut down between runs — Maestro
+reported "0 devices connected" and exited cleanly rather than failing loudly.
+The tell was the step count (0 `COMPLETED` lines instead of ~84), not the exit
+code. Re-booting the simulator before each subsequent run and checking the
+step-by-step log, not just the process exit status, is what caught it.
+
+Same phase 14 session 2 also documented: load must be checked and stayed under
+control throughout — one every-screen retry was deliberately delayed with a
+load-average wait (peaked past 40 mid-session from ordinary desktop activity,
+not a leak this session created) before running, per the standing rule that
+Maestro above load ~12 is not to be trusted.
+
+---
 
 Rate limiting is built. It was named in the specification's acceptance criteria,
 described in `docs/SECURITY.md` in the present tense, and **did not exist** —

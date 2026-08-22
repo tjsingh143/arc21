@@ -2,6 +2,7 @@
 
 Date: 2026-08-15 · cosmetics, app art and onboarding rows updated 2026-08-18 (phase 14, session 1)
 · rate limiting, the authorization surface, migration recovery and the daily tie-breaks updated 2026-08-18 (phase 14, session 2)
+· network faults, reconnect, stale-version recovery and the password-reset deep link updated 2026-08-21 (phase 14, session 3)
 
 An end-to-end check of whether this project is actually where the status
 documents claim it is. Written because a fair question was asked: the server
@@ -112,6 +113,14 @@ a test passed.
 | Animation tone | **TESTED** | A halo only for a blackjack and a subtle glow only for a win; a loss gets a label and nothing else — no flash, no shake. Removed entirely under Reduce Motion, and the badge's text renders in the same pass whatever the animation is doing |
 | Daily Challenge reminder | **COMPILES** | Scheduled on the device rather than pushed, so the Settings toggle governs something real rather than a kind nothing writes. The scheduling call is not exercised on a simulator — it needs granted permission, which needs a push-capable build |
 | Performance | **RAN** | Engine hot path measured at 776 µs per hand and 195 µs per command over 5,000 hands; iOS export is 5.9 MB of bytecode and 224 KB of assets, of which 103 KB is audio |
+| Bounded backoff on the table gateway | **TESTED** | `retryWhile` retries only `unreachable` outcomes (never a refusal — `RATE_LIMITED` included), mints `clientActionId` once per intent outside the retry loop, and is driven with injected `sleep`/`jitter` seams so `tests/table/with-retry.test.ts` never actually waits. The three-second poll passes `retry: false` explicitly, so a struggling server never sees several backoff loops stacked on top of its own poll cadence |
+| Connection lost mid-hand | **RAN** | `online-table-store.ts`'s `connection` state (`live` / `reconnecting`) is orthogonal to `status`: the last snapshot stays on screen, command controls (`ActionDock`, `BettingBar`, Next hand) disable, and the reconnect banner states the server's clock is still running and what it will do by default — never a generic "could not reach" notice for silence. Unit-proved for the poll and for a command's first silent attempt (`tests/table/online-table-store.test.ts`); the server side of "the hand continues" is the `RESOLVE_TIMEOUT` behaviour already proved elsewhere in this table |
+| Reconnect (a listening-only client) | **RAN** | A second client subscribed to `game:<gameId>` and never polled or sent a command; the host's `PLACE_BET` arrived on its channel with the exact new version, over the real local Realtime server. `tests/server/realtime.integration.test.ts`, output pasted in phase 14 session 3's report |
+| Stale versions recover | **RAN** | In the same live run: the second client's command at the version it started with (now one behind) returned `status: "stale"` with the authoritative snapshot at the new version, nothing applied. Joins the existing single-client stale-version and 19-way-race coverage in `tests/server/game-command.integration.test.ts` |
+| Malformed room code (typed) | **TESTED** | `app/table/lobby.tsx`'s `joinRoom` already called `looksLikeRoomCode` before any request — verified, not assumed, and now regression-tested in `tests/rooms/rooms-store.test.ts`: a too-short code and a code containing an excluded character (O/0/I/1) both send zero requests; a well-formed one sends exactly one, uppercased |
+| Password reset — the deep link | **RAN** | Was genuinely broken: `resetPasswordForEmail` carried no `redirectTo`, so GoTrue fell back to `site_url` — a web URL this app never serves — and no route existed for the link regardless. Both fixed and proved end to end against the local Mailpit in `tests/server/password-recovery.integration.test.ts`: request → real email → real verify link → real PKCE redirect to `arc21://auth/recovery?code=…` → `exchangeCodeForSession` → `updateUser` → the OLD password refused, the NEW one signs in |
+| Password reset — the app route | **RAN** | `app/auth/recovery.tsx` follows the deep-link discipline `app/room/[code].tsx` set: a missing code is refused locally with no request, a server-side `error`/`error_code` on the URL is shown as the server's own reason, and a good code drives `completePasswordReset` through the auth store. `RECOVERY_LINK_INVALID` added to `AuthFailureCode` for a used/expired/foreign code, tested in `tests/auth/auth-store.test.ts` |
+| No internet at launch | **RAN** (partial) | Verified by code inspection across the gateway pattern shared by the table, rooms and friends features — each classifies a failure into `not-configured` / `signed-out` / `unreachable` / `refused` and every consuming screen renders a stated "unavailable" note rather than hanging or crashing. Practice and the Strategy Guide have zero Supabase imports, confirmed by grep. Not separately re-driven through the simulator with the stack stopped this session — see the report for what that would still take |
 
 ---
 
@@ -655,6 +664,13 @@ Recorded here so nothing above is read as stronger than it is.
   server.
 - **`practice-resume.yaml` fails under Maestro** against a dev build. Resume
   itself is verified by direct observation; the flow races Metro's reload.
+  Reconfirmed 2026-08-21 (phase 14 session 3): same assertion (`.*4,900.*`
+  after relaunch), same timeout, every step before it — including the kill and
+  relaunch — completed. Not re-attempted against a release build this session
+  (EAS/production builds are session 5's scope). Excluded from the standard
+  three-flow gate by omission: no script in this repository globs
+  `tests/e2e/*.yaml`, and every documented "how to run E2E" list names the
+  three flows explicitly and never this one.
 - **The local database has been wiped at least once** by a container restart,
   which invalidated an earlier "pgTAP passing" claim until it was re-applied.
   Re-run `supabase db reset` before trusting any database result.

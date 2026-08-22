@@ -32,6 +32,13 @@ export type AuthFailureCode =
   | "USERNAME_UNAVAILABLE"
   | "WEAK_PASSWORD"
   | "INVALID_EMAIL"
+  /**
+   * The password-recovery deep link is missing its code, or the code was
+   * rejected — already used, expired, or issued to a different device's PKCE
+   * verifier. Distinct from `INVALID_CREDENTIALS`: nothing about a password
+   * was tried, so the same "does not match an account" copy would be wrong.
+   */
+  | "RECOVERY_LINK_INVALID"
   /** New registrations are closed server-side. */
   | "SIGNUP_DISABLED"
   | "ACCOUNT_DISABLED"
@@ -59,6 +66,8 @@ export const AUTH_FAILURE_MESSAGES: Record<AuthFailureCode, string> = {
   USERNAME_UNAVAILABLE: "That username is taken or not available.",
   WEAK_PASSWORD: "That password is too easy to guess. Try a longer one.",
   INVALID_EMAIL: "That does not look like an email address.",
+  RECOVERY_LINK_INVALID:
+    "This reset link is invalid or has expired. Request a new one from Sign in.",
   SIGNUP_DISABLED: "New accounts are closed at the moment.",
   ACCOUNT_DISABLED: "This account is not available. Contact support if that is unexpected.",
   NOT_CONFIGURED:
@@ -142,6 +151,15 @@ export function classifyAuthError(error: unknown): AuthFailure {
       return authFailure("SIGNUP_DISABLED");
     case "user_banned":
       return authFailure("ACCOUNT_DISABLED");
+    // GoTrue's PKCE code-exchange failures: the code was already used, the
+    // OTP behind it expired before it was clicked, or `flow_state` (which
+    // holds the code verifier) was not found — all mean the same thing to a
+    // player: this link no longer works.
+    case "otp_expired":
+    case "bad_code_verifier":
+    case "flow_state_expired":
+    case "flow_state_not_found":
+      return authFailure("RECOVERY_LINK_INVALID");
     default:
       break;
   }

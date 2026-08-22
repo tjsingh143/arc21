@@ -15,6 +15,17 @@
 # actually matters to a player: kill the app with chips on the felt, reopen it,
 # and the same hand is still there.
 #
+# RECONFIRMED 2026-08-21 (phase 14, session 3), same failure, same place: the
+# `.*4,900.*` assertion after relaunch times out — every step before it,
+# including the bet and the kill/relaunch itself, completed. This run's
+# artefacts are at ~/.maestro/tests/2026-08-21_235442. Not re-attempted with a
+# release build this session — EAS/production builds are session 5's scope —
+# so the fix remains: re-check against a release build before spending more
+# time on the dev-build timing. This flow stays OUT of the three-flow standard
+# gate (every-screen / practice-hand / career-node); nowhere in this repo
+# globs tests/e2e/*.yaml, so it is excluded by omission, not by a suppressed
+# failure.
+#
 # It is also the flow that catches a whole class of regression the unit tests
 # cannot see — a storage layer that fails to initialise on device, or hydration
 # that hangs and leaves the table blank forever. Both have happened here.

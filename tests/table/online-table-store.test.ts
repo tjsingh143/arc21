@@ -129,6 +129,7 @@ beforeEach(() => {
   setTableGateway(null);
   useOnlineTableStore.setState({
     status: { kind: "idle" },
+    connection: { kind: "live" },
     pending: false,
     stagedBet: 0,
     notice: null,
@@ -271,7 +272,7 @@ describe("commands", () => {
 });
 
 describe("a failed poll", () => {
-  it("leaves the table on screen rather than tearing it down", async () => {
+  it("leaves the table on screen and shows reconnecting, not a notice", async () => {
     const spy = gateway([
       { ok: true, state: tableState(), events: [] },
       { ok: false, reason: "unreachable", message: "Could not reach the table." },
@@ -284,7 +285,101 @@ describe("a failed poll", () => {
     // The hand continues on the server; blanking the screen would be a lie
     // about that, and the next poll may well succeed.
     expect(useOnlineTableStore.getState().status.kind).toBe("at-table");
-    expect(useOnlineTableStore.getState().notice).toMatch(/could not reach/i);
+    // Silence is a connection STATE, not a notice — the specification requires
+    // the two kept apart, because a refusal and a lost connection mean opposite
+    // things for whether the player can act again immediately. The reconnect
+    // banner (read from `connection`) already says more than a generic notice
+    // would, so `notice` stays null rather than duplicating it.
+    expect(useOnlineTableStore.getState().connection).toEqual({
+      kind: "reconnecting",
+      message: expect.stringMatching(/hand has not stopped/i),
+    });
+    expect(useOnlineTableStore.getState().notice).toBeNull();
+  });
+
+  it("does not retry inside the poll itself", async () => {
+    const spy = gateway([
+      { ok: true, state: tableState(), events: [] },
+      { ok: false, reason: "unreachable", message: "Could not reach the table." },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().refresh();
+
+    // Exactly one snapshot call for `enter` and one for `refresh` — the poll is
+    // already a retry loop on its own three-second cadence, so stacking the
+    // gateway's backoff inside it would leave several polls in flight at once
+    // against a server that is already struggling.
+    expect(spy.recorded.commands).toHaveLength(0);
+  });
+
+  it("returns to live the moment a poll lands again", async () => {
+    const spy = gateway([
+      { ok: true, state: tableState(), events: [] },
+      { ok: false, reason: "unreachable", message: "Could not reach the table." },
+      { ok: true, state: tableState({ version: 5 }), events: [] },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().refresh();
+    expect(useOnlineTableStore.getState().connection.kind).toBe("reconnecting");
+
+    await useOnlineTableStore.getState().refresh();
+
+    // A successful poll is the only signal a reconnecting client gets that it
+    // is back in touch — there is nothing else to observe silence ending on.
+    expect(useOnlineTableStore.getState().connection).toEqual({ kind: "live" });
+  });
+
+  it("keeps the connection live for a refusal, which is the server plainly answering", async () => {
+    const spy = gateway([
+      { ok: true, state: tableState(), events: [] },
+      { ok: false, reason: "refused", message: "That move was not accepted." },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().refresh();
+
+    expect(useOnlineTableStore.getState().connection).toEqual({ kind: "live" });
+    expect(useOnlineTableStore.getState().notice).toMatch(/not accepted/i);
+  });
+});
+
+describe("connection lost mid-command", () => {
+  it("shows reconnecting from the first silent attempt, before backoff finishes", async () => {
+    const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    let sawReconnecting = false;
+    // A gateway whose every attempt is silent, so `retryWhile` exhausts its
+    // policy and reports `unreachable` at the end — `act` awaits that whole
+    // sequence, which is why `pending` alone already disables controls for its
+    // entire duration.
+    setTableGateway({
+      kind: "fake",
+      subscribe: () => () => undefined,
+      snapshot: async () => ({ ok: true, state: tableState(), events: [] }),
+      command: async (_gameId, _command, options) => {
+        options?.onRetry?.();
+        sawReconnecting = useOnlineTableStore.getState().connection.kind === "reconnecting";
+        return { ok: false, reason: "unreachable", message: "Could not reach the table." };
+      },
+    });
+
+    await useOnlineTableStore.getState().act("STAND");
+
+    expect(sawReconnecting).toBe(true);
+    expect(useOnlineTableStore.getState().connection.kind).toBe("reconnecting");
+    // A rejection is never invented: the last known table stays exactly as the
+    // server last confirmed it, at the version it was already at.
+    const status = useOnlineTableStore.getState().status;
+    expect(status.kind).toBe("at-table");
+    if (status.kind !== "at-table") throw new Error("unreachable");
+    expect(status.state.version).toBe(4);
   });
 });
 

@@ -27,6 +27,14 @@ export interface BettingBarProps {
   onClear: () => void;
   onRepeat: () => void;
   onLock: () => void;
+  /**
+   * True while the LOCK_BET command is in flight, or the table is reconnecting.
+   *
+   * Chip taps stay live even then — they only stage a LOCAL amount and reach
+   * the server on Deal — but Deal itself must not fire a second command onto
+   * one already in flight, or into a connection that is currently silent.
+   */
+  pending?: boolean;
 }
 
 export function BettingBar({
@@ -38,6 +46,7 @@ export function BettingBar({
   onClear,
   onRepeat,
   onLock,
+  pending = false,
 }: BettingBarProps) {
   const bounds = legal.betBounds;
 
@@ -146,6 +155,7 @@ export function BettingBar({
           onPress={deal}
           size="medium"
           disabled={!legal.canLockBet}
+          pending={pending}
           testID="bet-deal"
         />
       </View>

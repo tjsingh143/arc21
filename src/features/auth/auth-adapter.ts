@@ -101,6 +101,15 @@ export interface AuthAdapter {
   requestPasswordReset(email: string): Promise<AuthVoidResult>;
 
   /**
+   * Completes a reset started by `requestPasswordReset`, from the deep link's
+   * own `code` — never from anything the player typed. Establishes a session
+   * scoped to this reset and sets the new password within it; a used, expired
+   * or foreign code fails here as `RECOVERY_LINK_INVALID` rather than
+   * appearing to succeed.
+   */
+  completePasswordReset(code: string, newPassword: string): Promise<AuthVoidResult>;
+
+  /**
    * Reads the handle the server actually assigned.
    *
    * Separate from `signUp` because it needs a session: the row is created by a
@@ -139,6 +148,7 @@ export function createUnconfiguredAuthAdapter(failure: AuthFailure): AuthAdapter
     signOut: refuseVoid,
     deleteAccount: refuseVoid,
     requestPasswordReset: refuseVoid,
+    completePasswordReset: refuseVoid,
     fetchAssignedUsername: async () => null,
     onAuthStateChange: () => () => {},
   };

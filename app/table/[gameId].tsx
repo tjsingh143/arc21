@@ -46,6 +46,7 @@ export default function SharedTable() {
   const seatId = typeof params.seatId === "string" ? params.seatId : null;
 
   const status = useOnlineTableStore((state) => state.status);
+  const connection = useOnlineTableStore((state) => state.connection);
   const pending = useOnlineTableStore((state) => state.pending);
   const stagedBet = useOnlineTableStore((state) => state.stagedBet);
   const notice = useOnlineTableStore((state) => state.notice);
@@ -101,6 +102,14 @@ export default function SharedTable() {
     () => (status.kind === "at-table" ? status.state.legalActions[status.seatId] : undefined),
     [status],
   );
+
+  /*
+   * A command already in flight, or the table currently unreachable: either
+   * way, a new command must not be sent. Kept as one flag at the call sites
+   * below rather than two separate checks, because the reason does not change
+   * what a control does — it stays disabled either way.
+   */
+  const controlsDisabled = pending || connection.kind === "reconnecting";
 
   if (!gameId || !seatId) {
     return (
@@ -219,7 +228,17 @@ export default function SharedTable() {
         ) : null}
       </View>
 
-      {notice ? (
+      {connection.kind === "reconnecting" ? (
+        /*
+         * Distinct from `notice` on purpose. This is a CONNECTION state, not a
+         * one-off refusal — it says the hand has not stopped and what the
+         * server will do if this seat's turn passes, which a generic error
+         * message does not. See `afterFailure` in online-table-store.ts.
+         */
+        <AppText variant="body" color="warning" testID="table-reconnecting">
+          {connection.message}
+        </AppText>
+      ) : notice ? (
         <AppText variant="body" color="warning" testID="table-notice">
           {notice}
         </AppText>
@@ -244,9 +263,14 @@ export default function SharedTable() {
           onClear={clearBet}
           onRepeat={() => undefined}
           onLock={() => void lockBet()}
+          pending={controlsDisabled}
         />
       ) : myTurn && legal ? (
-        <ActionDock legal={legal} onAction={(action) => void act(action)} pending={pending} />
+        <ActionDock
+          legal={legal}
+          onAction={(action) => void act(action)}
+          pending={controlsDisabled}
+        />
       ) : legal?.canStartNextHand ? (
         /*
          * The engine parks at HAND_COMPLETE deliberately, so a settlement is
@@ -257,7 +281,7 @@ export default function SharedTable() {
           label="Next hand"
           testID="table-next-hand"
           accessibilityHint="Starts the next round for everyone at this table"
-          disabled={pending}
+          disabled={controlsDisabled}
           onPress={() => void nextHand()}
         />
       ) : (

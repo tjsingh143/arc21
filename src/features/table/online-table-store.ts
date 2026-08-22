@@ -180,13 +180,16 @@ function statusForFailure(failure: TableFailure): OnlineTableStatus {
 
 export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => ({
   status: { kind: "idle" },
+  connection: LIVE,
   pending: false,
   stagedBet: 0,
   notice: null,
   lastEvents: EMPTY_EVENTS,
 
   enter: async (gameId, seatId) => {
-    set({ status: { kind: "loading" }, notice: null });
+    // A fresh entry starts live even if a previous table left this reconnecting —
+    // there is no hand to reconnect to yet.
+    set({ status: { kind: "loading" }, connection: LIVE, notice: null });
     const read = await activeTableGateway().snapshot(gameId);
     if (!read.ok) {
       set({ status: statusForFailure(read) });
@@ -224,15 +227,23 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     const current = get().status;
     if (current.kind !== "at-table") return;
 
-    const read = await activeTableGateway().snapshot(current.state.gameId);
+    // The poll is already a retry loop running every three seconds — stacking
+    // the gateway's own backoff inside it would leave several polls in flight
+    // at once against a server that is already struggling. See TableCallOptions.
+    const read = await activeTableGateway().snapshot(current.state.gameId, { retry: false });
     if (!read.ok) {
       // A failed poll is not a reason to tear the table down — the last known
       // snapshot stays on screen and the next poll tries again.
-      set({ notice: read.message });
+      const { connection, notice } = afterFailure(read);
+      set({ connection, notice });
       return;
     }
     set({
       status: { kind: "at-table", state: read.state, seatId: current.seatId },
+      // A poll that lands is how a reconnecting client discovers it is live
+      // again — there is no other signal, since the poll itself is silent
+      // on success.
+      connection: LIVE,
       notice: null,
       /*
        * A poll deliberately carries NO events, and must clear them.
@@ -276,32 +287,47 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     }
 
     set({ pending: true, notice: null });
+    // Fires the moment an attempt inside EITHER command comes back silent, so
+    // the banner appears from the first failure rather than after the whole
+    // backoff for both commands has run out.
+    const onRetry = () => set({ connection: RECONNECTING });
+
     // Two commands, in order: the bet must be recorded before it is locked.
-    const placed = await activeTableGateway().command(current.state.gameId, {
-      type: "PLACE_BET",
-      expectedVersion: current.state.version,
-      payload: { amount: staged },
-    });
+    const placed = await activeTableGateway().command(
+      current.state.gameId,
+      { type: "PLACE_BET", expectedVersion: current.state.version, payload: { amount: staged } },
+      { onRetry },
+    );
     if (!placed.ok) {
-      set({ pending: false, notice: placed.message });
+      const { connection, notice } = afterFailure(placed);
+      set({ pending: false, connection, notice });
       return;
     }
 
-    const locked = await activeTableGateway().command(current.state.gameId, {
-      type: "LOCK_BET",
-      expectedVersion: placed.state.version,
-      payload: {},
-    });
+    const locked = await activeTableGateway().command(
+      current.state.gameId,
+      { type: "LOCK_BET", expectedVersion: placed.state.version, payload: {} },
+      { onRetry },
+    );
+    if (!locked.ok) {
+      const { connection, notice } = afterFailure(locked);
+      set({
+        pending: false,
+        stagedBet: 0,
+        connection,
+        status: { kind: "at-table", state: placed.state, seatId: current.seatId },
+        notice,
+        lastEvents: placed.events,
+      });
+      return;
+    }
     set({
       pending: false,
       stagedBet: 0,
-      status: {
-        kind: "at-table",
-        state: locked.ok ? locked.state : placed.state,
-        seatId: current.seatId,
-      },
-      notice: locked.ok ? null : locked.message,
-      lastEvents: locked.ok ? locked.events : placed.events,
+      connection: LIVE,
+      status: { kind: "at-table", state: locked.state, seatId: current.seatId },
+      notice: null,
+      lastEvents: locked.events,
     });
   },
 
@@ -310,18 +336,20 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     if (current.kind !== "at-table" || get().pending) return;
 
     set({ pending: true, notice: null });
-    const result = await activeTableGateway().command(current.state.gameId, {
-      type: action,
-      expectedVersion: current.state.version,
-      payload: {},
-    });
+    const result = await activeTableGateway().command(
+      current.state.gameId,
+      { type: action, expectedVersion: current.state.version, payload: {} },
+      { onRetry: () => set({ connection: RECONNECTING }) },
+    );
 
     if (!result.ok) {
-      set({ pending: false, notice: result.message });
+      const { connection, notice } = afterFailure(result);
+      set({ pending: false, connection, notice });
       return;
     }
     set({
       pending: false,
+      connection: LIVE,
       status: { kind: "at-table", state: result.state, seatId: current.seatId },
       lastEvents: result.events,
     });
@@ -332,19 +360,21 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     if (current.kind !== "at-table" || get().pending) return;
 
     set({ pending: true, notice: null });
-    const result = await activeTableGateway().command(current.state.gameId, {
-      type: "NEXT_HAND",
-      expectedVersion: current.state.version,
-      payload: {},
-    });
+    const result = await activeTableGateway().command(
+      current.state.gameId,
+      { type: "NEXT_HAND", expectedVersion: current.state.version, payload: {} },
+      { onRetry: () => set({ connection: RECONNECTING }) },
+    );
 
     if (!result.ok) {
-      set({ pending: false, notice: result.message });
+      const { connection, notice } = afterFailure(result);
+      set({ pending: false, connection, notice });
       return;
     }
     set({
       pending: false,
       stagedBet: 0,
+      connection: LIVE,
       status: { kind: "at-table", state: result.state, seatId: current.seatId },
       lastEvents: result.events,
     });
@@ -355,6 +385,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     unsubscribe = null;
     set({
       status: { kind: "idle" },
+      connection: LIVE,
       stagedBet: 0,
       notice: null,
       pending: false,

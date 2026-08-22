@@ -41,6 +41,17 @@ interface SessionLike {
 
 const NETWORK: AuthFailure = authFailure("NETWORK");
 
+/**
+ * Where a password-recovery email sends the player back to.
+ *
+ * Must match, literally, both `additional_redirect_urls` in
+ * `supabase/config.toml` (GoTrue refuses to redirect anywhere not on that
+ * list) and the route at `app/auth/recovery.tsx`. There is no single source
+ * of truth across a TOML file and a filesystem route, so this constant and
+ * the comment on that screen are each the other's warning.
+ */
+export const PASSWORD_RECOVERY_REDIRECT_URL = "arc21://auth/recovery";
+
 export function createSupabaseAuthAdapter(
   client: ArcSupabaseClient,
   options: { readonly timeoutMs?: number } = {},
@@ -153,10 +164,30 @@ export function createSupabaseAuthAdapter(
 
     async requestPasswordReset(email: string): Promise<AuthVoidResult> {
       const result = await bounded(
-        client.auth.resetPasswordForEmail(normaliseEmail(email)),
+        // Without `redirectTo`, GoTrue falls back to `site_url` — a web URL
+        // this app never serves. The email would have arrived and looked
+        // sent; the link just would not have opened anything.
+        client.auth.resetPasswordForEmail(normaliseEmail(email), {
+          redirectTo: PASSWORD_RECOVERY_REDIRECT_URL,
+        }),
       );
       if (result === null) return { ok: false, failure: NETWORK };
       if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      return { ok: true };
+    },
+
+    async completePasswordReset(code: string, newPassword: string): Promise<AuthVoidResult> {
+      // The exchange reads the code verifier `resetPasswordForEmail` stored
+      // via PKCE, on THIS device, and turns the one-time code into a session.
+      // Nothing here trusts the code as an identity — GoTrue does that
+      // verification, and a code that fails it never reaches `updateUser`.
+      const exchanged = await bounded(client.auth.exchangeCodeForSession(code));
+      if (exchanged === null) return { ok: false, failure: NETWORK };
+      if (exchanged.error) return { ok: false, failure: classifyAuthError(exchanged.error) };
+
+      const updated = await bounded(client.auth.updateUser({ password: newPassword }));
+      if (updated === null) return { ok: false, failure: NETWORK };
+      if (updated.error) return { ok: false, failure: classifyAuthError(updated.error) };
       return { ok: true };
     },
 

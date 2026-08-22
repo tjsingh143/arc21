@@ -84,8 +84,22 @@ segments are stripped. Navigation between them is relative (`./create-account`),
 so the group can be renamed without editing either screen. There is no
 `/(auth)/reset-password` route: the reset request is sent from the sign-in
 screen, where the address has already been typed, and completing a reset needs a
-handler for the link in the reset EMAIL. `arc21://room/CODE` is handled (see
-Deep links below); the recovery link is a different one, and it is not.
+handler for the link in the reset EMAIL — see `/auth/recovery` below.
+
+| Path | File | Purpose |
+|------|------|---------|
+| `/auth/recovery` | `app/auth/recovery.tsx` | Completes a password reset from the emailed recovery link. |
+
+`app/auth/recovery.tsx` lives in a REAL `auth` directory, not the `(auth)`
+GROUP above — a group's parenthesised segment is stripped from its URL, and
+this path must be a literal, stable string because it is registered by exact
+match in `supabase/config.toml`'s `additional_redirect_urls` and minted into
+every reset email by `PASSWORD_RECOVERY_REDIRECT_URL` in
+`supabase-auth-adapter.ts`. Phase 14 session 3 found `resetPasswordForEmail`
+was called with no `redirectTo` at all — the email sent, and looked sent, but
+its link pointed at `site_url` (a web URL this app never serves) rather than
+at the app. Fixed alongside adding this route; proved end to end against the
+local Mailpit in `tests/server/password-recovery.integration.test.ts`.
 
 Signing in is never a requirement for the offline game — every auth screen keeps
 a "Continue as guest" path, and when the build has no Supabase configuration

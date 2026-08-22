@@ -382,6 +382,33 @@ column.** `00_schema.test.sql` asserts both across the whole schema, so a
 `bigint generated always as identity` key or a `real` column fails a suite that
 looks unrelated to what you changed.
 
+**`resetPasswordForEmail` with no `redirectTo` fails silently — the email
+still sends.** It falls back to GoTrue's `site_url`, a web URL this app never
+serves, so the link arrives, looks legitimate, and opens nothing useful. The
+eleventh instance of the built-but-never-connected pattern, and the sneakiest:
+every other one left something visibly absent (a call site, a stored column, a
+throw site); this one leaves a working-looking email in the player's inbox.
+Pass `redirectTo`, and register the exact string it uses in
+`additional_redirect_urls` — GoTrue refuses to redirect anywhere not on that
+list, so the two must agree by more than convention.
+
+**A Supabase test client must mirror the real client's `auth` options, not
+just its URL and key.** `src/lib/supabase/client.ts` sets `flowType: "pkce"`
+deliberately (see its own comment); a test or script client created without
+that option silently gets the SDK's default, implicit flow instead. The two
+produce genuinely different server responses — PKCE's recovery link redirects
+with `?code=…`, implicit's with `#access_token=…` in a hash fragment — so a
+test built against the wrong default doesn't fail loudly, it proves the wrong
+mechanism while looking like it proved the right one.
+
+**A Maestro exit code of 0 does not mean the flow ran.** With the simulator
+shut down between runs, `maestro test` printed "0 devices connected" and still
+exited 0 — no failure, no error, just a flow that never started. The tell was
+the step count in the log (zero `COMPLETED` lines instead of the flow's usual
+dozens), not the process exit status. Check `xcrun simctl list devices` for
+`Booted` before trusting a run, and count `COMPLETED` lines after, whatever the
+exit code says.
+
 ---
 
 ## Product rules that are easy to get wrong

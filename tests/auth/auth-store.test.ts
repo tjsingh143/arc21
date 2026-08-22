@@ -44,6 +44,7 @@ interface FakeOptions {
   getSession?: AuthResult;
   signOut?: AuthVoidResult;
   reset?: AuthVoidResult;
+  completeReset?: AuthVoidResult | (() => AuthVoidResult);
   assignedUsername?: string | null;
 }
 
@@ -77,6 +78,11 @@ function fakeAdapter(options: FakeOptions = {}): AuthAdapter & { calls: string[]
     async requestPasswordReset() {
       calls.push("requestPasswordReset");
       return options.reset ?? { ok: true };
+    },
+    async completePasswordReset() {
+      calls.push("completePasswordReset");
+      if (typeof options.completeReset === "function") return options.completeReset();
+      return options.completeReset ?? { ok: true };
     },
     async fetchAssignedUsername() {
       calls.push("fetchAssignedUsername");
@@ -360,6 +366,48 @@ describe("password reset", () => {
     await useAuthStore.getState().requestPasswordReset();
 
     expect(adapter.calls).not.toContain("requestPasswordReset");
+  });
+
+  it("completes with the code from the link, and returns null on success", async () => {
+    configured();
+    const adapter = fakeAdapter({ completeReset: { ok: true } });
+    setAuthAdapter(adapter);
+
+    const failure = await useAuthStore.getState().completePasswordReset("a-code", "new-password-1");
+
+    expect(failure).toBeNull();
+    expect(adapter.calls).toContain("completePasswordReset");
+  });
+
+  it("returns the adapter's failure rather than throwing, for a used or expired code", async () => {
+    configured();
+    setAuthAdapter(
+      fakeAdapter({
+        completeReset: {
+          ok: false,
+          failure: { code: "RECOVERY_LINK_INVALID", message: "This reset link is invalid or has expired." },
+        },
+      }),
+    );
+
+    const failure = await useAuthStore.getState().completePasswordReset("stale-code", "new-password-1");
+
+    expect(failure?.code).toBe("RECOVERY_LINK_INVALID");
+  });
+
+  it("classifies a thrown error rather than letting it escape to the screen", async () => {
+    configured();
+    setAuthAdapter(
+      fakeAdapter({
+        completeReset: () => {
+          throw { code: "otp_expired" };
+        },
+      }),
+    );
+
+    const failure = await useAuthStore.getState().completePasswordReset("dead-code", "new-password-1");
+
+    expect(failure?.code).toBe("RECOVERY_LINK_INVALID");
   });
 });
 

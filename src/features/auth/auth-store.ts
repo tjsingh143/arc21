@@ -33,7 +33,7 @@ import {
   type AuthAdapter,
   type AuthSessionSnapshot,
 } from "./auth-adapter.js";
-import { authFailure, classifyAuthError } from "./auth-failure.js";
+import { authFailure, classifyAuthError, type AuthFailure } from "./auth-failure.js";
 import {
   initialAuthFormState,
   reduceAuthForm,
@@ -69,6 +69,16 @@ export interface AuthStoreState {
   signIn: (password: string) => Promise<void>;
   signUp: (password: string) => Promise<void>;
   requestPasswordReset: () => Promise<void>;
+  /**
+   * Completes a reset from the recovery deep link. Deliberately outside
+   * `AuthFormState` — the recovery screen is not the sign-in/sign-up form
+   * and keeps its own local pending/error state, the same way the password
+   * itself is kept local rather than lifted into the store. Returns the
+   * failure to render, or null on success; a successful exchange fires the
+   * adapter's own `onAuthStateChange` and adopts the session exactly as an
+   * ordinary sign-in does.
+   */
+  completePasswordReset: (code: string, newPassword: string) => Promise<AuthFailure | null>;
   signOut: () => Promise<void>;
   /** Erases the account, then drops to guest. Irreversible. */
   deleteAccount: () => Promise<boolean>;
@@ -307,6 +317,15 @@ export const useAuthStore = create<AuthStoreState>((set, get) => {
         apply({ type: "RESET_LINK_SENT" });
       } catch (cause) {
         apply({ type: "FAILED", failure: classifyAuthError(cause) });
+      }
+    },
+
+    completePasswordReset: async (code, newPassword) => {
+      try {
+        const result = await activeAuthAdapter().completePasswordReset(code, newPassword);
+        return result.ok ? null : result.failure;
+      } catch (cause) {
+        return classifyAuthError(cause);
       }
     },
 

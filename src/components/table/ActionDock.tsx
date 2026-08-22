@@ -60,6 +60,7 @@ export function ActionDock({ legal, onAction, pending = false }: ActionDockProps
           onPress={() => act("STAND")}
           variant="secondary"
           disabled={!can("STAND")}
+          pending={pending}
           accessibilityHint="Take no more cards"
           testID="action-stand"
         />
@@ -72,6 +73,7 @@ export function ActionDock({ legal, onAction, pending = false }: ActionDockProps
           variant="secondary"
           size="medium"
           disabled={!can("DOUBLE")}
+          pending={pending}
           accessibilityHint={
             doubleCost ? `Adds ${formatChips(doubleCost)} chips and takes exactly one more card` : undefined
           }
@@ -83,6 +85,7 @@ export function ActionDock({ legal, onAction, pending = false }: ActionDockProps
           variant="secondary"
           size="medium"
           disabled={!can("SPLIT")}
+          pending={pending}
           accessibilityHint={splitCost ? `Adds ${formatChips(splitCost)} chips` : undefined}
           testID="action-split"
         />
@@ -94,6 +97,7 @@ export function ActionDock({ legal, onAction, pending = false }: ActionDockProps
           onPress={() => act("SURRENDER")}
           variant="quiet"
           size="medium"
+          pending={pending}
           accessibilityHint="Give up this hand and take back half your bet"
           testID="action-surrender"
         />
