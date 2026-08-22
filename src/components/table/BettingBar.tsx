@@ -9,6 +9,7 @@
 import { ScrollView, StyleSheet, View } from "react-native";
 
 import type { LegalActionSet } from "../../../shared/blackjack/legal-actions.js";
+import { canDealStagedBet } from "../../features/table/betting-affordance.js";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
 import { formatChips } from "../../design/typography";
 import { playSound } from "../../lib/audio/audio";
@@ -70,6 +71,10 @@ export function BettingBar({
   );
 
   const belowMinimum = bounds ? stagedBet > 0 && stagedBet < bounds.min : false;
+
+  // Deal commits the bet the player has STAGED. See `betting-affordance.ts`
+  // for why that is not the same as `legal.canLockBet`, and what it cost.
+  const canDeal = canDealStagedBet(legal, stagedBet);
 
   return (
     <View style={styles.container}>
@@ -154,7 +159,7 @@ export function BettingBar({
           label="Deal"
           onPress={deal}
           size="medium"
-          disabled={!legal.canLockBet}
+          disabled={!canDeal}
           pending={pending}
           testID="bet-deal"
         />

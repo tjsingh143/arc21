@@ -134,6 +134,29 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
       return;
     }
     set({ status: { kind: "seated", state: read.state } });
+
+    /*
+     * The host is not the only person who has to reach the table.
+     *
+     * `startTable` sets `dealt` for whoever pressed Deal, and the lobby's
+     * navigation effect is keyed on it — so before this, a guest polled every
+     * three seconds, watched `gameSessionId` appear, and sat in the lobby
+     * while the host played. Proved across two simulators in phase 14 s4: the
+     * host reached the table, the second player never did, and a private table
+     * is exactly the feature that needs two.
+     *
+     * Resolved here rather than in the lobby so every seated client converges
+     * on the same state whatever route it took in.
+     */
+    const gameSessionId = read.state.room.gameSessionId;
+    if (gameSessionId === null || get().dealt !== null) return;
+
+    const seat = await activeRoomsGateway().findSeat(gameSessionId);
+    // A missing seat is not an error worth surfacing: the next poll retries,
+    // and the only thing it costs is three seconds.
+    if (seat.ok && seat.seatId !== null) {
+      set({ dealt: { gameId: gameSessionId, seatId: seat.seatId } });
+    }
   },
 
   startTable: async () => {

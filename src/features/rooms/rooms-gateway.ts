@@ -43,6 +43,10 @@ export type RoomStartOutcome =
 export type RoomStateOutcome = { readonly ok: true; readonly state: RoomState } | RoomsFailure;
 export type RoomVoidOutcome = { readonly ok: true } | RoomsFailure;
 
+export type RoomSeatOutcome =
+  | { readonly ok: true; readonly seatId: string | null }
+  | RoomsFailure;
+
 export interface RoomsGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   create(maxSeats: number): Promise<RoomOutcome>;
@@ -50,6 +54,25 @@ export interface RoomsGateway {
   read(roomId: string): Promise<RoomStateOutcome>;
   /** Deal the first hand. The server rejects anyone but the host. */
   start(roomId: string): Promise<RoomStartOutcome>;
+  /**
+   * This player's seat in a session the room has already started.
+   *
+   * ONLY THE HOST LEARNS ITS SEAT FROM `start`. Everyone else joined a lobby
+   * and then watched the host deal, and before this existed there was no way
+   * for them to address their own seat: `get_room_state` reports the room's
+   * `game_session_id` but not the caller's seat row, so a guest could see that
+   * a game had begun and had nothing to open it with. They sat in the lobby
+   * while the host played — verified across two simulators in phase 14 s4.
+   *
+   * No migration was needed: `game_session_seats` already grants SELECT to
+   * `authenticated` under an `is_session_participant` policy, so a seated
+   * player may read the seats of their own session and nobody else's.
+   *
+   * `seatId: null` is a real answer, not a failure — it means the session has
+   * no seat for this player yet, which is what a race between the poll and the
+   * host's deal looks like.
+   */
+  findSeat(gameSessionId: string): Promise<RoomSeatOutcome>;
   leave(roomId: string): Promise<RoomVoidOutcome>;
 }
 
@@ -75,6 +98,7 @@ export function createUnconfiguredRoomsGateway(message: string): RoomsGateway {
     join: refuse,
     read: refuse,
     start: refuse,
+    findSeat: refuse,
     leave: refuse,
   };
 }
@@ -190,6 +214,36 @@ export function createSupabaseRoomsGateway(
         return { ok: false, reason: "unreachable", message: UNREACHABLE };
       }
       return { ok: true, gameId: data.gameId, seatId: data.seatId };
+    },
+
+    async findSeat(gameSessionId: string): Promise<RoomSeatOutcome> {
+      const session = await bounded(client.auth.getSession());
+      if (session === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      const userId = session.data.session?.user.id;
+      if (!userId) return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+
+      /*
+       * Filtered by user id as well as session, even though the RLS policy
+       * already restricts the rows to sessions this player is in: the policy
+       * admits every seat at the table, and this asks for exactly one — mine.
+       * Without the second filter a two-player table returns two rows and
+       * `maybeSingle` fails on the ambiguity rather than on anything real.
+       */
+      const result = await bounded(
+        client
+          .from("game_session_seats")
+          .select("id")
+          .eq("game_session_id", gameSessionId)
+          .eq("user_id", userId)
+          .maybeSingle(),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      if (result.error) {
+        return { ok: false, reason: "refused", message: "That table could not be opened." };
+      }
+
+      const seatId = (result.data as { id?: unknown } | null)?.id;
+      return { ok: true, seatId: typeof seatId === "string" ? seatId : null };
     },
 
     async leave(roomId: string): Promise<RoomVoidOutcome> {

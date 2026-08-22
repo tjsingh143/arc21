@@ -463,6 +463,38 @@ five runs, but a single cold run on the same commit measured 1,242 µs. One
 number is not evidence of a regression; `uptime` matters here as much as it
 does for Maestro.
 
+**A control can be gated on a condition only the server can satisfy and only
+that control can trigger.** `BettingBar` disabled Deal unless
+`legal.canLockBet`, which asks whether the ENGINE already holds a bet. Practice
+satisfies it because `addChip` applies `PLACE_BET` locally on every tap; a
+server table never does, because the bet is not sent until Deal is pressed. So
+**no online table could take a wager in any mode**, and `lockBet` — written,
+unit-tested, correct — was wired to a button that could not be pressed. Nothing
+caught it: `tests/server/*` send commands directly, the store's `lockBet` is
+tested by CALLING it, and no E2E flow plays an online table. When practice and
+an online table share a component, check every predicate that reads engine
+state: the two stores fill it at different times.
+
+**Only the host could ever reach a private table.** `dealt`, the state the
+lobby navigates on, was set inside `startTable`, which only the host calls. A
+guest polled every three seconds, saw the room's `gameSessionId` appear, and
+sat there. If exactly one participant sets the state that opens a shared
+surface, everyone else is stranded — look for the second path, not just the
+first.
+
+**Test the CONTROL, not only the function behind it.** Three of the defects
+above survived because the thing that was tested was the function a disabled
+button would have called. A test that calls `lockBet` proves `lockBet` works;
+it proves nothing about whether anybody can invoke it. Extract the enablement
+predicate and assert that too — `src/features/table/betting-affordance.ts` is
+the shape to copy.
+
+**A DEEP LINK is the reliable way to reach a screen from Maestro.**
+`arc21://table/lobby` lands directly; tapping through the tab bar cost several
+runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note
+that iOS raises an "Open in Arc 21?" confirmation when the app is already
+foregrounded — handle it with a conditional `tapOn: "Open"`.
+
 ---
 
 ## Product rules that are easy to get wrong
