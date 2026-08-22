@@ -489,6 +489,16 @@ it proves nothing about whether anybody can invoke it. Extract the enablement
 predicate and assert that too — `src/features/table/betting-affordance.ts` is
 the shape to copy.
 
+**`every-screen.yaml` only passes against an UNCONFIGURED build.** It asserts
+`.*no server configured.*` in five places, and that copy appears only while
+`EXPO_PUBLIC_SUPABASE_URL` is unset. The repository ships with no `.env.local`,
+so the flow passes as checked out — but the moment you add one to do online
+work (a private table, sign-in, anything server-side) those five assertions
+fail, and it reads as a regression you just caused. It is not. Move
+`.env.local` aside before running the audit flow, or expect it. The deeper
+point is that the flow asserts what a screen SAYS in one configuration; a
+build with a server configured has never been walked by it.
+
 **A DEEP LINK is the reliable way to reach a screen from Maestro.**
 `arc21://table/lobby` lands directly; tapping through the tab bar cost several
 runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note
