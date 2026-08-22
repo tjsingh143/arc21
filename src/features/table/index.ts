@@ -24,3 +24,9 @@ export {
   type OnlineTableStatus,
   type OnlineTableStoreState,
 } from "./online-table-store.js";
+
+export {
+  describeDealerUpCardForAnnouncement,
+  describeOutcomeForAnnouncement,
+  YOUR_TURN_ANNOUNCEMENT,
+} from "./outcome-announcement.js";

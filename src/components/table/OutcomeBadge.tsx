@@ -33,9 +33,12 @@ import Animated, {
 } from "react-native-reanimated";
 
 import { AppText } from "../ui/AppText";
+import { useTableTextVariant } from "../../design/accessibility";
 import { colors, radius, spacing } from "../../design/tokens";
 import { easings, useMotion } from "../../design/motion";
 import { formatChipDelta } from "../../design/typography";
+import { announce } from "../../lib/accessibility/announce";
+import { describeOutcomeForAnnouncement } from "../../features/table/outcome-announcement.js";
 import type { HandOutcomeKind } from "../../../shared/blackjack/types.js";
 
 const LABELS: Record<HandOutcomeKind, string> = {
@@ -55,9 +58,17 @@ export interface OutcomeBadgeProps {
 
 export const OutcomeBadge = memo(function OutcomeBadge({ kind, net }: OutcomeBadgeProps) {
   const motion = useMotion();
+  const valueVariant = useTableTextVariant("bodyStrong");
+  const deltaVariant = useTableTextVariant("caption");
 
   // Only the two positive outcomes get a halo, and blackjack's is the larger.
   const halo = kind === "BLACKJACK" ? "strong" : kind === "WIN" && net > 0 ? "subtle" : "none";
+
+  // Announced once per settled hand — never per animation frame, which is why
+  // this fires here and not from anything in the halo's own effect above.
+  useEffect(() => {
+    announce(describeOutcomeForAnnouncement(kind, net));
+  }, [kind, net]);
 
   const progress = useSharedValue(0);
 
@@ -92,11 +103,11 @@ export const OutcomeBadge = memo(function OutcomeBadge({ kind, net }: OutcomeBad
       ) : null}
 
       <View style={styles.badge}>
-        <AppText variant="bodyStrong" color={tone}>
+        <AppText variant={valueVariant} color={tone}>
           {LABELS[kind]}
         </AppText>
         {net !== 0 ? (
-          <AppText variant="caption" color={tone} numeric>
+          <AppText variant={deltaVariant} color={tone} numeric>
             {formatChipDelta(net)}
           </AppText>
         ) : null}

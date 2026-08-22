@@ -17,7 +17,7 @@
  */
 
 import { useState } from "react";
-import { Alert, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Constants from "expo-constants";
@@ -210,13 +210,6 @@ export default function SettingsScreen() {
               disabled={!ready}
               onChange={(next) => void update({ largerTableText: next })}
             />
-
-            <UnavailableNote>
-              These three are saved on this device. The system Reduce Motion
-              setting above is the one that is already respected everywhere;
-              contrast, text size and the app-level motion override are stored for
-              the screens that will read them and change nothing yet.
-            </UnavailableNote>
           </SurfaceCard>
         </Section>
 
@@ -537,8 +530,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 /**
  * A switch row.
  *
- * The whole row is the accessible control rather than just the switch, so the
- * target comfortably clears 48dp and the label is announced with the state.
+ * The whole row IS the control — a `Pressable` carrying the switch role, with
+ * the `Switch` inside it rendered as a non-interactive indicator.
+ *
+ * It did not used to be. The row was a plain `View` under a comment claiming
+ * it was "the accessible control rather than just the switch, so the target
+ * comfortably clears 48dp"; nothing about it was pressable, so the only target
+ * was the iOS `Switch` — 51×31pt, UNDER the 48dp minimum in height — and
+ * tapping the label did nothing at all. `minHeight: MIN_TOUCH_TARGET` on the
+ * row sized a box that could not be tapped. Found by driving the Settings
+ * screen with Maestro: all three accessibility taps reported COMPLETED and no
+ * switch moved.
  */
 function ToggleRow({
   label,
@@ -554,7 +556,15 @@ function ToggleRow({
   disabled?: boolean;
 }) {
   return (
-    <View style={styles.row}>
+    <Pressable
+      onPress={() => onChange(!value)}
+      disabled={disabled}
+      style={styles.row}
+      accessibilityRole="switch"
+      accessibilityLabel={label}
+      accessibilityHint={detail}
+      accessibilityState={{ disabled, checked: value }}
+    >
       <View style={styles.rowText}>
         <AppText variant="body" color={disabled ? "textDisabled" : "textPrimary"}>
           {label}
@@ -563,17 +573,23 @@ function ToggleRow({
           {detail}
         </AppText>
       </View>
+      {/*
+        `pointerEvents="none"` so the row's press is the single source of the
+        change: a Switch that also handled its own toggle would fire twice
+        where the two targets overlap, landing back on the original value.
+      */}
       <Switch
         value={value}
         onValueChange={onChange}
         disabled={disabled}
-        accessibilityLabel={label}
-        accessibilityHint={detail}
+        pointerEvents="none"
+        importantForAccessibility="no-hide-descendants"
+        accessibilityElementsHidden
         trackColor={{ false: colors.surfaceSoft, true: colors.accentSoft }}
         thumbColor={value ? colors.accent : colors.textSecondary}
         ios_backgroundColor={colors.surfaceSoft}
       />
-    </View>
+    </Pressable>
   );
 }
 

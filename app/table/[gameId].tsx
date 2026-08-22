@@ -25,9 +25,19 @@ import { BettingBar } from "../../src/components/table/BettingBar";
 import { HandCards } from "../../src/components/table/HandCards";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
+import { useTableTextVariant } from "../../src/design/accessibility";
 import { colors, layout, spacing } from "../../src/design/tokens";
 import { formatChips } from "../../src/design/typography";
-import { isMyTurn, ownSeat, useOnlineTableStore } from "../../src/features/table";
+import { announce } from "../../src/lib/accessibility/announce";
+import { rankName } from "../../shared/blackjack/cards.js";
+import { isVisibleCard } from "../../shared/blackjack/types.js";
+import {
+  describeDealerUpCardForAnnouncement,
+  isMyTurn,
+  ownSeat,
+  useOnlineTableStore,
+  YOUR_TURN_ANNOUNCEMENT,
+} from "../../src/features/table";
 import { usePresenceStore } from "../../src/features/presence";
 
 /**
@@ -102,6 +112,32 @@ export default function SharedTable() {
     () => (status.kind === "at-table" ? status.state.legalActions[status.seatId] : undefined),
     [status],
   );
+  const dealerUpCard = useMemo(() => {
+    if (status.kind !== "at-table") return null;
+    const first = status.state.dealer.cards[0];
+    return first && isVisibleCard(first) ? first : null;
+  }, [status]);
+  // The physical card's id, not the card object: the table snapshot is a
+  // fresh object on every poll even when nothing changed, so keying the
+  // announcement effect below on the object would re-announce it every 3
+  // seconds while a hand sits waiting.
+  const dealerUpCardId = dealerUpCard?.id ?? null;
+  const dealerUpCardAnnouncement = dealerUpCard
+    ? describeDealerUpCardForAnnouncement(rankName(dealerUpCard.rank))
+    : null;
+
+  // "Your turn." — keyed on the boolean itself, so a 3-second poll that
+  // confirms the SAME turn does not re-announce it.
+  useEffect(() => {
+    if (myTurn) announce(YOUR_TURN_ANNOUNCEMENT);
+  }, [myTurn]);
+
+  // "Dealer shows six."
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
+
+  const overlineVariant = useTableTextVariant("overline");
 
   /*
    * A command already in flight, or the table currently unreachable: either
@@ -145,7 +181,7 @@ export default function SharedTable() {
   return (
     <Frame>
       <View style={styles.dealer}>
-        <AppText variant="overline" color="textSecondary">
+        <AppText variant={overlineVariant} color="textSecondary">
           Dealer
         </AppText>
         {table.dealer.cards.length > 0 ? (
@@ -205,7 +241,7 @@ export default function SharedTable() {
       ) : null}
 
       <View style={styles.mine}>
-        <AppText variant="overline" color="textSecondary">
+        <AppText variant={overlineVariant} color="textSecondary">
           You
         </AppText>
         {seat?.hands.map((hand) => (

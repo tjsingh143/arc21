@@ -312,15 +312,36 @@ recording a success it did not have.
 
 **Performance review, measured rather than claimed:**
 
+Re-measured in phase 14 s4 by `npm run benchmark` — a COMMITTED script
+(`scripts/benchmark.ts`), where the phase-13 figures came from an ad-hoc one
+that was never checked in and so could not be re-derived.
+
 ```
-Engine hot path    5,000 hands · 19,874 commands in 3,883 ms
-                   776 µs per hand · 195 µs per command
+Engine hot path    5,000 hands · 19,961 commands per run
+                   752–808 µs per hand · 188–202 µs per command
+                   (five runs, load ~5; reproduces the 776/195 quoted since
+                    phase 13, so nothing has regressed)
                    — about 1% of a 60 fps frame budget per command
+
+Memory             50 hands adds +10 KB of settled Node heap
+                   (GC forced either side; a leak would show as unbounded
+                    growth, because the engine returns new state per command)
 
 iOS export         5.9 MB Hermes bytecode
                    224 KB assets total, of which 103 KB is the sound palette
                    32 bundled assets: 23 PNGs from expo-router, 9 WAVs of ours
 ```
+
+**Quote the range, not one run.** A single cold run on the same commit measured
+1,242 µs per hand — 1.6× the steady figure. Check `uptime` and re-run before
+believing a regression, for the same reason Maestro needs an idle machine.
+
+**The 60 fps claim is a BUDGET, not a measurement.** A four-card deal staggers
+at 60 ms with each cue running 200 ms, so the last card starts at 180 ms and the
+deal completes at 380 ms — 23 frames at 60 Hz. That is arithmetic over the
+constants in `src/design/motion-timing.ts`. **No frame was measured**: native
+frame profiling needs Instruments driving a release build, which cannot be
+automated from this environment.
 
 The nine cues appear in the export's `metadata.json`, which is how "the audio
 ships" is known rather than assumed.

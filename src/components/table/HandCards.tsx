@@ -11,6 +11,7 @@ import { StyleSheet, View } from "react-native";
 import { evaluateHand } from "../../../shared/blackjack/hand-value.js";
 import { describeHandValue, handValueAccessibilityLabel } from "../../../shared/blackjack/hand-value.js";
 import { isHiddenCard, isVisibleCard, type MaybeHiddenCard } from "../../../shared/blackjack/types.js";
+import { useTableTextVariant } from "../../design/accessibility";
 import { cardSizes, colors, radius, spacing, type CardSize } from "../../design/tokens";
 import { AppText } from "../ui/AppText";
 import { DealtCard } from "../cards/DealtCard";
@@ -55,6 +56,8 @@ export function HandCards({
     value && !hasHidden ? handValueAccessibilityLabel(value) : derivedLabel ?? "";
 
   const overlap = cardSizes[size].width * 0.32;
+  const valueVariant = useTableTextVariant(size === "hero" ? "sectionTitle" : "caption");
+  const detailVariant = useTableTextVariant("caption");
 
   return (
     <View style={[styles.container, focused ? styles.focused : null]}>
@@ -76,7 +79,7 @@ export function HandCards({
       {derivedLabel ? (
         <View style={styles.valueRow}>
           <AppText
-            variant={size === "hero" ? "sectionTitle" : "caption"}
+            variant={valueVariant}
             color={dimmed ? "textSecondary" : "textPrimary"}
             numeric
             accessibilityLabel={accessibleValue}
@@ -84,7 +87,7 @@ export function HandCards({
             {derivedLabel}
           </AppText>
           {detail ? (
-            <AppText variant="caption" color="textSecondary" numeric>
+            <AppText variant={detailVariant} color="textSecondary" numeric>
               {` · ${detail}`}
             </AppText>
           ) : null}

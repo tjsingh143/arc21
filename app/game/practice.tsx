@@ -15,9 +15,10 @@ import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { rankName } from "../../shared/blackjack/cards.js";
 import { describeHandValue, evaluatePlayerHand } from "../../shared/blackjack/hand-value.js";
 import { getLegalActions } from "../../shared/blackjack/legal-actions.js";
-import type { PlayerHand } from "../../shared/blackjack/types.js";
+import { isVisibleCard, type PlayerHand } from "../../shared/blackjack/types.js";
 import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
 import { HandCards } from "../../src/components/table/HandCards";
@@ -25,8 +26,12 @@ import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { InsuranceSheet } from "../../src/components/table/InsuranceSheet";
 import { AppText } from "../../src/components/ui/AppText";
 import { Button } from "../../src/components/ui/Button";
-import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { useTableTextVariant } from "../../src/design/accessibility";
+import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
+import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../src/design/type-metrics";
 import { formatChipDelta, formatChips } from "../../src/design/typography";
+import { announce } from "../../src/lib/accessibility/announce";
+import { describeDealerUpCardForAnnouncement } from "../../src/features/table/outcome-announcement.js";
 import {
   AssistanceModeSelector,
   ChallengeFeedback,
@@ -106,6 +111,21 @@ export default function PracticeTableScreen() {
   // Force the save to land before iOS suspends or kills the app.
   usePersistOnBackground();
 
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the up-card's own id, not the card object or
+  // `game` as a whole, so a re-render that leaves the same up-card in place —
+  // placing a bet, opening the strategy panel — does not re-announce it.
+  const dealerUpCard = game?.dealer.cards[0];
+  const dealerUpCardId = dealerUpCard && isVisibleCard(dealerUpCard) ? dealerUpCard.id : null;
+  const dealerUpCardAnnouncement =
+    dealerUpCard && isVisibleCard(dealerUpCard)
+      ? describeDealerUpCardForAnnouncement(rankName(dealerUpCard.rank))
+      : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
+
   if (!game) {
     return (
       <SafeAreaView style={styles.screen}>
@@ -148,14 +168,31 @@ export default function PracticeTableScreen() {
           accessibilityLabel="Leave practice table"
           style={styles.headerButton}
         >
-          <AppText color="textSecondary">Close</AppText>
+          {/*
+            The three-column table header is fixed geometry: Close and Reset
+            keep their place either side of the title, so it cannot reflow.
+            Uncapped, at the largest Dynamic Type size "PRACTICE" wrapped two
+            letters to a line and the block still overlapped Close.
+          */}
+          <AppText color="textSecondary" maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}>
+            Close
+          </AppText>
         </Pressable>
 
         <View style={styles.headerCenter}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText
+            variant={overlineVariant}
+            color="textSecondary"
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             Practice
           </AppText>
-          <AppText variant="caption" color="textDisabled" numeric>
+          <AppText
+            variant="caption"
+            color="textDisabled"
+            numeric
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             {`Hand ${game.handNumber} · Shoe ${game.shoe.shuffleNumber}`}
           </AppText>
         </View>
@@ -167,13 +204,18 @@ export default function PracticeTableScreen() {
           accessibilityLabel="Reset practice bankroll"
           style={[styles.headerButton, !isBetting ? styles.headerButtonDisabled : null]}
         >
-          <AppText color={isBetting ? "textSecondary" : "textDisabled"}>Reset</AppText>
+          <AppText
+            color={isBetting ? "textSecondary" : "textDisabled"}
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
+            Reset
+          </AppText>
         </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealerArea}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer
           </AppText>
           {dealerCards.length > 0 ? (
@@ -365,13 +407,18 @@ const styles = StyleSheet.create({
   },
   headerButton: {
     minWidth: 64,
-    minHeight: 44,
+    minHeight: MIN_TOUCH_TARGET,
     justifyContent: "center",
   },
   headerButtonDisabled: {
     opacity: 0.4,
   },
   headerCenter: {
+    // `flex: 1` so the title block is bounded by the row rather than sized to
+    // its content: without it, "Practice" and "Hand 1 · Shoe 1" grew past the
+    // screen edge at the largest Dynamic Type size and overlapped the Close
+    // control. Bounded, the text wraps instead.
+    flex: 1,
     alignItems: "center",
     gap: 2,
   },

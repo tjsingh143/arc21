@@ -14,15 +14,13 @@ import { AccessibilityInfo } from "react-native";
 import { useEffect, useState } from "react";
 import { Easing } from "react-native-reanimated";
 
-export const durations = {
-  cardDeal: 200,
-  cardStagger: 60,
-  dealerFlip: 180,
-  chipMove: 250,
-  buttonPress: 100,
-  resultHold: 1_200,
-  feedbackHold: 1_600,
-} as const;
+import { useSettings } from "../features/settings/use-settings";
+import { durations } from "./motion-timing";
+
+// Defined in `motion-timing.ts`, which has no React Native or Reanimated
+// import, so the benchmark and unit tests can read the timing budget. See that
+// file's own comment.
+export { durations, type DurationToken } from "./motion-timing";
 
 export const easings = {
   /** Cards and chips settling — decelerating, physical. */
@@ -78,9 +76,17 @@ export interface Motion {
  * Under Reduce Motion, travel animations become short crossfades and stagger
  * disappears. Result holds are shortened but never removed — the player still
  * needs time to read the outcome.
+ *
+ * Two sources feed this: the OS setting (`useReduceMotion`, above) and the
+ * app-level "Always reduce motion" toggle in `AppSettings`. They are ORed
+ * together, never one replacing the other — the app setting can only ADD
+ * reduction on top of what the OS already asks for, so turning it off never
+ * un-reduces motion the OS is asking to reduce.
  */
 export function useMotion(): Motion {
-  const reduceMotion = useReduceMotion();
+  const osReduceMotion = useReduceMotion();
+  const appReduceMotion = useSettings().settings.reducedMotion;
+  const reduceMotion = osReduceMotion || appReduceMotion;
 
   return useMemo<Motion>(
     () => ({

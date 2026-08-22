@@ -25,10 +25,16 @@ import { InsuranceSheet } from "../../../src/components/table/InsuranceSheet";
 import { StrategyPanel } from "../../../src/components/table/StrategyPanel";
 import { PlayingCard } from "../../../src/components/cards/PlayingCard";
 import { TableSurface } from "../../../src/features/cosmetics/art";
-import { colors, layout, radius, spacing } from "../../../src/design/tokens";
+import { useTableTextVariant } from "../../../src/design/accessibility";
+import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../../src/design/tokens";
+import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../../src/design/type-metrics";
 import { formatChips } from "../../../src/design/typography";
+import { announce } from "../../../src/lib/accessibility/announce";
+import { rankName } from "../../../shared/blackjack/cards.js";
+import { isVisibleCard } from "../../../shared/blackjack/types.js";
 import { getLegalActions } from "../../../shared/blackjack/legal-actions.js";
 import { careerNodeBySlug, careerNodeWorkload } from "../../../shared/career/nodes.js";
+import { describeDealerUpCardForAnnouncement } from "../../../src/features/table/outcome-announcement.js";
 import { actionLabel, computeAdvice, NO_ADVICE } from "../../../src/features/practice/advice";
 import { NO_LEGAL_ACTIONS, PRACTICE_SEAT_ID } from "../../../src/features/practice/practice-store";
 import {
@@ -75,6 +81,20 @@ function StandardSession() {
   const session = useCareerSessionStore();
   const game = session.game;
   const node = session.node;
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the up-card's own id, not the card object or
+  // `game` as a whole, so a re-render that leaves the same up-card in place
+  // does not re-announce it.
+  const dealerUpCard = game?.dealer.cards[0];
+  const dealerUpCardId = dealerUpCard && isVisibleCard(dealerUpCard) ? dealerUpCard.id : null;
+  const dealerUpCardAnnouncement =
+    dealerUpCard && isVisibleCard(dealerUpCard)
+      ? describeDealerUpCardForAnnouncement(rankName(dealerUpCard.rank))
+      : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
 
   if (!game || !node) {
     return (
@@ -113,7 +133,7 @@ function StandardSession() {
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealer}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer
           </AppText>
           {dealerCards.length > 0 ? (
@@ -195,6 +215,18 @@ function DrillSession() {
   const session = useCareerSessionStore();
   const node = session.node;
   const scenario = session.scenarios[session.scenarioIndex];
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the scenario's own card id so moving to the
+  // next scenario re-announces it, while grading feedback on the SAME
+  // scenario does not.
+  const dealerUpCardId = scenario?.dealerUpcard.id ?? null;
+  const dealerUpCardAnnouncement = scenario
+    ? describeDealerUpCardForAnnouncement(rankName(scenario.dealerUpcard.rank))
+    : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
 
   if (!node || !scenario) {
     return (
@@ -221,7 +253,7 @@ function DrillSession() {
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealer}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer shows
           </AppText>
           <PlayingCard card={scenario.dealerUpcard} size="medium" />
@@ -230,7 +262,7 @@ function DrillSession() {
         <View style={styles.divider} />
 
         <View style={styles.player}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Your hand
           </AppText>
           <View style={styles.drillHand}>
@@ -381,19 +413,35 @@ function SessionHeader({
         accessibilityLabel="Leave this session"
         style={styles.headerButton}
       >
-        <AppText color="textSecondary">Close</AppText>
+        {/* Fixed-geometry header chrome — see the Practice table's own note. */}
+        <AppText color="textSecondary" maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}>
+          Close
+        </AppText>
       </Pressable>
       <View style={styles.headerCentre}>
-        <AppText variant="overline" color="textSecondary">
+        <AppText
+          variant="overline"
+          color="textSecondary"
+          maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+        >
           {title}
         </AppText>
-        <AppText variant="caption" color="textDisabled" numeric>
+        <AppText
+          variant="caption"
+          color="textDisabled"
+          numeric
+          maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+        >
           {progress}
         </AppText>
       </View>
       <View style={styles.headerButton}>
         {badge ? (
-          <AppText variant="caption" color="info">
+          <AppText
+            variant="caption"
+            color="info"
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             {badge}
           </AppText>
         ) : null}
@@ -412,8 +460,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
-  headerButton: { minWidth: 64, minHeight: 44, justifyContent: "center" },
-  headerCentre: { alignItems: "center", gap: 2 },
+  headerButton: { minWidth: 64, minHeight: MIN_TOUCH_TARGET, justifyContent: "center" },
+  // `flex: 1` bounds the title block to the row. Without it the node title and
+  // progress line grew past the screen edge at the largest Dynamic Type size
+  // and overlapped the Close control — same fix as the Practice header.
+  headerCentre: { flex: 1, alignItems: "center", gap: 2 },
   felt: {
     flexGrow: 1,
     paddingHorizontal: layout.screenPadding,

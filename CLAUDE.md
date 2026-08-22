@@ -158,6 +158,8 @@ npm test
 npm run test:coverage                   # per-area gates, not global
 npm run strategy:generate               # regenerate tables after a rules change
 npm run audio:generate                  # re-synthesise the sound palette
+npm run contrast:check                  # WCAG ratios for every rendered pairing
+npm run benchmark                       # engine hot path, memory, deal budget
 
 supabase db reset && supabase test db   # 422 pgTAP assertions
 supabase functions serve --no-verify-jwt   # the FUNCTION still enforces auth
@@ -408,6 +410,58 @@ the step count in the log (zero `COMPLETED` lines instead of the flow's usual
 dozens), not the process exit status. Check `xcrun simctl list devices` for
 `Booted` before trusting a run, and count `COMPLETED` lines after, whatever the
 exit code says.
+
+**A Maestro step that COMPLETED did not necessarily DO anything.** Three
+`tapOn`s on the accessibility switches all reported COMPLETED and not one
+switch moved: `ToggleRow` was a plain `View`, so the label Maestro matched and
+tapped was not a control, and the tap landed on nothing. The comment above it
+claimed the opposite — "the whole row is the accessible control… comfortably
+clears 48dp" — which is how it survived. COMPLETED means Maestro found
+something matching the selector and sent a tap at it; assert the RESULT (a
+screenshot, a changed value), never the tap.
+
+**React Native imports are a wall between `src/design` and the test suite.**
+`typography.ts` calls `Platform.select` at module load, so anything importing
+it fails to parse under Node with `Flow is not supported` — pointing at
+`react-native/index.js`, not at your file. Four modules now exist purely to put
+plain constants on the testable side of that wall: `format-chips.ts`,
+`type-metrics.ts`, `type-scale.ts` and `motion-timing.ts`, each re-exported by
+its RN-importing neighbour so component call sites are unchanged. Follow the
+pattern rather than giving up on the test.
+
+**Scaling a type token can change the rendered STRING, not just its size.**
+"Larger table text" first mapped `overline` → `caption`; caption has no
+`textTransform`, so "DEALER" silently became "Dealer". Maestro matches rendered
+text case-sensitively, so every flow asserting an uppercase label would have
+begun failing for anyone with the setting on. `overlineLarge` exists for this,
+and `tests/design/type-scale.test.ts` fails any mapping that alters
+`textTransform`.
+
+**A fixed `height` on the tab bar overrides the safe-area inset.** `height: 64`
+squeezed the label against the home indicator and clipped the descender of
+"Play", which rendered as "Plav" at every text size — invisible at a glance and
+present in every screenshot the project has ever taken. Let React Navigation
+size the bar.
+
+**Some chrome cannot reflow, and should be capped rather than wrapped.** The
+action dock and the three-column table headers have fixed geometry: at the
+largest Dynamic Type size, uncapped labels truncated ("Sta…"), and simply
+allowing more lines split words instead ("Stan / d"). `MAX_FIXED_CONTROL_FONT_SCALE`
+bounds those; body copy is never capped, because it reflows. The value was
+measured against the longest label that ships, not picked.
+
+**Contrast is arithmetic — compute it, do not eyeball it.** `npm run
+contrast:check` measures every pairing the app renders. Two tokens were under
+AA by margins no one would see by looking: `cardRed` on `cardFace` at 4.18:1
+(needs 4.5) and `textDisabled` on `surfaceSoft` at 2.90:1 (needs 3.0). Both are
+now fixed and both directions are asserted, including the hairline borders that
+stay under 3:1 on purpose — so a green report cannot hide a boundary that
+clears the bar in neither state.
+
+**Quote a benchmark's RANGE.** The engine measures 752–808 µs per hand across
+five runs, but a single cold run on the same commit measured 1,242 µs. One
+number is not evidence of a regression; `uptime` matters here as much as it
+does for Maestro.
 
 ---
 

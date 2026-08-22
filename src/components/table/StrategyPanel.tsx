@@ -311,7 +311,7 @@ const styles = StyleSheet.create({
   },
   modeChip: {
     flex: 1,
-    minHeight: 36,
+    minHeight: MIN_TOUCH_TARGET,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.pill,

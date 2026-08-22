@@ -17,6 +17,7 @@ import { cardAccessibilityLabel } from "../../../shared/blackjack/cards.js";
 import type { Card, Suit } from "../../../shared/blackjack/types.js";
 import { cardBackArt } from "../../features/cosmetics/art/registry.js";
 import { useLoadoutStore } from "../../features/cosmetics/loadout-store.js";
+import { useBorderColor } from "../../design/accessibility";
 import { cardSizes, colors, radius, type CardSize } from "../../design/tokens";
 
 const SUIT_GLYPH: Record<Suit, string> = {
@@ -142,11 +143,12 @@ export const CardBack = memo(function CardBack({
 /** Outline placeholder marking where a card will land. */
 export const CardSlot = memo(function CardSlot({ size = "hero" }: { size?: CardSize }) {
   const { width, height } = cardSizes[size];
+  const borderColor = useBorderColor();
   return (
     <View
       style={[
         styles.slot,
-        { width, height, borderRadius: radius.small },
+        { width, height, borderRadius: radius.small, borderColor },
       ]}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"

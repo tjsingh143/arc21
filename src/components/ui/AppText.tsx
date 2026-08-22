@@ -5,6 +5,7 @@
 
 import { Text, type TextProps, type TextStyle } from "react-native";
 
+import { useSecondaryTextColor } from "../../design/accessibility";
 import { colors, type ColorToken } from "../../design/tokens";
 import { tabularNumbers, typography, type TypographyToken } from "../../design/typography";
 
@@ -24,11 +25,17 @@ export function AppText({
   style,
   ...rest
 }: AppTextProps) {
+  // The only colour "Increased contrast" changes app-wide: everywhere else a
+  // token is already at or above the AA bar (see check-contrast.ts), so there
+  // is nothing to strengthen.
+  const secondaryTextColor = useSecondaryTextColor();
+  const resolved = color === "textSecondary" ? secondaryTextColor : colors[color];
+
   return (
     <Text
       style={[
         typography[variant] as TextStyle,
-        { color: colors[color] },
+        { color: resolved },
         numeric ? tabularNumbers : null,
         align ? { textAlign: align } : null,
         style,

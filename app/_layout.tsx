@@ -23,9 +23,11 @@ import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
+import { AccessibilityPrefsProvider } from "../src/design/accessibility";
 import { colors } from "../src/design/tokens";
 import { preloadTableSounds, setAudioSink } from "../src/lib/audio/audio";
 import { ExpoAudioSink, configureAudioSession } from "../src/lib/audio/expo-audio-sink";
+import { installLiveAnnouncementSink } from "../src/lib/accessibility/announce";
 import { configureNotificationHandler, ensureAndroidChannels } from "../src/lib/notifications/push";
 import { useNotificationRouting } from "../src/lib/notifications/use-notification-routing";
 
@@ -40,6 +42,8 @@ export default function RootLayout() {
     // stutter while a file is read.
     void preloadTableSounds();
 
+    installLiveAnnouncementSink();
+
     configureNotificationHandler();
     void ensureAndroidChannels();
 
@@ -51,14 +55,16 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: colors.background }}>
       <SafeAreaProvider>
-        <StatusBar style="light" />
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            contentStyle: { backgroundColor: colors.background },
-            animation: "fade",
-          }}
-        />
+        <AccessibilityPrefsProvider>
+          <StatusBar style="light" />
+          <Stack
+            screenOptions={{
+              headerShown: false,
+              contentStyle: { backgroundColor: colors.background },
+              animation: "fade",
+            }}
+          />
+        </AccessibilityPrefsProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );

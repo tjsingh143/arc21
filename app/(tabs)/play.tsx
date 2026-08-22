@@ -96,7 +96,11 @@ export default function PlayScreen() {
               accessibilityHint={playable ? mode.purpose : mode.reason}
             >
               <View style={styles.cardHeader}>
-                <AppText variant="sectionTitle" color={playable ? "textPrimary" : "textSecondary"}>
+                <AppText
+                  variant="sectionTitle"
+                  color={playable ? "textPrimary" : "textSecondary"}
+                  style={styles.cardTitle}
+                >
                   {mode.title}
                 </AppText>
                 <View style={[styles.badge, playable ? styles.badgeOffline : styles.badgeOnline]}>
@@ -150,7 +154,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
+  // The title yields width and the badge keeps it. Without the pair, a title
+  // grown by Dynamic Type pushed the "Offline" pill off the right edge, where
+  // it rendered as a clipped "Offlin" — the one word on the card that says
+  // whether the mode works without an account.
+  cardTitle: { flexShrink: 1 },
   badge: {
+    flexShrink: 0,
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radius.pill,

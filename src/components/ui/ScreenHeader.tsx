@@ -5,7 +5,7 @@
  * rather than in a fifth tab slot.
  */
 
-import { Pressable, StyleSheet, View } from "react-native";
+import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { router } from "expo-router";
 import Svg, { Circle, Path } from "react-native-svg";
 
@@ -20,10 +20,24 @@ export interface ScreenHeaderProps {
   balance?: number | null;
 }
 
+/**
+ * Above this text scale the header stacks instead of sitting in one row.
+ *
+ * 1.5 is where iOS's own "accessibility sizes" begin. Below it the row has
+ * room for both halves; above it the fixed-width balance and avatar squeeze
+ * the title block to a few characters and "Blackjack, without the noise."
+ * wraps mid-word beside the GUEST badge — verified on the simulator at
+ * `accessibility-extra-extra-extra-large`.
+ */
+const STACK_ABOVE_FONT_SCALE = 1.5;
+
 export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderProps) {
+  const { fontScale } = useWindowDimensions();
+  const stacked = fontScale > STACK_ABOVE_FONT_SCALE;
+
   return (
-    <View style={styles.header}>
-      <View style={styles.titleBlock}>
+    <View style={[styles.header, stacked ? styles.headerStacked : null]}>
+      <View style={[styles.titleBlock, stacked ? styles.titleBlockStacked : null]}>
         <AppText variant="pageTitle">{title}</AppText>
         {subtitle ? (
           <AppText variant="caption" color="textSecondary">
@@ -32,7 +46,7 @@ export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderPr
         ) : null}
       </View>
 
-      <View style={styles.right}>
+      <View style={[styles.right, stacked ? styles.rightStacked : null]}>
         {/*
           A guest has no server wallet, so we say "Guest" rather than showing a
           zero that would read as an empty balance.
@@ -83,14 +97,30 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
     gap: spacing.md,
   },
+  headerStacked: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+  },
   titleBlock: {
     flex: 1,
     gap: 2,
+  },
+  // `flex: 1` would grow the title block vertically once the header is a
+  // column, pushing the balance and avatar to the bottom of a tall box.
+  titleBlockStacked: {
+    flex: 0,
+    alignSelf: "stretch",
   },
   right: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+  },
+  // Stacked, the row is no longer competing for width, so it takes the full
+  // line and keeps the avatar reachable at the leading edge.
+  rightStacked: {
+    alignSelf: "stretch",
+    justifyContent: "flex-start",
   },
   balance: {
     alignItems: "flex-end",

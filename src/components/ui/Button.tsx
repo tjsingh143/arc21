@@ -9,7 +9,9 @@
 
 import { ActivityIndicator, Pressable, StyleSheet, View, type ViewStyle } from "react-native";
 
+import { useBorderColor } from "../../design/accessibility";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
+import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../design/type-metrics";
 import { AppText } from "./AppText";
 
 export type ButtonVariant = "primary" | "secondary" | "quiet" | "danger";
@@ -40,6 +42,8 @@ export function Button({
   testID,
 }: ButtonProps) {
   const inactive = disabled || pending;
+  const borderColor = useBorderColor();
+  const borderOverride = variant === "secondary" ? { borderColor } : null;
 
   return (
     <Pressable
@@ -54,6 +58,7 @@ export function Button({
         styles.base,
         size === "large" ? styles.large : styles.medium,
         VARIANT_STYLES[variant].container,
+        borderOverride,
         pressed && !inactive ? styles.pressed : null,
         inactive ? styles.inactive : null,
         style,
@@ -65,7 +70,21 @@ export function Button({
         <AppText
           variant={size === "large" ? "bodyStrong" : "body"}
           color={inactive ? "textDisabled" : VARIANT_STYLES[variant].label}
-          numberOfLines={1}
+          /*
+           * A bounded scale, plus two lines as a safety net.
+           *
+           * Uncapped, the action dock truncated to "Sta…" and "Dou…" at the
+           * largest Dynamic Type size — a player who asked for large text
+           * could not read what the buttons do. Allowing two lines instead
+           * then split it as "Stan / d", which is not better. Capping the
+           * multiplier keeps the label large but whole; `numberOfLines={2}`
+           * only catches a label longer than any that ships today. The button
+           * has `minHeight`, not a fixed height, so it grows to fit either
+           * way. Verified at `accessibility-extra-extra-extra-large`.
+           */
+          maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          numberOfLines={2}
+          align="center"
         >
           {label}
         </AppText>

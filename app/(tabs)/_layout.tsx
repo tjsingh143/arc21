@@ -35,13 +35,23 @@ export default function TabsLayout() {
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
           borderTopWidth: 1,
-          // Comfortably past the 48dp minimum once the label is included.
-          height: 64,
           paddingTop: 6,
         },
         tabBarLabelStyle: {
           ...typography.caption,
           fontSize: 11,
+          /*
+           * An explicit line height, and no fixed bar height above.
+           *
+           * The bar used to hard-set `height: 64`, which overrides the height
+           * React Navigation computes from the bottom safe-area inset — so on
+           * a device with a home indicator the label was squeezed against the
+           * bottom edge and the descender of "Play" was cut off, rendering as
+           * "Plav". It clipped at every text size, not just large ones.
+           * Default sizing already clears the 48dp minimum the removed comment
+           * was worried about.
+           */
+          lineHeight: 14,
         },
       }}
     >
