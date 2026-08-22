@@ -11,6 +11,20 @@
  * it answers `stale` with the authoritative snapshot rather than applying, and
  * this store adopts it. That is how a client that missed an update recovers,
  * and it is why a dropped message is not a corrupted table.
+ *
+ * **A lost connection is a state, not a notice.** The specification is explicit
+ * that the client must not locally assume the hand stopped, so the two failures
+ * are kept apart here rather than collapsed into one string:
+ *
+ *   * a REFUSAL is the server's verdict. The command did not apply, the table
+ *     is unchanged, and the player can act again immediately.
+ *   * an UNREACHABLE is silence. The command may or may not have applied, the
+ *     server's clock is still running, and its timeout defaults will be used if
+ *     this seat's turn passes. Command controls are disabled for as long as
+ *     that lasts — not because the hand is paused, but because a second tap
+ *     into silence tells the player nothing and stages an intent whose outcome
+ *     is already unknown. The poll keeps trying, and the first snapshot that
+ *     arrives is the authority on what actually happened.
  */
 
 import { create } from "zustand";
@@ -43,8 +57,36 @@ export type OnlineTableStatus =
   | { readonly kind: "signed-out"; readonly message: string }
   | { readonly kind: "unavailable"; readonly message: string };
 
+/**
+ * Whether this client is currently in touch with the table.
+ *
+ * Orthogonal to `status`: a reconnecting client is still `at-table` and still
+ * renders the last snapshot it holds, because blanking the felt would hide the
+ * very information the player needs — their cards, their wager, whose turn it
+ * was. What changes is that the controls stop accepting input and the screen
+ * says what the server is doing meanwhile.
+ */
+export type TableConnection =
+  | { readonly kind: "live" }
+  | { readonly kind: "reconnecting"; readonly message: string };
+
+/**
+ * The reconnect copy, in one place because it is the specification's own rule
+ * rather than incidental wording.
+ *
+ * It states the two things a player cannot see for themselves: that the hand is
+ * still running, and exactly what will be played for them if their turn passes.
+ * The defaults named here are the engine's — stand, and decline insurance — and
+ * are the same ones `RESOLVE_TIMEOUT` applies.
+ */
+export const RECONNECTING_MESSAGE =
+  "Reconnecting… The hand has not stopped. The server's clock is still running, " +
+  "and if your turn passes it will stand for you and decline insurance.";
+
 export interface OnlineTableStoreState {
   readonly status: OnlineTableStatus;
+  /** Live, or trying to get back. See `TableConnection`. */
+  readonly connection: TableConnection;
   /** True while a command is in flight, so controls disable rather than double-fire. */
   readonly pending: boolean;
   /** Chips staged locally before LOCK_BET. Not a wager until the server says so. */
@@ -99,6 +141,30 @@ export function activeTableGateway(): TableGateway {
     return createUnconfiguredTableGateway(availability.message);
   }
   return createSupabaseTableGateway(availability.client);
+}
+
+const LIVE: TableConnection = { kind: "live" };
+const RECONNECTING: TableConnection = {
+  kind: "reconnecting",
+  message: RECONNECTING_MESSAGE,
+};
+
+/**
+ * What a failed call means for the screen.
+ *
+ * The split is the whole point. A refusal is shown as a notice and leaves the
+ * connection live, because the server is plainly there and answering. Silence
+ * flips the connection instead and shows NO notice — the reconnect banner
+ * already says more than "could not reach the table" would, and a notice would
+ * also buzz the rejection haptic for something that was never rejected.
+ */
+function afterFailure(failure: TableFailure): {
+  readonly connection: TableConnection;
+  readonly notice: string | null;
+} {
+  return failure.reason === "unreachable"
+    ? { connection: RECONNECTING, notice: null }
+    : { connection: LIVE, notice: failure.message };
 }
 
 function statusForFailure(failure: TableFailure): OnlineTableStatus {
