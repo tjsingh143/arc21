@@ -90,7 +90,7 @@ export default function SettingsScreen() {
         <BackBar />
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ScreenHeader title="Settings" subtitle="Stored on this device." balance={null} />
+        <ScreenHeader title="Settings" subtitle="Stored on this device." />
 
         {failureMessage ? <UnavailableNote>{failureMessage}</UnavailableNote> : null}
 

@@ -28,7 +28,7 @@ export default function LearnScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ScreenHeader title="Learn" subtitle="Understand every decision." balance={null} />
+        <ScreenHeader title="Learn" subtitle="Understand every decision." />
 
         {overall !== null ? (
           <SurfaceCard onPress={() => router.push("/stats")} accessibilityLabel="Your accuracy">

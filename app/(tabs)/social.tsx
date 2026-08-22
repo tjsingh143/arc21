@@ -167,7 +167,7 @@ export default function SocialScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <ScreenHeader title="Social" subtitle="Play with people you know." balance={null} />
+        <ScreenHeader title="Social" subtitle="Play with people you know." />
 
         {actionError !== null ? (
           <View style={styles.banner} accessibilityRole="alert" accessibilityLiveRegion="polite">

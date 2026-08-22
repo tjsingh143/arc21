@@ -46,7 +46,6 @@ export default function FairPlayScreen() {
         <ScreenHeader
           title="Fair Play"
           subtitle="How the cards are dealt, and who decides."
-          balance={null}
         />
 
         <AppText variant="body" color="textSecondary">

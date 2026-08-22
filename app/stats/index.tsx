@@ -101,7 +101,6 @@ export default function StatsScreen() {
         <ScreenHeader
           title="Statistics"
           subtitle="Everything recorded on this device."
-          balance={null}
         />
 
         <ModeFilter selected={mode} onSelect={setMode} />

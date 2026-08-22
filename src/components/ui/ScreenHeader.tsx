@@ -3,12 +3,28 @@
  *
  * The avatar is how Profile is reached, which is why it appears on every tab
  * rather than in a fifth tab slot.
+ *
+ * THE BALANCE IS READ HERE, not passed in. It used to be a `balance` prop —
+ * and all eight call sites passed `null` or omitted it, so the "Chips" branch
+ * was unreachable and every signed-in player was labelled GUEST on every tab
+ * while `src/features/wallet` (store, gateway, three test files) sat wired to
+ * nothing at all. Found in phase 14 s4 by signing in on the simulator and
+ * watching the header not change. A prop that every caller must remember to
+ * pass is a prop every caller eventually forgets; reading the store is the
+ * only version that cannot silently regress.
+ *
+ * The four not-a-number states are deliberately distinct and none of them
+ * renders a zero — see `wallet-store.ts`, which makes the same point at
+ * length. A rendered `0` is a claim about someone's chips.
  */
 
+import { useEffect } from "react";
 import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { router } from "expo-router";
 import Svg, { Circle, Path } from "react-native-svg";
 
+import { useAuthStore } from "../../features/auth/auth-store";
+import { useWalletStore } from "../../features/wallet";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
 import { formatChips } from "../../design/typography";
 import { AppText } from "./AppText";
@@ -16,8 +32,6 @@ import { AppText } from "./AppText";
 export interface ScreenHeaderProps {
   title: string;
   subtitle?: string;
-  /** Global wallet balance. Null for a guest, who has no server wallet. */
-  balance?: number | null;
 }
 
 /**
@@ -31,9 +45,32 @@ export interface ScreenHeaderProps {
  */
 const STACK_ABOVE_FONT_SCALE = 1.5;
 
-export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderProps) {
+export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
   const { fontScale } = useWindowDimensions();
   const stacked = fontScale > STACK_ABOVE_FONT_SCALE;
+
+  /*
+   * Subscribed, then derived — never read through a store getter during
+   * render, which the React Compiler memoises against a stable function
+   * reference and freezes. That bug shipped here once and disabled the Deal
+   * button permanently.
+   */
+  const signedIn = useAuthStore((state) => state.mode === "account" && state.session !== null);
+  const walletStatus = useWalletStore((state) => state.status);
+  const refreshWallet = useWalletStore((state) => state.refresh);
+  const clearWallet = useWalletStore((state) => state.clear);
+
+  /*
+   * Keyed on the session, not on mount: the header is on every tab, so a
+   * per-mount fetch would re-read the wallet on each tab switch. Signing out
+   * clears it, so a number never outlives the session that earned it.
+   */
+  useEffect(() => {
+    if (signedIn) void refreshWallet();
+    else clearWallet();
+  }, [signedIn, refreshWallet, clearWallet]);
+
+  const chips = walletStatus.kind === "ready" ? walletStatus.wallet.balance : null;
 
   return (
     <View style={[styles.header, stacked ? styles.headerStacked : null]}>
@@ -49,15 +86,17 @@ export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderPr
       <View style={[styles.right, stacked ? styles.rightStacked : null]}>
         {/*
           A guest has no server wallet, so we say "Guest" rather than showing a
-          zero that would read as an empty balance.
+          zero that would read as an empty balance. A signed-in player whose
+          balance has not arrived yet gets the label alone for the same
+          reason — the number appears when it is real, and never before.
         */}
         <View style={styles.balance}>
           <AppText variant="overline" color="textSecondary">
-            {balance === null ? "Guest" : "Chips"}
+            {signedIn ? "Chips" : "Guest"}
           </AppText>
-          {balance !== null ? (
-            <AppText variant="bodyStrong" numeric>
-              {formatChips(balance)}
+          {chips !== null ? (
+            <AppText variant="bodyStrong" numeric testID="header-chips">
+              {formatChips(chips)}
             </AppText>
           ) : null}
         </View>

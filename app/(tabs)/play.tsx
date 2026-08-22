@@ -83,7 +83,7 @@ export default function PlayScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ScreenHeader title="Play" subtitle="Same rules everywhere." balance={null} />
+        <ScreenHeader title="Play" subtitle="Same rules everywhere." />
 
         {MODES.map((mode) => {
           const playable = mode.route !== undefined;

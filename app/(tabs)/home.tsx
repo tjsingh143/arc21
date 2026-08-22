@@ -46,8 +46,10 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Guest today: there is no auth backend, so no server wallet to show. */}
-        <ScreenHeader title="Arc 21" subtitle="Blackjack, without the noise." balance={null} />
+        {/* The header reads the session and the wallet itself — see ScreenHeader.
+            This comment used to say Arc 21 had "no auth backend, so no server
+            wallet to show", which stopped being true several phases ago. */}
+        <ScreenHeader title="Arc 21" subtitle="Blackjack, without the noise." />
 
         <SurfaceCard
           onPress={() => router.push("/game/practice")}

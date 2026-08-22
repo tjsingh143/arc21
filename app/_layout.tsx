@@ -11,6 +11,15 @@
  * Two device adapters are installed here and only here: the audio sink, and the
  * notification handler. Both are wired at the root because both must exist
  * before any screen that uses them mounts, and neither may be installed twice.
+ *
+ * THE SESSION IS RESTORED HERE for the same reason. It used to be hydrated only
+ * by the five screens that happened to ask — sign-in, create-account, recovery,
+ * Social and Profile — so a cold launch straight to Home left `mode` at
+ * "unknown" and the header told a signed-in player they were a GUEST, while
+ * Settings said "Signed in" the moment you reached it through Profile. Found in
+ * phase 14 s4 by signing in on the simulator, relaunching, and comparing the
+ * two screens. `hydrate()` early-returns once hydrated, so the per-screen calls
+ * are now harmless no-ops rather than the only thing keeping this working.
  */
 
 import { installCryptoPolyfill } from "../src/lib/crypto/install-crypto-polyfill";
@@ -24,6 +33,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { AccessibilityPrefsProvider } from "../src/design/accessibility";
+import { useAuthStore } from "../src/features/auth/auth-store";
 import { colors } from "../src/design/tokens";
 import { preloadTableSounds, setAudioSink } from "../src/lib/audio/audio";
 import { ExpoAudioSink, configureAudioSession } from "../src/lib/audio/expo-audio-sink";
@@ -33,6 +43,11 @@ import { useNotificationRouting } from "../src/lib/notifications/use-notificatio
 
 export default function RootLayout() {
   useNotificationRouting();
+
+  const hydrateAuth = useAuthStore((state) => state.hydrate);
+  useEffect(() => {
+    void hydrateAuth();
+  }, [hydrateAuth]);
 
   useEffect(() => {
     const sink = new ExpoAudioSink();
