@@ -2,12 +2,18 @@
  * Every cosmetic in the catalogue resolves to artwork, and nothing else does.
  *
  * This is the test that would have caught the audio adapter: a component can
- * be built, typechecked and green while connected to nothing. The catalogue in
- * `supabase/seed.sql` is parsed directly — not re-declared here — so adding a
+ * be built, typechecked and green while connected to nothing. The catalogue is
+ * parsed from the SQL that writes it — not re-declared here — so adding a
  * cosmetic to the database without drawing it fails this file, and so does
  * deleting a cosmetic while leaving its art behind. No orphans in either
- * direction, in any of the three layers: the seed, the key list the stores
+ * direction, in any of the three layers: the catalogue, the key list the stores
  * validate against, and the component registry itself.
+ *
+ * The source moved out of `supabase/seed.sql` and into a migration, because the
+ * seed does not run on `supabase db push` and a deployed project therefore had
+ * no cosmetics at all. Parsing the migration keeps this test pointed at the
+ * statement that actually creates the rows — which is the whole reason it reads
+ * SQL rather than a TypeScript list.
  */
 
 import { readFileSync } from "node:fs";
@@ -48,19 +54,20 @@ vi.mock("react-native-svg", () => {
   };
 });
 
-const seedPath = join(
+const cataloguePath = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
   "..",
   "supabase",
-  "seed.sql",
+  "migrations",
+  "20260823110000_catalogue_ships_in_migrations.sql",
 );
-const seed = readFileSync(seedPath, "utf8");
+const seed = readFileSync(cataloguePath, "utf8");
 
 /**
  * Each catalogue row lists `asset_key` immediately followed by `unlock_type`,
  * so one expression captures both. Anchored to the three kind prefixes, which
- * nothing else in the seed uses.
+ * nothing else in the migration uses.
  */
 const CATALOGUE_ROW = /'((?:avatars|card_backs|tables)\/[a-z0-9_]+)',\s*'([a-z_]+)'/g;
 
@@ -77,10 +84,10 @@ function seedKeysWithPrefix(prefix: string): string[] {
 }
 
 describe("the catalogue and the art registry agree in both directions", () => {
-  it("parses the expected catalogue size from seed.sql", () => {
+  it("parses the expected catalogue size from the migration that writes it", () => {
     // 24 cosmetics: 12 avatars, 8 card backs, 4 table themes. If this fails,
-    // the regex or the seed changed — either way the rest of the file would be
-    // asserting against the wrong catalogue.
+    // the regex or the catalogue changed — either way the rest of the file
+    // would be asserting against the wrong catalogue.
     expect(seedKeysWithPrefix("avatars")).toHaveLength(12);
     expect(seedKeysWithPrefix("card_backs")).toHaveLength(8);
     expect(seedKeysWithPrefix("tables")).toHaveLength(4);

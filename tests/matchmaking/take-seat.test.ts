@@ -50,7 +50,16 @@ function rejected(code: string, message: string) {
 }
 
 const MATCHED = {
-  status: { kind: "matched" as const, place: { status: "matched" as const, roomId: "room-1", code: "ABC123", waitingSince: null, queuedAtTier: 0 } },
+  status: {
+    kind: "matched" as const,
+    place: {
+      status: "matched" as const,
+      tier: "casual" as const,
+      roomId: "room-1",
+      seatedBefore: 0,
+      waitingSince: new Date(0),
+    },
+  },
   notice: null,
 };
 

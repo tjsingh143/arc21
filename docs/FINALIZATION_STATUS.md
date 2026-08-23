@@ -102,3 +102,64 @@ npx tsc --noEmit                                  exit 0
 
 The client-side guard was proved to discriminate: removing the
 `SESSION_ALREADY_ACTIVE` branch fails `take-seat.test.ts` and nothing else.
+
+---
+
+### R2 — The catalogue a deployed database would not have had · **VERIFIED COMPLETE**
+
+**Severity:** blocker. No session of any kind could be opened in a deployed project.
+
+**Found** while preparing the career work, by grepping for the writers of
+`public.career_nodes`:
+
+```
+grep -ln 'insert into public.cosmetics\|insert into public.rulesets\|insert into public.career_nodes' supabase/migrations/*.sql
+  → (only rate_limit_policies, in 20260818100000)
+grep -n '^insert into' supabase/seed.sql
+  → 23: rulesets   70: cosmetics   111: career_nodes
+```
+
+**Root cause.** `supabase/seed.sql` runs on `supabase db reset` and **not** on
+`supabase db push`. The ruleset, the 24 cosmetics and the career map lived only
+there. `resolveRulesetId` in `create-session` raises on an empty `rulesets`
+table, so a deployed Arc 21 could not open a solo table, a public table, a
+tournament or a daily challenge. Every local verification in `docs/AUDIT.md`
+passed because `db reset` had just run the seed — the one command that hides
+this exactly.
+
+**And a second catalogue.** The seed's eighteen career nodes were not the
+eighteen the app plays. `foundations-1` "First Hand", five hands,
+`{"type": "play_hands", "count": 5}` — a declarative grammar nothing in the
+repository has ever interpreted — against `first-deal` "First Deal", ten hands,
+60% accuracy in `shared/career/nodes.ts`, which is what every screen renders and
+what `stars.ts` grades. `career_progress` and all eight career-gated cosmetics
+were keyed to the catalogue the player could not see.
+
+**Fix.**
+- `20260823110000_catalogue_ships_in_migrations.sql` — the ruleset and the
+  cosmetics, moved from the seed with their `on conflict` clauses intact.
+- `20260823120000_career_catalogue.sql` — **generated** by
+  `npm run career:generate` from `shared/career/nodes.ts`; deletes the
+  placeholder rows (a leftover node nobody can play makes a `career_chapter`
+  cosmetic permanently unobtainable), rebuilds the prerequisite chain, repoints
+  the three chapter-final cosmetic gates, and raises on an orphaned gate.
+- `supabase/seed.sql` now contains zero rows and says why.
+
+**Evidence.**
+
+```
+grep -c 'insert into' supabase/seed.sql                        → 0
+supabase db reset && psql -c 'select count(*) …'
+  rulesets=1  cosmetics=24  career_nodes=18  rate_limit_policies=9   ← from migrations alone
+supabase test db                                               435 assertions, PASS  (was 431)
+npm test                                                       80 files, 1559 tests passed
+tsc --noEmit                                                   exit 0
+```
+
+Guarded against recurrence by `tests/career/catalogue-sql.test.ts`, which
+regenerates the migration and compares byte for byte, and asserts `seed.sql`
+holds no `insert` at all — a file check, because a row count taken after
+`db reset` cannot tell the two sources apart, which is precisely how this
+survived. `06_catalog.test.sql` adds four assertions that no cosmetic gate names
+a node or chapter that does not exist.
+

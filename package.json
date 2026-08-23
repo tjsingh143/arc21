@@ -21,7 +21,8 @@
     "art:generate": "tsx scripts/generate-app-art.ts",
     "db:start": "supabase start",
     "db:reset": "supabase db reset",
-    "db:test": "supabase test db"
+    "db:test": "supabase test db",
+    "career:generate": "tsx scripts/generate-career-nodes.ts"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.12",
