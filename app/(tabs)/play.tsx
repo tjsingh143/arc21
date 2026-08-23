@@ -47,7 +47,24 @@ const MODES: Mode[] = [
     purpose: "A standard table using your global chip balance.",
     structure: "Casual, Standard or High stakes",
     availability: "online",
-    reason: "Needs an account so chips are server-authoritative.",
+    /*
+     * The reason here used to read "Needs an account so chips are
+     * server-authoritative", which a signed-in player reads as a lie: they have
+     * an account, the card is still grey, and Public Table beside it is not.
+     *
+     * The card is disabled because it has no `route`, and it has no route
+     * because the SCREEN does not exist. The server half does: `create-session`
+     * handles `action: "OPEN"` with a tier, debits the buy-in once, and is the
+     * most heavily covered path in `tests/server`. No client code has ever sent
+     * it — the client sends only START_PRIVATE_TABLE, START_DAILY_CHALLENGE,
+     * REGISTER_SPRINT and JOIN_PUBLIC_TABLE.
+     *
+     * Stating that plainly is the rule this repository already follows: a
+     * surface that cannot work says why, and never pretends the reason is
+     * something the player could fix.
+     */
+    reason:
+      "Not in this build. Public Table is the server-authoritative table you can play now.",
   },
   {
     title: "Public Table",

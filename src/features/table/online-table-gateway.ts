@@ -99,9 +99,30 @@ export interface TableCallOptions {
   readonly onRetry?: () => void;
 }
 
+/**
+ * What came back from a cash-out.
+ *
+ * `walletBalance` is the server's number after the credit, not one this client
+ * computed — the whole point of the escrow is that the client never arithmetics
+ * its way to a balance.
+ */
+export type TableCashOutOutcome =
+  | { readonly ok: true; readonly walletBalance: number | null }
+  | TableFailure;
+
 export interface TableGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   snapshot(gameId: string, options?: TableCallOptions): Promise<TableSnapshotOutcome>;
+  /**
+   * Close this seat and return the remaining stack to the wallet.
+   *
+   * `CASH_OUT` has existed and been tested on the server since phase 5, and
+   * nothing in this app has ever sent it — so a player who left a table left
+   * their stack behind, permanently, while the screen promised "whatever is
+   * left comes back when you leave". The server refuses mid-hand (SESSION_BUSY)
+   * and is idempotent per `gameId:seatId`, so a retry cannot credit twice.
+   */
+  cashOut(gameId: string): Promise<TableCashOutOutcome>;
   command(
     gameId: string,
     command: TableCommand,
@@ -140,6 +161,7 @@ export function createUnconfiguredTableGateway(message: string): TableGateway {
     kind: "unconfigured",
     snapshot: refuse,
     command: refuse,
+    cashOut: refuse,
     subscribe: () => () => undefined,
   };
 }
@@ -322,8 +344,57 @@ export function createSupabaseTableGateway(
     return value;
   }
 
+  /**
+   * Close the seat and take the remaining stack back to the wallet.
+   *
+   * A DIFFERENT function from the one every other call here uses:
+   * `create-session` owns the economic boundary, `game-command` owns play. The
+   * idempotency key the server derives is `gameId:seatId`, NOT this request id,
+   * so a retried cash-out cannot buy a second credit — which is why retrying is
+   * safe and why leaving without one is not.
+   */
+  async function requestCashOut(gameId: string): Promise<TableCashOutOutcome> {
+    const denied = await requireSession();
+    if (denied) return denied;
+
+    const result = await bounded(
+      client.functions.invoke("create-session", {
+        body: {
+          action: "CASH_OUT",
+          gameId,
+          clientRequestId: globalThis.crypto.randomUUID(),
+          clientSentAt: new Date().toISOString(),
+        },
+      }),
+    );
+    if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+
+    if (result.error) {
+      const rejection = await readRejection(result.error);
+      if (rejection) {
+        return {
+          ok: false,
+          reason: "refused",
+          message:
+            rejection.code === "SESSION_BUSY"
+              ? "This hand is still live. Your chips come back as soon as it settles."
+              : rejection.message,
+          code: rejection.code,
+        };
+      }
+      return { ok: false, reason: "unreachable", message: UNREACHABLE };
+    }
+
+    const body = result.data as { walletBalance?: unknown } | null;
+    return {
+      ok: true,
+      walletBalance: typeof body?.walletBalance === "number" ? body.walletBalance : null,
+    };
+  }
+
   return {
     kind: "supabase",
+    cashOut: requestCashOut,
 
     /**
      * Read the table without changing it.

@@ -39,6 +39,7 @@ import {
   type TableFailure,
   type TableGateway,
 } from "./online-table-gateway.js";
+import { useWalletStore } from "../wallet/wallet-store.js";
 
 /**
  * One shared empty array, not a fresh `[]` per set.
@@ -115,7 +116,23 @@ export interface OnlineTableStoreState {
    * predicted locally — the round has not begun until the server says so.
    */
   nextHand: () => Promise<void>;
-  leaveTable: () => void;
+  /**
+   * Close the seat, take the stack back, and drop the table.
+   *
+   * Returns false when the server refused — mid-hand, most often — so the
+   * screen can keep the player at the table instead of walking them away from
+   * chips that are still in escrow.
+   *
+   * This USED to be a synchronous state reset, and the screen's back button was
+   * a plain `BackBar`. Between them, leaving a public table returned nothing:
+   * the buy-in stayed in escrow, the seat stayed `active`, and the wallet was
+   * short by the buy-in with no way in the app to get it back. The Public Table
+   * screen promises "whatever is left comes back when you leave" — this is the
+   * call that makes that sentence true.
+   */
+  leaveTable: () => Promise<boolean>;
+  /** Drops the table locally without cashing out. For a seat already closed. */
+  forgetTable: () => void;
 }
 
 /**
@@ -380,7 +397,41 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     });
   },
 
-  leaveTable: () => {
+  leaveTable: async () => {
+    const current = get().status;
+    // Nothing to close: never sat down, or already closed.
+    if (current.kind !== "at-table") {
+      get().forgetTable();
+      return true;
+    }
+
+    set({ pending: true, notice: null });
+    const outcome = await activeTableGateway().cashOut(current.state.gameId);
+    set({ pending: false });
+
+    if (!outcome.ok) {
+      /*
+       * Stay at the table. Walking away from a refused cash-out is exactly the
+       * bug this replaced: the chips are still in escrow and the player has no
+       * other route back to them.
+       */
+      set({ notice: outcome.message });
+      return false;
+    }
+
+    /*
+     * The server just told us the balance after the credit. Refreshing rather
+     * than trusting a locally computed number keeps the client out of the
+     * arithmetic, and refreshing AT ALL is what stops the header showing the
+     * pre-cash-out figure until the next launch.
+     */
+    void useWalletStore.getState().refresh();
+
+    get().forgetTable();
+    return true;
+  },
+
+  forgetTable: () => {
     unsubscribe?.();
     unsubscribe = null;
     set({

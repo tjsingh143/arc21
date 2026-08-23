@@ -15,6 +15,7 @@ import { create } from "zustand";
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toQueuePlace, type QueuePlace, type TierId } from "./matchmaking.js";
+import { useWalletStore } from "../wallet/wallet-store.js";
 
 export type MatchmakingStatus =
   | { readonly kind: "idle" }
@@ -144,6 +145,16 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
       set({ notice: "Your seat was taken, but the reply could not be read. Reopen Public Table." });
       return null;
     }
+
+    /*
+     * The header caches the balance for the life of the session — it is fetched
+     * once, keyed on sign-in, so that switching tabs does not re-read the
+     * wallet. That is right until chips actually move, and this is the line
+     * where they do: without it the header kept showing the pre-buy-in number,
+     * so a player who bought in for 2,000 saw their old balance until the next
+     * launch.
+     */
+    void useWalletStore.getState().refresh();
 
     set({ status: { kind: "idle" }, notice: null });
     return { gameId: data.gameId, seatId: data.seatId };

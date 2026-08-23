@@ -97,11 +97,13 @@ function tableState(overrides: Partial<PublicGameState> = {}): PublicGameState {
 
 interface Recorded {
   commands: TableCommand[];
+  /** Game ids this gateway was asked to cash out. */
+  cashOuts: string[];
 }
 
 function gateway(
   responses: TableSnapshotOutcome[],
-  recorded: Recorded = { commands: [] },
+  recorded: Recorded = { commands: [], cashOuts: [] },
 ): TableGateway & { recorded: Recorded } {
   let index = 0;
   const next = (): TableSnapshotOutcome =>
@@ -115,6 +117,10 @@ function gateway(
     kind: "fake",
     recorded,
     snapshot: async () => next(),
+    cashOut: async (gameId) => {
+      recorded.cashOuts.push(gameId);
+      return { ok: true, walletBalance: 1_000 };
+    },
     command: async (_gameId, command) => {
       recorded.commands.push(command);
       return next();
@@ -249,8 +255,12 @@ describe("commands", () => {
 
     const spy: TableGateway & { recorded: Recorded } = {
       kind: "fake",
-      recorded: { commands: [] },
+      recorded: { commands: [], cashOuts: [] },
       subscribe: () => () => undefined,
+      cashOut: async (gameId) => {
+        spy.recorded.cashOuts.push(gameId);
+        return { ok: true, walletBalance: 1_000 };
+      },
       snapshot: async () => ({ ok: true, state: tableState(), events: [] }),
       command: async (_gameId, command) => {
         spy.recorded.commands.push(command);
@@ -362,6 +372,7 @@ describe("connection lost mid-command", () => {
     setTableGateway({
       kind: "fake",
       subscribe: () => () => undefined,
+      cashOut: async () => ({ ok: true, walletBalance: 1_000 }),
       snapshot: async () => ({ ok: true, state: tableState(), events: [] }),
       command: async (_gameId, _command, options) => {
         options?.onRetry?.();
@@ -401,5 +412,64 @@ describe("selectors", () => {
     setTableGateway(gateway([{ ok: true, state: tableState({ activeSeatId: SEAT }), events: [] }]));
     await useOnlineTableStore.getState().enter("game-1", SEAT);
     expect(isMyTurn(useOnlineTableStore.getState().status)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("leaving a table returns the stack", () => {
+  /*
+   * The defect this covers, found by playing a public table on the simulator:
+   * "Leave table" was a plain back navigation. The seat stayed `active`, the
+   * buy-in stayed in escrow, and the wallet stayed short — while the screen
+   * that took the chips promised "whatever is left comes back when you leave".
+   * `CASH_OUT` had been implemented and tested on the server since phase 5 with
+   * ZERO client callers.
+   *
+   * Sitting at a second table then debited a second buy-in, because the
+   * SESSION_ALREADY_ACTIVE guard lives in the solo `open()` path that no client
+   * ever calls. Two visits cost 4,000 chips and returned none of it.
+   */
+  it("cashes out the seat before dropping the table", async () => {
+    const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    const left = await useOnlineTableStore.getState().leaveTable();
+
+    expect(left).toBe(true);
+    expect(spy.recorded.cashOuts).toEqual(["game-1"]);
+    expect(useOnlineTableStore.getState().status.kind).toBe("idle");
+  });
+
+  it("keeps the player at the table when the server refuses", async () => {
+    const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
+    setTableGateway({
+      ...spy,
+      cashOut: async () => ({
+        ok: false,
+        reason: "refused",
+        message: "This hand is still live. Your chips come back as soon as it settles.",
+        code: "SESSION_BUSY",
+      }),
+    });
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    const left = await useOnlineTableStore.getState().leaveTable();
+
+    // Walking away from a refused cash-out is the bug, not the fallback.
+    expect(left).toBe(false);
+    expect(useOnlineTableStore.getState().status.kind).toBe("at-table");
+    expect(useOnlineTableStore.getState().notice).toMatch(/still live/);
+  });
+
+  it("does not call the server when there is no seat to close", async () => {
+    const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
+    setTableGateway(spy);
+
+    const left = await useOnlineTableStore.getState().leaveTable();
+
+    expect(left).toBe(true);
+    expect(spy.recorded.cashOuts).toEqual([]);
   });
 });

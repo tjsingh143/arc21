@@ -13,7 +13,7 @@
 import { useEffect, useMemo } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 
 import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
@@ -331,14 +331,36 @@ export default function SharedTable() {
   );
 }
 
+/**
+ * Leaving CASHES OUT, and only navigates if the server agreed.
+ *
+ * This was a plain `<BackBar />` — a back navigation and nothing else. A public
+ * table's buy-in therefore stayed in escrow for ever: the seat remained
+ * `active`, the wallet stayed short, and the screen that took the chips
+ * promises "whatever is left comes back when you leave". Nothing in the app had
+ * ever sent `CASH_OUT`, though the server has implemented it since phase 5.
+ *
+ * A refusal keeps the player here with the reason on screen, because walking
+ * away from a refused cash-out strands exactly the chips this is meant to
+ * return.
+ */
 function Frame({ children }: { children: React.ReactNode }) {
+  const leaveTable = useOnlineTableStore((state) => state.leaveTable);
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       {/* The equipped table theme, behind everything. Private, public,
           tournament and daily tables all render through this frame. */}
       <TableSurface />
       <View style={styles.bar}>
-        <BackBar label="Leave table" />
+        <BackBar
+          label="Leave table"
+          onPress={() => {
+            void (async () => {
+              if (await leaveTable()) router.back();
+            })();
+          }}
+        />
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {children}
