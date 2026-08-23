@@ -23,7 +23,9 @@
     "db:reset": "supabase db reset",
     "db:test": "supabase test db",
     "career:generate": "tsx scripts/generate-career-nodes.ts",
-    "check:functions": "bash scripts/check-functions.sh"
+    "check:functions": "bash scripts/check-functions.sh",
+    "test:server": "ARC21_REQUIRE_SERVER_STACK=1 vitest run tests/server",
+    "test:unit": "vitest run --exclude 'tests/server/**'"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.12",

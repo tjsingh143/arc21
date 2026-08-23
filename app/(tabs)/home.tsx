@@ -46,6 +46,7 @@ import { useCareerServerStore } from "../../src/features/career/career-server-st
 import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useQuickPlayStore } from "../../src/features/quick-play";
 import { useAuthStore } from "../../src/features/auth";
+import { useConnectivityStore } from "../../src/lib/connectivity/connectivity-store";
 import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function HomeScreen() {
@@ -63,6 +64,13 @@ export default function HomeScreen() {
   }, [hydrated, hydrate]);
 
   const session = useAuthStore((state) => state.session);
+  /*
+   * "Quick Play online CTA becomes Practice" — the specification's offline
+   * rule, and the reason the primary card is chosen rather than fixed. A
+   * server-authoritative table cannot be opened without the server, so offering
+   * one would be offering a button that fails.
+   */
+  const offline = useConnectivityStore((state) => state.status) === "offline";
   const authHydrated = useAuthStore((state) => state.hydrated);
   const hydrateAuth = useAuthStore((state) => state.hydrate);
 
@@ -149,7 +157,7 @@ export default function HomeScreen() {
           specification's offline rule is that the Quick Play CTA BECOMES
           Practice rather than explaining itself.
         */}
-        {session !== null ? (
+        {session !== null && !offline ? (
           <SurfaceCard
             onPress={() => router.push("/table/quick")}
             testID="home-quick-play"

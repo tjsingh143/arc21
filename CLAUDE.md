@@ -512,6 +512,24 @@ client's refusal handling at all. Also found: `LedgerReason` missing two labels
 its own callers pass, and a seat appended to a live public table without
 `insuranceDecision`. Run it before believing anything in that directory.
 
+**PostgREST rejects a token whose `iat` is in the FUTURE by its own clock.**
+`PGRST303 "JWT issued at future"`. The host and the database container drift by
+a second or two under load, so a test signing `iat: Math.floor(Date.now()/1000)`
+is a coin flip — and it never looks like a clock problem. It looks like a wallet
+that reads as -1, a profile column that reads as null, or a career reward that
+was never paid. Every test signer backdates by 60 seconds now, the same
+allowance the function's own verifier makes. And the reason it took three
+failures to find: a helper that returned `-1` on an unreadable wallet turned a
+harness error into "expected 25200 to be 199". **A test helper that reads
+something must THROW when it cannot, never return a sentinel.**
+
+**`npm test` includes `tests/server/**`; CI splits them for a reason.** Running
+`npm test` and the server suite at the same time runs the integration tests
+TWICE against one Postgres, and they time out at 120 s — which reads as a
+product regression and is nothing but contention. Use `npm run test:unit`
+(exactly CI's `--exclude 'tests/server/**'`) when loading the machine on
+purpose, and `npm run test:server` for the other half.
+
 **A read through RLS is scoped to what the POLICY permits, not to "your own
 rows".** Two test helpers made this mistake in one session and both looked
 right. `profiles?select=xp` returns EVERY profile — it is a directory — so

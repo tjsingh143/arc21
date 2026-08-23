@@ -496,3 +496,61 @@ npx expo export         every import resolves
 tsc --noEmit / lint     exit 0 / 0 errors
 ```
 
+---
+
+### R8 — A table could be swiped away from, and the app had no idea when it was offline · **VERIFIED COMPLETE**
+
+**Severity:** major (one economic, one MVP UX requirement).
+
+**The swipe.** Leaving a table is an economic command — `CASH_OUT` returns the
+remaining stack — and the "Leave table" control has sent it since phase 14,
+refusing to navigate on a refusal. But `app/_layout.tsx` set
+`headerShown: false` and nothing else, and **`gestureEnabled` defaults to true
+on an iOS native stack**: a swipe popped the screen without ever reaching that
+control, leaving the buy-in in escrow, the seat `active` and the wallet short —
+the exact defect the control was written to close, still reachable by a gesture.
+
+Two removals were open besides the gesture (the Android hardware back button and
+a deep link resetting the stack), so the fix is both halves:
+`TABLE_SCREEN_OPTIONS.gestureEnabled = false`, and a `beforeRemove` listener
+that cancels the removal, sends the cash-out, and replays the navigation only if
+the server agreed. `src/features/table/leave-guard.ts` holds both as plain
+values so `tests/table/leave-guard.test.ts` can assert them — a comment saying
+"do not remove this option" is a comment; a failing test is a guard.
+
+Mid-hand needs no confirmation dialog: the server refuses with `SESSION_BUSY`
+and the client shows "This hand is still live. Your chips come back as soon as
+it settles." A refusal with a reason is stronger than a dialog.
+
+**The offline signal.** There was none — no `expo-network`, no NetInfo, nothing
+— so every offline state the specification asks for ("Quick Play online CTA
+becomes Practice", "Career reward attempts disabled but Practice node offline
+available", "Social/leaderboard cards show offline state") had nothing to drive
+it.
+
+Deliberately **not** a radio-state library. Both answer "is there a network
+interface", which is the wrong question: a phone on a captive-portal wifi has
+one and cannot reach Arc 21, so the banner would say the opposite of the truth
+exactly when it matters — for a native module and a prebuild. What ships instead
+measures whether the SERVER answered, reported from `withTimeout`, which every
+remote call in the app already passes through. A refusal is an answer: a 403, a
+409 or a rate limit is the server being reachable, and only a timeout or a
+transport failure counts against it. Offline after two consecutive failures,
+back after one success.
+
+**A harness defect found on the way, and it explains earlier "flakes".**
+PostgREST answers `PGRST303 "JWT issued at future"` when a token's `iat` is
+ahead of the DATABASE CONTAINER's clock, and host/container drift under load
+makes `iat: now` a coin flip. It surfaced as a wallet reading -1, a profile
+column reading null, and a career reward that looked unpaid. All eight server
+test files now backdate by 60 seconds — and `career.integration.test.ts`'s
+`balanceOf` now THROWS instead of returning `-1`, because a helper that
+substitutes a sentinel turns a harness error into a false product defect.
+
+```
+npm test                       87 files, 1618 tests passed
+npm run test:server            9 files, 77 tests passed — green twice while
+                               `npm run test:unit` ran concurrently
+tsc --noEmit / lint            exit 0 / 0 errors
+```
+

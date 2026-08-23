@@ -41,10 +41,26 @@ const LOCAL_ANON_KEY =
 
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
+/**
+ * Tokens are backdated by a minute, and that is not cosmetic.
+ *
+ * PostgREST validates `iat` against the DATABASE CONTAINER's clock and answers
+ * `PGRST303 "JWT issued at future"` when it is even slightly ahead. The host
+ * and the container drift by a second or two under load, so an `iat` of exactly
+ * "now" is a coin flip — and the failure does not look like a clock problem. It
+ * looks like a wallet that reads as -1, a profile column that reads as null, or
+ * a career reward that was never paid.
+ *
+ * Sixty seconds is the same allowance the FUNCTION's own verifier makes, and it
+ * is test-only: Supabase issues real tokens server-side, where there is one
+ * clock.
+ */
+const CLOCK_SKEW_ALLOWANCE_SECONDS = 60;
+
 function signToken(sub: string): string {
   const header = b64({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
-  const payload = b64({ sub, role: "authenticated", aud: "authenticated", iat: now, exp: now + 3600 });
+  const payload = b64({ sub, role: "authenticated", aud: "authenticated", iat: now - CLOCK_SKEW_ALLOWANCE_SECONDS, exp: now + 3600 });
   const signature = crypto
     .createHmac("sha256", LOCAL_JWT_SECRET)
     .update(`${header}.${payload}`)
@@ -108,8 +124,20 @@ async function createUser(): Promise<string> {
 }
 
 async function balanceOf(token: string): Promise<number> {
+  /*
+   * THROWS rather than returning a sentinel.
+   *
+   * This returned -1 when the read failed, and a PostgREST clock-skew refusal
+   * (`PGRST303 "JWT issued at future"`) therefore surfaced as
+   * "expected 25200 to be 199" — a career reward that looked unpaid. A harness
+   * failure that reads as a product defect costs more than the assertion it
+   * saves.
+   */
   const rows = (await readAs(token, "wallets?select=balance")) as { balance: number }[];
-  return Number(rows[0]?.balance ?? -1);
+  if (!Array.isArray(rows) || rows.length !== 1) {
+    throw new Error(`could not read own wallet: ${JSON.stringify(rows)}`);
+  }
+  return Number(rows[0]?.balance);
 }
 
 /**

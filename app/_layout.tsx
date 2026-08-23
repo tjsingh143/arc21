@@ -35,6 +35,8 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { AccessibilityPrefsProvider } from "../src/design/accessibility";
 import { useAuthStore } from "../src/features/auth/auth-store";
 import { colors } from "../src/design/tokens";
+import { OfflineBanner } from "../src/components/ui/OfflineBanner";
+import { TABLE_SCREEN_OPTIONS } from "../src/features/table/leave-guard";
 import { preloadTableSounds, setAudioSink } from "../src/lib/audio/audio";
 import { ExpoAudioSink, configureAudioSession } from "../src/lib/audio/expo-audio-sink";
 import { installLiveAnnouncementSink } from "../src/lib/accessibility/announce";
@@ -74,13 +76,40 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <AccessibilityPrefsProvider>
           <StatusBar style="light" />
+          {/*
+            Above the navigator, so it is said once rather than five times.
+            Renders nothing unless the server has actually failed to answer —
+            see the component, and note it asks no radio-state library, because
+            "there is a network interface" is not the question a player has.
+          */}
+          <OfflineBanner />
           <Stack
             screenOptions={{
               headerShown: false,
               contentStyle: { backgroundColor: colors.background },
               animation: "fade",
             }}
-          />
+          >
+            {/*
+              THE TABLE CANNOT BE SWIPED AWAY FROM.
+
+              Leaving a table is an economic command — `CASH_OUT` returns the
+              remaining stack to the wallet — and `app/table/[gameId].tsx` sends
+              it from its "Leave table" control, refusing to navigate if the
+              server says no. The iOS swipe-back gesture is enabled by default
+              on a native stack and does not go through that control, so a swipe
+              popped the screen with the buy-in still in escrow: the seat stayed
+              `active`, the wallet stayed short, and the screen that took the
+              chips had promised "whatever is left comes back when you leave".
+
+              Turning the gesture off is half the fix. The screen also holds a
+              `beforeRemove` listener, because a gesture is not the only way a
+              route can be removed — the Android hardware back button and a deep
+              link that replaces the stack both do it without touching this
+              option.
+            */}
+            <Stack.Screen name="table/[gameId]" options={TABLE_SCREEN_OPTIONS} />
+          </Stack>
         </AccessibilityPrefsProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

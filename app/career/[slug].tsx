@@ -33,6 +33,7 @@ import {
 import { progressForNode } from "../../shared/career/progress.js";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
 import { useCareerServerStore } from "../../src/features/career/career-server-store";
+import { useConnectivityStore } from "../../src/lib/connectivity/connectivity-store";
 import { StarRow } from "./index";
 
 const ASSISTANCE_COPY: Record<string, string> = {
@@ -165,6 +166,12 @@ export default function CareerNodeScreen() {
  */
 function RankedCta({ node }: { node: NonNullable<ReturnType<typeof careerNodeBySlug>> }) {
   const busy = useCareerServerStore((state) => state.busy);
+  /*
+   * "Career reward attempts disabled but Practice node offline available" —
+   * the specification's offline state, said in those words. Offline practice
+   * sits directly beneath this button and is unaffected.
+   */
+  const offline = useConnectivityStore((state) => state.status) === "offline";
   const notice = useCareerServerStore((state) => state.notice);
   const serverProgress = useCareerServerStore((state) => state.progress);
   const loaded = useCareerServerStore((state) => state.loaded);
@@ -211,11 +218,13 @@ function RankedCta({ node }: { node: NonNullable<ReturnType<typeof careerNodeByS
       <Button
         label={busy ? "Opening…" : recorded?.completed ? "Play ranked again" : "Play ranked"}
         onPress={() => void begin()}
-        disabled={busy || !prerequisiteMet}
+        disabled={busy || offline || !prerequisiteMet}
         testID="career-start-ranked"
       />
       <AppText variant="caption" color="textSecondary">
-        {!prerequisiteMet && prerequisiteNode
+        {offline
+          ? "Offline. A ranked attempt needs the server; practice below plays the same node and grants nothing."
+          : !prerequisiteMet && prerequisiteNode
           ? `Finish “${prerequisiteNode.title}” on the server first. Offline practice unlocks the map, not the rewards.`
           : paid
             ? "Rewards for this node have already been paid. A replay can still raise your stars, and pays no chips again."

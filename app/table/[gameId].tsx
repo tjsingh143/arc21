@@ -10,10 +10,10 @@
  * this size showing five equal hands makes all five unreadable.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams, useNavigation } from "expo-router";
 
 import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
@@ -32,6 +32,7 @@ import { announce } from "../../src/lib/accessibility/announce";
 import { rankName } from "../../shared/blackjack/cards.js";
 import { isVisibleCard } from "../../shared/blackjack/types.js";
 import type { PublicGameState } from "../../shared/blackjack/index.js";
+import { mayLeaveTable } from "../../src/features/table/leave-guard";
 import {
   describeDealerUpCardForAnnouncement,
   isMyTurn,
@@ -363,6 +364,39 @@ export default function SharedTable() {
  */
 function Frame({ children }: { children: React.ReactNode }) {
   const leaveTable = useOnlineTableStore((state) => state.leaveTable);
+  const navigation = useNavigation();
+  /*
+   * A route can be removed without anybody pressing "Leave table": the Android
+   * hardware back button, a deep link that replaces the stack, a parent
+   * navigator resetting. `gestureEnabled: false` in `app/_layout.tsx` closes
+   * the swipe; this closes the rest.
+   *
+   * The removal is CANCELLED, the cash-out is sent, and the navigation is
+   * replayed only if the server agreed. A refusal — mid-hand, most often —
+   * therefore keeps the player at the table with the reason on screen, rather
+   * than walking them away from chips that are still in escrow.
+   *
+   * `leaving` guards the replay: dispatching the original action re-fires
+   * `beforeRemove`, and without it the second pass would send a second
+   * CASH_OUT. That one is idempotent server-side — the key is derived from
+   * `gameId:seatId` — but a loop that relies on idempotency to terminate is a
+   * loop.
+   */
+  const leaving = useRef(false);
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener("beforeRemove", (event) => {
+      if (mayLeaveTable({ alreadyLeaving: leaving.current, cashedOut: false })) return;
+      event.preventDefault();
+      void (async () => {
+        const cashedOut = await leaveTable();
+        if (!mayLeaveTable({ alreadyLeaving: false, cashedOut })) return;
+        leaving.current = true;
+        navigation.dispatch(event.data.action);
+      })();
+    });
+    return unsubscribe;
+  }, [navigation, leaveTable]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
