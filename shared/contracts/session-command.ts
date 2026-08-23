@@ -48,10 +48,26 @@ export const careerDrillScenarioSchema = z.strictObject({
   upcardLabel: z.string().min(1).max(16),
 });
 
+/**
+ * How much help a Quick Play table shows.
+ *
+ * `learn` and `analysis` put the recommended play — and, for analysis, the
+ * expectation of every legal action — on screen BEFORE the choice. The
+ * specification excludes exactly that from the qualified strategy-accuracy
+ * board, and `solo` is on that board, so the choice is recorded on the SESSION
+ * and never revised: a client that could name its assistance per decision could
+ * opt a mistake out of its own accuracy.
+ *
+ * Only Quick Play offers a choice. Every other mode is `play`.
+ */
+export const assistanceModeSchema = z.enum(["play", "learn", "analysis", "challenge"]);
+
 export const openSessionRequestSchema = z.strictObject({
   action: z.literal("OPEN"),
   clientRequestId: uuidSchema,
   tier: tableTierSchema,
+  /** Omitted means `play` — unassisted, and counted. */
+  assistance: assistanceModeSchema.optional(),
   clientSentAt: isoTimestampSchema,
 });
 
@@ -335,6 +351,7 @@ export const sessionResponseSchema = z.discriminatedUnion("status", [
   rejectedResponseSchema,
 ]);
 
+export type AssistanceMode = z.infer<typeof assistanceModeSchema>;
 export type StartCareerNodeRequest = z.infer<typeof startCareerNodeRequestSchema>;
 export type SubmitCareerDrillRequest = z.infer<typeof submitCareerDrillRequestSchema>;
 export type CareerDrillScenario = z.infer<typeof careerDrillScenarioSchema>;

@@ -31,6 +31,7 @@ import { formatChips } from "../../src/design/typography";
 import { announce } from "../../src/lib/accessibility/announce";
 import { rankName } from "../../shared/blackjack/cards.js";
 import { isVisibleCard } from "../../shared/blackjack/types.js";
+import type { PublicGameState } from "../../shared/blackjack/index.js";
 import {
   describeDealerUpCardForAnnouncement,
   isMyTurn,
@@ -302,11 +303,27 @@ export default function SharedTable() {
           pending={controlsDisabled}
         />
       ) : myTurn && legal ? (
-        <ActionDock
-          legal={legal}
-          onAction={(action) => void act(action)}
-          pending={controlsDisabled}
-        />
+        <>
+          {/*
+            Help, when the session asked for it.
+
+            The recommendation is the SERVER's, computed from authoritative
+            state by the same advisor that grades the decision, and it arrives
+            on the snapshot. Nothing is derived here: a client that rebuilt
+            advice locally would be a second implementation of the chart, and
+            the two would disagree the first time a ruleset changed.
+
+            Only a Quick Play table opened in Learn or Analysis ever carries it,
+            and the server knows it sent it — so those decisions are excluded
+            from the ranked accuracy board without the client being asked.
+          */}
+          <TableAdvice advice={table.advice ?? null} seatId={seatId} />
+          <ActionDock
+            legal={legal}
+            onAction={(action) => void act(action)}
+            pending={controlsDisabled}
+          />
+        </>
       ) : legal?.canStartNextHand ? (
         /*
          * The engine parks at HAND_COMPLETE deliberately, so a settlement is
@@ -368,6 +385,61 @@ function Frame({ children }: { children: React.ReactNode }) {
     </SafeAreaView>
   );
 }
+
+/**
+ * The recommended play, and — in Analysis — what each action is worth.
+ *
+ * Renders nothing at all when the server sent nothing, which is every table
+ * except a Quick Play session opened in Learn or Analysis. `null` is the
+ * ordinary case, not an error.
+ *
+ * EV is shown as a percentage of the wager, from the integer millionths the
+ * server sends. No float crosses the wire and none decides anything; this is
+ * presentation arithmetic on a number that has already been fixed.
+ */
+function TableAdvice({
+  advice,
+  seatId,
+}: {
+  advice: PublicGameState["advice"];
+  seatId: string | null;
+}) {
+  if (!advice || advice.seatId !== seatId) return null;
+
+  const evs = advice.actionEvMicros;
+  return (
+    <SurfaceCard testID="table-advice">
+      <AppText variant="overline" color="textSecondary">
+        Recommended
+      </AppText>
+      <AppText variant="sectionTitle" testID="table-advice-action">
+        {ACTION_LABELS[advice.recommended] ?? advice.recommended}
+      </AppText>
+      <AppText variant="caption" color="textSecondary">
+        {advice.explanation}
+      </AppText>
+      {evs
+        ? Object.entries(evs)
+            .map(([action, micros]) => [action, Number(micros)] as const)
+            .sort((a, b) => b[1] - a[1])
+            .map(([action, micros]) => (
+              <AppText key={action} variant="caption" color="textSecondary" numeric>
+                {`${ACTION_LABELS[action] ?? action}: ${(micros / 10_000).toFixed(2)}% of your bet`}
+              </AppText>
+            ))
+        : null}
+    </SurfaceCard>
+  );
+}
+
+/** Player-facing names for the five graded actions. */
+const ACTION_LABELS: Record<string, string> = {
+  HIT: "Hit",
+  STAND: "Stand",
+  DOUBLE: "Double",
+  SPLIT: "Split",
+  SURRENDER: "Surrender",
+};
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },

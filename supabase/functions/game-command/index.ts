@@ -21,7 +21,12 @@
  */
 
 import { applyCommand } from "../../../shared/blackjack/index.js";
-import { countsTowardsAccuracy, gradeDecision, isGradedMode } from "../_shared/decision-grading.ts";
+import {
+  adviceFor,
+  countsTowardsAccuracy,
+  gradeDecision,
+  isGradedMode,
+} from "../_shared/decision-grading.ts";
 import {
   gameCommandRequestSchema,
   type AcceptedResponse,
@@ -341,7 +346,16 @@ async function handle(
   // resynchronise and decide for itself whether to retry.
   if (command.expectedVersion !== state.version) {
     return {
-      response: { status: "stale", publicState: sanitise(state) },
+      response: {
+        status: "stale",
+        // Advice travels with the snapshot a resynchronising client reads, or
+        // a Learn table would lose its recommendation on every refresh — and
+        // the table screen refreshes on a timer.
+        publicState: {
+          ...sanitise(state),
+          advice: adviceFor({ state, seatId: seat.id, assistance: session.assistance }),
+        },
+      },
       outcome: "stale",
       stateVersion: state.version,
     };
@@ -463,7 +477,7 @@ async function handle(
     // screen before the choice, and the specification excludes exactly that
     // from the ranked board. So career decisions are graded here and are not
     // sent to `record_decisions`.
-    if (countsTowardsAccuracy(session.mode)) {
+    if (countsTowardsAccuracy(session.mode, session.assistance)) {
       await recordDecisions(tx, {
         userId,
         total: 1,
@@ -531,7 +545,26 @@ async function handle(
   const publicState = sanitise(nextState);
   assertSafeToPublish(published, nextState);
 
-  const response: AcceptedResponse = { status: "accepted", publicState, events: published };
+  /*
+   * Advice goes to the CALLER, not to the broadcast.
+   *
+   * Only a one-seat Quick Play table can carry a non-`play` assistance, so the
+   * two payloads are identical in practice today — but a broadcast is addressed
+   * to every subscriber of the channel, and "what one player asked to be told"
+   * is not a property of the table. Keeping it out of the broadcast means a
+   * future multi-seat mode cannot start showing one player's help to another by
+   * accident.
+   */
+  const advice = adviceFor({
+    state: nextState,
+    seatId: seat.id,
+    assistance: session.assistance,
+  });
+  const response: AcceptedResponse = {
+    status: "accepted",
+    publicState: advice ? { ...publicState, advice } : publicState,
+    events: published,
+  };
 
   await recordAppliedCommand(tx, {
     gameId: command.gameId,

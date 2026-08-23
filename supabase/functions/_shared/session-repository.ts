@@ -43,6 +43,13 @@ export interface SessionRow {
   escrowChips: number;
   rulesetId: string;
   tier: string | null;
+  /**
+   * How much help this table shows. Chosen once at OPEN and never revisable by
+   * a client, because it decides whether the session's decisions count towards
+   * the strategy leaderboard AND whether advice is sent with the snapshot.
+   * Everything except Quick Play is `play`.
+   */
+  assistance: string;
 }
 
 export interface SeatRow {
@@ -95,9 +102,10 @@ export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | 
       escrow_chips: unknown;
       ruleset_id: string;
       tier: string | null;
+      assistance: string;
     }[]
   >`
-    select id, mode, status, version, escrow_chips, ruleset_id, tier
+    select id, mode, status, version, escrow_chips, ruleset_id, tier, assistance
     from public.game_sessions
     where id = ${gameId}::uuid
   `;
@@ -111,6 +119,7 @@ export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | 
     escrowChips: toInteger(row.escrow_chips, "game_sessions.escrow_chips"),
     rulesetId: row.ruleset_id,
     tier: row.tier,
+    assistance: row.assistance,
   };
 }
 

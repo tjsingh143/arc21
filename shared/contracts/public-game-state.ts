@@ -100,6 +100,32 @@ const legalActionSetSchema = z.object({
   insuranceIsEvenMoney: z.boolean(),
 });
 
+/**
+ * What the table is allowed to TELL the player, when the session asked for help.
+ *
+ * Present only on a session whose `assistance` is `learn` or `analysis`, and
+ * only while it is that seat's turn. Computed on the SERVER from authoritative
+ * state by the same advisor that grades the decision — there is one chart in
+ * this system, and a client that rebuilt advice locally would be a second
+ * implementation of it.
+ *
+ * It leaks nothing. Every input is already visible: the player's own cards and
+ * the dealer's UP card. The hole card is never consulted, which is the same
+ * rule `computeAdvice` follows on the Practice table.
+ */
+export const publicAdviceSchema = z.strictObject({
+  seatId: z.string().min(1).max(128),
+  recommended: playerActionTypeSchema,
+  /** Chart-style, e.g. "Hard 16 against 10". */
+  explanation: z.string().min(1).max(160),
+  /**
+   * Expectation per legal action, in MILLIONTHS of one unit wagered. Integers,
+   * because no float decides anything a player is scored on — and `analysis`
+   * only. `learn` gets the recommendation and no numbers.
+   */
+  actionEvMicros: z.record(z.string(), z.int()).nullable(),
+});
+
 export const publicGameStateSchema = z.strictObject({
   gameId: z.string().min(1).max(128),
   version: stateVersionSchema,
@@ -114,8 +140,14 @@ export const publicGameStateSchema = z.strictObject({
   deadlineAt: z.string().min(1).max(64).nullable(),
   shoe: publicShoeSchema,
   legalActions: z.record(z.string(), legalActionSetSchema),
+  /**
+   * Null on every unassisted table, which is all of them except a Quick Play
+   * session the player opened in Learn or Analysis.
+   */
+  advice: publicAdviceSchema.nullable().optional(),
 });
 
+export type ContractPublicAdvice = z.infer<typeof publicAdviceSchema>;
 export type ContractPublicHand = z.infer<typeof publicHandSchema>;
 export type ContractPublicSeat = z.infer<typeof publicSeatSchema>;
 export type ContractPublicGameState = z.infer<typeof publicGameStateSchema>;

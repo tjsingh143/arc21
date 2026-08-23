@@ -14,8 +14,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACCURACY_ELIGIBLE_MODES,
+  assistanceShowsTheAnswer,
   countsTowardsAccuracy,
   gradeDecision,
+  isGradedMode,
 } from "../../supabase/functions/_shared/decision-grading.js";
 import type { EngineState } from "../../shared/blackjack/index.js";
 import { harness } from "../helpers/engine-harness.js";
@@ -34,6 +36,59 @@ function tableAt(shoe: string): EngineState {
     .send({ type: "PLACE_BET", seatId: "s1", amount: 100 })
     .send({ type: "LOCK_BET", seatId: "s1" }).state;
 }
+
+describe("assistance, which is the other half of eligibility", () => {
+  /*
+   * "Solo is unassisted" used to be true by construction: the shared table
+   * screen rendered no advice, and the comment above `ACCURACY_ELIGIBLE_MODES`
+   * said exactly that. Quick Play's assistance selector made it false, so it is
+   * now a fact recorded on the session row — chosen once at OPEN, never
+   * revisable, because a client that could name its assistance per decision
+   * could opt a MISTAKE out of its own accuracy.
+   */
+  it("counts an unassisted solo table", () => {
+    expect(countsTowardsAccuracy("solo", "play")).toBe(true);
+    expect(countsTowardsAccuracy("solo", "challenge")).toBe(true);
+  });
+
+  it("does not count a table that showed the answer first", () => {
+    expect(countsTowardsAccuracy("solo", "learn")).toBe(false);
+    expect(countsTowardsAccuracy("solo", "analysis")).toBe(false);
+  });
+
+  it("defaults to unassisted, so every existing caller is unchanged", () => {
+    // The column defaults to 'play' and the parameter defaults to 'play'. A
+    // mode with no selector — public tables, tournaments, the daily challenge —
+    // must keep exactly the eligibility it had.
+    expect(countsTowardsAccuracy("solo")).toBe(true);
+    expect(countsTowardsAccuracy("public_table")).toBe(true);
+    expect(countsTowardsAccuracy("daily_challenge")).toBe(true);
+  });
+
+  it("never lets assistance rescue a mode that was excluded anyway", () => {
+    expect(countsTowardsAccuracy("tournament", "play")).toBe(false);
+    expect(countsTowardsAccuracy("practice", "challenge")).toBe(false);
+  });
+
+  it("names the two modes that show the answer, and only those", () => {
+    expect(assistanceShowsTheAnswer("learn")).toBe(true);
+    expect(assistanceShowsTheAnswer("analysis")).toBe(true);
+    expect(assistanceShowsTheAnswer("play")).toBe(false);
+    expect(assistanceShowsTheAnswer("challenge")).toBe(false);
+    expect(assistanceShowsTheAnswer("")).toBe(false);
+  });
+
+  it("grades career without counting it, which is a wider set than eligibility", () => {
+    // A career node's second and third stars ARE accuracy thresholds, so its
+    // decisions must be graded — but half the nodes run in Learn, so they must
+    // not reach the ranked board. Two questions, two predicates.
+    expect(isGradedMode("career")).toBe(true);
+    expect(countsTowardsAccuracy("career")).toBe(false);
+    for (const mode of ACCURACY_ELIGIBLE_MODES) expect(isGradedMode(mode)).toBe(true);
+    expect(isGradedMode("practice")).toBe(false);
+    expect(isGradedMode("tournament")).toBe(false);
+  });
+});
 
 describe("which modes count", () => {
   it("is the ranked, unassisted, server-authoritative three", () => {

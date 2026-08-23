@@ -41,6 +41,7 @@ import {
   type CareerNode,
 } from "../_shared/career/index.ts";
 import { settleCareerReward } from "../_shared/career-rewards.ts";
+import { adviceFor } from "../_shared/decision-grading.ts";
 import {
   maxBetForHand,
   rotateToButton,
@@ -691,12 +692,22 @@ async function open(
   const rulesetId = await resolveRulesetId(tx);
   const buyIn = tier.buyIn;
 
+  /*
+   * The assistance mode is recorded HERE and never again. A client that could
+   * name its assistance per decision could opt a mistake out of its own
+   * accuracy by claiming it had help, so the choice is made once, at the moment
+   * the table opens, and every decision in the session is judged against it.
+   * It also decides whether the server sends advice with the snapshot at all.
+   */
+  const assistance = command.assistance ?? "play";
+
   const sessionRows = await tx<{ id: string }[]>`
     insert into public.game_sessions
-      (mode, ruleset_id, tier, host_user_id, status, max_seats, escrow_chips, started_at)
+      (mode, ruleset_id, tier, host_user_id, status, max_seats, escrow_chips,
+       assistance, started_at)
     values
       ('solo', ${rulesetId}::uuid, ${tier.id}::public.table_tier, ${userId}::uuid,
-       'active', 1, ${buyIn}, now())
+       'active', 1, ${buyIn}, ${assistance}::public.assistance_mode, now())
     returning id
   `;
   const gameId = sessionRows[0]?.id;
@@ -774,6 +785,10 @@ async function describeExistingSession(
   if (!locked || !seat) {
     throw new CommandError("NOT_A_PARTICIPANT", `no seat for ${userId} in ${gameId}`);
   }
+  const session = await loadSession(tx, gameId);
+  const advice = session
+    ? adviceFor({ state: locked.state, seatId: seat.id, assistance: session.assistance })
+    : null;
   return {
     status: "opened",
     gameId,
@@ -783,7 +798,9 @@ async function describeExistingSession(
     // the table has been played since, and a stale snapshot would be worse than
     // useless to the client that is retrying.
     walletBalance: await walletBalance(tx, userId),
-    publicState: sanitise(locked.state),
+    // A resumed Learn table keeps its help. Losing it on reconnect would be the
+    // same defect as losing it on refresh.
+    publicState: advice ? { ...sanitise(locked.state), advice } : sanitise(locked.state),
   };
 }
 

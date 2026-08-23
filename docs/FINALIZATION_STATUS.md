@@ -362,3 +362,80 @@ insert '24552abc-…' → username p035ce7eecef6, permitted = t
 supabase test db     444 assertions, PASS   (was 440)
 ```
 
+---
+
+### R6 — Quick Play was unreachable, and the Recovery Grant had no UI · **VERIFIED COMPLETE**
+
+**Severity:** blocker. Two MVP acceptance criteria; the Play screen's own mode list.
+
+**Verified before any fix:**
+
+```
+grep -rn '"OPEN"' app src shared
+  → app/(tabs)/play.tsx:57   (a comment explaining the card is dead)
+  → shared/contracts/session-command.ts:52  (the literal)
+
+grep -rn "claimRecoveryGrant" app src | grep -v src/features/wallet/
+  → (nothing)
+```
+
+`create-session`'s `OPEN` has been the most heavily covered path in
+`tests/server` since the economy shipped and **no client had ever sent it**. The
+Recovery Grant had a gateway method, a server RPC, an eligibility module and
+twenty unit tests, and no screen could invoke it. The eleventh and twelfth
+instances of built-but-never-connected.
+
+**What the specification asks for on this screen**, and where each part landed:
+
+| Requirement | Where |
+|---|---|
+| "First authenticated Quick Play opens setup. Remember the selection afterward" | `useQuickPlayStore.remember`, persisted; `tests/quick-play/selection.test.ts` |
+| Three tiers, fixed buy-in / min / max | `TABLE_TIERS`, read from the engine, never retyped |
+| "High … unlock at level 10" | checked on the screen **and** beside the money in `create-session` |
+| "If the player cannot afford the selected tier, offer: lower tier / Practice / eligible Recovery Grant. Never route directly to a real-money purchase." | the affordability block. There is no purchase anywhere on the screen |
+| assistance selector PLAY / LEARN / ANALYSIS / CHALLENGE | sent once at `OPEN`, recorded on the session row |
+| "Guest Quick Play should transparently redirect to equivalent local Practice" | the signed-out branch offers Practice rather than navigating on its own |
+
+**The part that needed real design.** The same specification excludes "modes
+where answer was shown before choice" from the qualified accuracy board, and
+`solo` is on that board — so Learn and the accuracy leaderboard cannot both be
+right unless the SERVER knows which assistance a session is running. It does
+now: `game_sessions.assistance` (`20260823140000`), chosen once at OPEN and
+never revisable, because a client that could name its assistance per decision
+could opt a mistake out of its own accuracy and opt a good one in.
+
+That column decides two things:
+- whether `countsTowardsAccuracy` counts the session's decisions, and
+- whether the server ATTACHES the recommendation to the snapshot at all.
+
+The advice is computed server-side by `adviceFor`, using the same advisor that
+grades the decision, from the same authoritative state, reading only the seat's
+own cards and the dealer's UP card. A client that rebuilt advice locally would
+be a second implementation of the chart. It rides on the response, not the
+broadcast: only a one-seat table can carry it today, but "what one player asked
+to be told" is not a property of a table.
+
+**Evidence.** `tests/server/quick-play.integration.test.ts`, 6 tests against the
+live stack:
+
+- an unassisted table debits once and carries **no** advice;
+- a Learn table carries the recommendation, addressed to that seat, naming an
+  action that is actually legal, and **no** EV numbers;
+- an Analysis table prices every legal action in integer millionths, and the
+  recommendation is among them;
+- a Learn table's decision does **not** move `player_decision_periods`;
+- an unassisted table's decision **does** — so the exclusion is not blanket;
+- an assistance mode outside the four is a 400.
+
+Plus 10 unit tests on the remembered selection (a stored tier that is not a real
+tier is dropped, never repaired — repairing it would guess with somebody's
+money) and 6 on the eligibility predicate.
+
+```
+npm test                  84 files, 1593 tests passed
+supabase test db          444 assertions, PASS
+npm run check:functions   clean
+npx expo export           6 MB Hermes bundle, every import resolves
+tsc --noEmit / lint       exit 0 / 0 errors
+```
+
