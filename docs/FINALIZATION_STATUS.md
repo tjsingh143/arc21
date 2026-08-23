@@ -298,3 +298,67 @@ half, and `tests/server/rejection-contract.integration.test.ts` for the wire
 half — 6 cases asserting every refusal carries a 4xx status, a declared code, a
 message with no "undefined" in it, and no SQL or stack frame.
 
+---
+
+### R5 — Some accounts could not be created at all · **VERIFIED COMPLETE**
+
+**Severity:** blocker. MVP `□ Email account`; Definition of Done "create an account".
+
+**Found** in the auth container's own log while chasing a one-in-three test
+failure that looked like flakiness:
+
+```
+{"level":"error","path":"/admin/users","status":500,
+ "error":"… new row for relation \"profiles\" violates check constraint
+          \"profiles_username_is_permitted\" (SQLSTATE 23514)"}
+```
+
+**Reproduced deterministically:**
+
+```sql
+insert into auth.users (id, …) values ('24552abc-def0-4000-8000-000000000001', …);
+ERROR:  new row for relation "profiles" violates check constraint "profiles_username_is_permitted"
+DETAIL: Failing row contains (…, p24552abcdef0, …)
+CONTEXT: PL/pgSQL function handle_new_user() line 43
+```
+
+**Root cause.** `handle_new_user` derives a handle as `'p'` plus twelve hex
+digits of the account id and never put it through the filter a **requested**
+handle goes through. `username_is_permitted` folds digits before matching —
+`0→o 1→i 3→e 4→a 5→s 7→t` — so `p24552abcdef0` folds to `p2ass2abcdef0`, splits
+on its remaining digits into `{p, ass, abcdef0}`, and is refused for a forbidden
+whole word. The CHECK rejects the row, the trigger aborts, and GoTrue answers
+the signup **HTTP 500**.
+
+Confirmed against the live function:
+
+```
+select public.username_is_permitted('p24552abcdef0');            → f
+select regexp_split_to_array(translate('p24552abcdef','013457','oieast'), '[_0-9]+');
+                                                                  → {p,ass,abcdef}
+```
+
+About **one account in nine hundred**, chosen at random by a uuid, with nothing
+the player could do about it. Only `ass` is reachable this way — every other
+word on either list needs a letter no hex digit folds to — which is why it was
+rare enough to read as flakiness.
+
+**Fix** (`20260823150000`, restated from the LAST of the function's two prior
+definitions). The derived handle now goes through the same filter, and — the
+part that matters — an unpermitted base draws a **fresh random base** rather
+than a suffix: `p24552abcdef0_1` still contains the segment `ass` once folded,
+so the old loop would have spun to fifty and raised, a 500 either way. A
+permitted-but-taken base still suffixes, keeping the handle tied to the account
+id where it can be.
+
+**Evidence.** The migration inserts the exact reproducing id, asserts the filter
+still refuses `p24552abcdef0` (so the check is not vacuous), asserts a permitted
+handle was allocated, and deletes the row. Four more assertions in
+`08_account_bootstrap.test.sql` hold it there, including that the ordinary
+collision path still produces `p1a2b3c4d5e6f_1`.
+
+```
+insert '24552abc-…' → username p035ce7eecef6, permitted = t
+supabase test db     444 assertions, PASS   (was 440)
+```
+
