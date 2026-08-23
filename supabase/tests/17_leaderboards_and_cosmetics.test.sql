@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(34);
+select plan(39);
 
 -- ---------------------------------------------------------------------------
 -- Structure
@@ -221,6 +221,72 @@ select is(
                            'wallets', 'wallet_ledger', 'tournaments', 'daily_challenges')),
   0,
   'no gameplay or economy table references a cosmetic, so none can affect play'
+);
+
+-- ---------------------------------------------------------------------------
+-- The eight career-gated cosmetics
+-- ---------------------------------------------------------------------------
+-- Three chapter finals by node code and five by chapter. All eight were
+-- unobtainable: they gate on `career_progress`, and nothing anywhere wrote a
+-- row into it. `tests/server/career.integration.test.ts` proves the writer
+-- against the live stack; this proves the gate opens once rows exist, without
+-- playing sixty hands to get there.
+
+reset role;
+
+insert into auth.users (id, email, aud, role) values
+  ('0e000000-0000-4000-8000-00000000000c', 'cos-career@arc21.test', 'authenticated', 'authenticated');
+
+select is(
+  (select count(*)::int
+   from public.cosmetics c
+   where c.unlock_type in ('career_node', 'career_chapter')
+     and public.cosmetic_is_earned('0e000000-0000-4000-8000-00000000000c', c.id)),
+  0,
+  'a new player has earned none of the career cosmetics'
+);
+
+-- Just the chapter final, completed. Its own gate opens; the chapter's does not.
+insert into public.career_progress (user_id, career_node_id, status, stars, first_completed_at)
+select '0e000000-0000-4000-8000-00000000000c', id, 'completed', 1, now()
+from public.career_nodes where code = 'foundation-final';
+
+select ok(
+  public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics where unlock_config ->> 'careerNodeCode' = 'foundation-final')),
+  'completing a chapter final earns the card back it gates'
+);
+
+select ok(
+  not public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics
+     where unlock_type = 'career_chapter' and unlock_config ->> 'chapter' = 'FOUNDATIONS'
+     limit 1)),
+  'but one node is not the chapter — five other nodes are still incomplete'
+);
+
+-- The whole chapter.
+insert into public.career_progress (user_id, career_node_id, status, stars, first_completed_at)
+select '0e000000-0000-4000-8000-00000000000c', id, 'completed', 1, now()
+from public.career_nodes where chapter = 'FOUNDATIONS'
+on conflict (user_id, career_node_id) do update set status = 'completed';
+
+select ok(
+  public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics
+     where unlock_type = 'career_chapter' and unlock_config ->> 'chapter' = 'FOUNDATIONS'
+     limit 1)),
+  'completing every node in the chapter earns the chapter reward'
+);
+
+-- And the grant actually hands them over, rather than merely reporting them
+-- earned. Two different questions, and the second is the one a player sees.
+select ok(
+  public.grant_earned_cosmetics_for('0e000000-0000-4000-8000-00000000000c') > 0,
+  'the grant hands over what the career unlocked'
 );
 
 select * from finish();

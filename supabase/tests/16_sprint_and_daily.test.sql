@@ -29,14 +29,18 @@ select plan(30);
 -- `supabase/functions/_shared/session-economics.ts` decides which modes may move
 -- chips into a wallet, and it lists the enum exhaustively so an unclassified mode
 -- cannot default into either answer. This is the other half of that guard: adding
--- a seventh label fails here until someone has placed it on one side or the other.
+-- a label fails here until someone has placed it on one side or the other.
+-- `career` was added in the closure mission and is NOT wallet-backed: a node's
+-- 2,000 chips are a scoring medium, and crediting them would mint chips per
+-- attempt.
 --
 -- It is not a stylistic assertion. Before that module existed, leaving a private
 -- table credited its 5,000 session chips to the global wallet — 25,000 became
 -- 30,000, repeatable — because nothing anywhere answered the question.
 select enum_has_labels(
   'public', 'game_mode',
-  array['practice', 'solo', 'private_table', 'public_table', 'tournament', 'daily_challenge'],
+  array['practice', 'solo', 'private_table', 'public_table', 'tournament',
+        'daily_challenge', 'career'],
   'every game mode is one session-economics knows about'
 );
 

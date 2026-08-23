@@ -216,5 +216,18 @@ begin
 end $$;
 `;
 
-writeFileSync(OUT, sql);
-console.log(`wrote ${OUT} (${CAREER_NODES.length} nodes)`);
+/*
+ * `--stdout` prints instead of writing.
+ *
+ * `tests/career/catalogue-sql.test.ts` needs the expected content, not the side
+ * effect. Running the writing form from a test made the test MUTATE a tracked
+ * file while the suite was reading it — a race that showed up once as an
+ * unexplained failure in an otherwise green run, which is the worst shape a
+ * defect can take.
+ */
+if (process.argv.includes("--stdout")) {
+  process.stdout.write(sql);
+} else {
+  writeFileSync(OUT, sql);
+  console.log(`wrote ${OUT} (${CAREER_NODES.length} nodes)`);
+}

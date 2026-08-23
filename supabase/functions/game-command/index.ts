@@ -21,7 +21,7 @@
  */
 
 import { applyCommand } from "../../../shared/blackjack/index.js";
-import { countsTowardsAccuracy, gradeDecision } from "../_shared/decision-grading.ts";
+import { countsTowardsAccuracy, gradeDecision, isGradedMode } from "../_shared/decision-grading.ts";
 import {
   gameCommandRequestSchema,
   type AcceptedResponse,
@@ -56,6 +56,7 @@ import {
   recordAppliedCommand,
   syncSeatRow,
   recordDecisions,
+  recordCareerAttemptDecisions,
   recordDailyAttemptDecisions,
   recordHandSettlement,
   syncSessionRow,
@@ -64,6 +65,7 @@ import {
 import { settleTableClosure } from "../_shared/close-table.ts";
 import { chipsCameFromWallet } from "../_shared/session-economics.ts";
 import { resolveHandBoundary } from "../_shared/session-boundary.ts";
+import { careerNodeBySlug } from "../_shared/career/index.ts";
 import { notifyTurnPlayedByTimeout } from "../_shared/notify.ts";
 
 import {
@@ -165,6 +167,29 @@ Deno.serve(async (request: Request): Promise<Response> => {
  */
 function escrowFor(mode: string, state: Parameters<typeof totalChipsAtTable>[0]): number {
   return chipsCameFromWallet(mode) ? totalChipsAtTable(state) : 0;
+}
+
+/**
+ * Whether this career session's decisions count as UNAIDED.
+ *
+ * The node's assistance mode decides it: "learn" and "analysis" put the
+ * recommended play on screen, so a correct choice made while reading it
+ * measures nothing about recall. "play" and "challenge" do not, so their
+ * decisions are unaided. The offline runner draws the identical line from the
+ * identical field — one rule, read from the catalogue in both places.
+ *
+ * Unknown node, or no live attempt: NOT unaided. The conservative direction, so
+ * a lookup failure can never inflate an accuracy figure a star is awarded on.
+ */
+async function careerDecisionIsUnaided(tx: Tx, gameId: string): Promise<boolean> {
+  const rows = await tx<{ code: string }[]>`
+    select n.code
+    from public.career_attempts a
+    join public.career_nodes n on n.id = a.career_node_id
+    where a.game_session_id = ${gameId}::uuid and a.status = 'in_progress'
+  `;
+  const node = rows[0] ? careerNodeBySlug(rows[0].code) : null;
+  return node?.assistance === "play" || node?.assistance === "challenge";
 }
 
 /**
@@ -378,7 +403,7 @@ async function handle(
    * excluded because correct tournament play deviates from the chart, and private
    * tables are excluded because the product calls them unranked.
    */
-  const grade = countsTowardsAccuracy(session.mode)
+  const grade = isGradedMode(session.mode)
     ? gradeDecision({
         mode: session.mode,
         state,
@@ -431,12 +456,32 @@ async function handle(
   if (grade?.counted) {
     // Same transaction as the action itself. Recording accuracy afterwards, or on
     // a schedule, would create a second place for the count to be wrong.
-    await recordDecisions(tx, {
-      userId,
-      total: 1,
-      optimal: grade.optimal ? 1 : 0,
-      at: now,
-    });
+    //
+    // GRADED is not the same as COUNTED TOWARDS THE LEADERBOARD. A career node
+    // has to be graded — its second and third stars are accuracy thresholds —
+    // but half of them run in "learn", which puts the recommended play on
+    // screen before the choice, and the specification excludes exactly that
+    // from the ranked board. So career decisions are graded here and are not
+    // sent to `record_decisions`.
+    if (countsTowardsAccuracy(session.mode)) {
+      await recordDecisions(tx, {
+        userId,
+        total: 1,
+        optimal: grade.optimal ? 1 : 0,
+        at: now,
+      });
+    }
+
+    if (session.mode === "career") {
+      await recordCareerAttemptDecisions(tx, {
+        gameId: command.gameId,
+        total: 1,
+        optimal: grade.optimal ? 1 : 0,
+        // A property of the NODE, never of anything the client sent.
+        unaided: await careerDecisionIsUnaided(tx, command.gameId),
+        evLostMicros: grade.evLostMicros,
+      });
+    }
 
     // The daily board's tie-breaks are accuracy and then EV lost, and neither can
     // come from the week bucket above — that one mixes in every solo and

@@ -10,6 +10,7 @@
  */
 
 import { router } from "expo-router";
+import { useEffect } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -19,6 +20,7 @@ import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
 import {
   CAREER_CHAPTERS,
+  CAREER_NODES,
   careerNodesInChapter,
   careerNodeWorkload,
   TOTAL_CAREER_STARS,
@@ -30,9 +32,31 @@ import {
   totalStars,
 } from "../../shared/career/progress.js";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
+import { useCareerServerStore } from "../../src/features/career/career-server-store";
 
 export default function CareerMapScreen() {
   const { progress, ready } = useCareerProgress();
+  const serverProgress = useCareerServerStore((state) => state.progress);
+  const serverLoaded = useCareerServerStore((state) => state.loaded);
+  const refreshServer = useCareerServerStore((state) => state.refresh);
+
+  useEffect(() => {
+    if (!serverLoaded) void refreshServer();
+  }, [serverLoaded, refreshServer]);
+
+  /*
+   * A node is unlocked by EITHER record.
+   *
+   * Local progress alone would hide ranked progress made on another device;
+   * server progress alone would lock a signed-out player out of a map the
+   * specification says must be playable offline. The union is the only answer
+   * that is right in both directions, and the star count shown is the better of
+   * the two — a ranked three-star run and an offline three-star run both really
+   * happened.
+   */
+  const starsFor = (slug: string): number =>
+    Math.max(starsForNode(progress, slug), serverProgress[slug]?.stars ?? 0);
+  const rankedCount = Object.values(serverProgress).filter((row) => row.completed).length;
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -47,9 +71,9 @@ export default function CareerMapScreen() {
         />
 
         <UnavailableNote>
-          Career runs entirely on your device. Stars are yours to keep; chip and XP
-          rewards need an account, so they are held until accounts exist rather
-          than credited locally.
+          {rankedCount > 0
+            ? `${rankedCount} of ${CAREER_NODES.length} nodes completed on the server. Ranked attempts pay chips, XP and cosmetics; offline practice plays the same node and grants nothing.`
+            : "Every node is playable offline and grants nothing. A ranked attempt runs on the server, on a shoe the server owns, and pays the node's chips, XP and cosmetics the first time you finish it."}
         </UnavailableNote>
 
         {CAREER_CHAPTERS.map((chapter) => {
@@ -72,8 +96,11 @@ export default function CareerMapScreen() {
               </AppText>
 
               {nodes.map((node) => {
-                const unlocked = isNodeUnlocked(progress, node);
-                const stars = starsForNode(progress, node.slug);
+                const unlocked =
+                  isNodeUnlocked(progress, node) ||
+                  node.prerequisiteSlug === null ||
+                  serverProgress[node.prerequisiteSlug]?.completed === true;
+                const stars = starsFor(node.slug);
                 const workload = careerNodeWorkload(node);
 
                 return (

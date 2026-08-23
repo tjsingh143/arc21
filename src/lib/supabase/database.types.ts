@@ -220,6 +220,19 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * The caller's own career progress, keyed by node CODE — which is the same
+       * string as `CareerNode.slug`, so the client never needs a second lookup
+       * table to translate a uuid.
+       *
+       * Read-only, like everything else here. Starting a reward-bearing attempt
+       * is an economic command and goes through the session Edge Function, where
+       * the shoe, the grading and the reward commit together or not at all.
+       */
+      my_career_progress: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
        * The Sprint Tournament's read side. `sprint_format` is the configuration a
        * player sees BEFORE paying an entry fee, read from the server so it cannot
        * drift from what is enforced.

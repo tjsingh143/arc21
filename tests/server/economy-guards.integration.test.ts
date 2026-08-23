@@ -146,11 +146,25 @@ async function balanceOf(token: string): Promise<number> {
   return Number(rows[0]?.balance);
 }
 
-/** Every live seat this player holds. The invariant under test is that it is at most one. */
-async function liveSeats(token: string): Promise<{ game_session_id: string }[]> {
+/**
+ * Every live seat THIS player holds. The invariant under test is at most one.
+ *
+ * `user_id=eq.` is load-bearing, not decoration. `game_session_seats_select_participant`
+ * shows a participant EVERY seat at a table they are sitting at — correctly, because a
+ * player has to see the other stacks — so the unfiltered query returns the whole
+ * table. It reported two seats for one player the first time a second account
+ * happened to be matched into the same public room, which reads exactly like the
+ * defect this file exists to catch. Reproduced deliberately under load before it
+ * was believed: two rows, same `game_session_id`, seat indexes 0 and 1.
+ *
+ * A read through RLS is scoped to what the POLICY permits, which is not the same
+ * as "your own rows".
+ */
+async function liveSeats(token: string, userId: string): Promise<{ game_session_id: string }[]> {
   const rows = (await readAs(
     token,
-    "game_session_seats?status=neq.left&select=game_session_id,status,game_sessions!inner(status)" +
+    `game_session_seats?user_id=eq.${userId}&status=neq.left` +
+      "&select=game_session_id,status,game_sessions!inner(status)" +
       "&game_sessions.status=in.(lobby,active)",
   )) as { game_session_id: string }[];
   if (!Array.isArray(rows)) throw new Error(`could not read seats: ${JSON.stringify(rows)}`);
@@ -212,7 +226,7 @@ suite("one live seat per player", () => {
     expect(joined.body.code).toBe("SESSION_ALREADY_ACTIVE");
 
     expect(await balanceOf(token)).toBe(opening - CASUAL_BUY_IN);
-    expect(await liveSeats(token)).toHaveLength(1);
+    expect(await liveSeats(token, userId)).toHaveLength(1);
   }, 60_000);
 
   /**
@@ -251,7 +265,7 @@ suite("one live seat per player", () => {
     }
 
     expect(await balanceOf(token)).toBe(opening - CASUAL_BUY_IN);
-    expect(await liveSeats(token)).toHaveLength(1);
+    expect(await liveSeats(token, userId)).toHaveLength(1);
   }, 60_000);
 
   /**
@@ -287,6 +301,6 @@ suite("one live seat per player", () => {
     expect(again.status).toBe(200);
     expect(again.body.gameId).toBe(first.body.gameId);
     expect(await balanceOf(token)).toBe(after);
-    expect(await liveSeats(token)).toHaveLength(1);
+    expect(await liveSeats(token, userId)).toHaveLength(1);
   }, 60_000);
 });

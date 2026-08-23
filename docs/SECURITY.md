@@ -61,6 +61,7 @@ is ever loosened.
 |---|---|---|---|---|
 | `blocks` | yes | select / insert / delete own | `SELECT`, `INSERT`, `DELETE` to `authenticated` | You manage your own block list; a block is only ever your own row |
 | `career_nodes` | yes | select active | `SELECT` to `anon` + `authenticated` | The career map is a catalogue. It describes the product, not a person |
+| `career_attempts` | yes | select own | `SELECT` to `authenticated` | Your own reward-bearing attempts. Every counter on the row was written by the server from its own state; the client reports nothing into it |
 | `career_progress` | yes | select own | `SELECT` to `authenticated` | Your own stars. Every write is a server reward |
 | `cosmetics` | yes | select active | `SELECT` to `anon` + `authenticated` | Catalogue. Carries no price column and no player reference |
 | `daily_challenges` | yes | select once open | column-level `SELECT` to `authenticated`, **excluding `seed_secret`** | The commitment and the format are public; the seed is the shoe. `select *` is refused by the privilege system, not filtered by a policy |

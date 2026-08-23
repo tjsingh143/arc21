@@ -13,6 +13,7 @@
 
 import { z } from "zod";
 import {
+  cardSchema,
   chipAmountSchema,
   isoTimestampSchema,
   tableTierSchema,
@@ -20,6 +21,32 @@ import {
 } from "./contract-primitives.js";
 import { publicGameStateSchema } from "./public-game-state.js";
 import { rejectedResponseSchema } from "./command-response.js";
+
+/**
+ * A career node's slug, which is also `career_nodes.code`.
+ *
+ * The same pattern the column's CHECK constraint carries, so a slug the
+ * database would refuse never reaches it.
+ */
+export const careerNodeSlugSchema = z.string().regex(/^[a-z0-9-]{3,40}$/);
+
+/**
+ * One drill scenario, as the server issues it.
+ *
+ * Deliberately the whole visible situation and nothing more: the player's cards,
+ * the dealer's UP card, and which actions are legal. There is no hole card here
+ * — a drill has no dealer hand to resolve — and no recommended action, because
+ * that is the question.
+ */
+export const careerDrillScenarioSchema = z.strictObject({
+  index: z.number().int().nonnegative(),
+  /** Real `Card`s, not codes: the drill screen renders them with `PlayingCard`. */
+  playerCards: z.array(cardSchema).min(2).max(2),
+  dealerUpCard: cardSchema,
+  legalActions: z.array(z.enum(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"])).min(2),
+  label: z.string().min(1).max(64),
+  upcardLabel: z.string().min(1).max(16),
+});
 
 export const openSessionRequestSchema = z.strictObject({
   action: z.literal("OPEN"),
@@ -109,6 +136,48 @@ export const registerSprintRequestSchema = z.strictObject({
   clientSentAt: isoTimestampSchema,
 });
 
+/**
+ * Start or resume a reward-bearing attempt at a career node.
+ *
+ * The client names the NODE and nothing else. Not the shoe, not the bankroll,
+ * not the hand count, not whether the prerequisite is met and certainly not the
+ * result: all of those are read from the catalogue and the player's own
+ * progress, server-side. The specification puts career rewards on the server
+ * and says a reward-bearing attempt requires server authority — this is the
+ * command that makes that true, and the local runner in `src/features/career`
+ * stays exactly what it was: playable offline, and worth nothing.
+ */
+export const startCareerNodeRequestSchema = z.strictObject({
+  action: z.literal("START_CAREER_NODE"),
+  clientRequestId: uuidSchema,
+  /** `CareerNode.slug`, which is also `career_nodes.code`. One key, one catalogue. */
+  nodeSlug: careerNodeSlugSchema,
+  clientSentAt: isoTimestampSchema,
+});
+
+/**
+ * Answer a drill.
+ *
+ * A drill is not a dealt hand: its scenarios are constructed to put one
+ * decision family in front of the player repeatedly. They are constructed from
+ * a secret the SERVER holds, and regenerated here to grade against — so a
+ * client may answer whatever it likes, but it cannot answer an easier question
+ * than the one it was asked, and it cannot decide what its answer was worth.
+ *
+ * The whole attempt arrives at once, which is no weaker than one answer at a
+ * time: a modified client that knows basic strategy can answer perfectly in
+ * either shape. What matters is that the GRADE is the server's, and the reward
+ * follows the grade.
+ */
+export const submitCareerDrillRequestSchema = z.strictObject({
+  action: z.literal("SUBMIT_CAREER_DRILL"),
+  clientRequestId: uuidSchema,
+  attemptId: uuidSchema,
+  /** One action per scenario, in the order they were issued. */
+  answers: z.array(z.enum(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"])).min(1).max(100),
+  clientSentAt: isoTimestampSchema,
+});
+
 export const sessionRequestSchema = z.discriminatedUnion("action", [
   openSessionRequestSchema,
   cashOutRequestSchema,
@@ -117,6 +186,8 @@ export const sessionRequestSchema = z.discriminatedUnion("action", [
   joinPublicTableRequestSchema,
   startDailyChallengeRequestSchema,
   registerSprintRequestSchema,
+  startCareerNodeRequestSchema,
+  submitCareerDrillRequestSchema,
 ]);
 
 export const openedResponseSchema = z.strictObject({
@@ -198,6 +269,59 @@ export const sprintRegisteredResponseSchema = z.strictObject({
   publicState: publicGameStateSchema.nullable(),
 });
 
+/**
+ * A career node, opened.
+ *
+ * Two shapes in one response because a career node has two formats and the
+ * client must be told which it got. A STANDARD node returns a table — game id,
+ * seat id, public state — and is played through `game-command` like any other
+ * server session. A DRILL returns its scenarios and no table at all.
+ *
+ * `stars` on a previous best and `rewardPaid` are included so the screen can
+ * say what is actually at stake: a node completed before still awards stars,
+ * but its first-completion reward has already been paid and will not be paid
+ * again. Saying that plainly beats a player discovering it afterwards.
+ */
+export const careerNodeStartedResponseSchema = z.strictObject({
+  status: z.literal("career_node_started"),
+  attemptId: uuidSchema,
+  nodeSlug: careerNodeSlugSchema,
+  format: z.enum(["standard", "drill"]),
+  startingChips: chipAmountSchema,
+  /** Non-null for a standard node; null for a drill, which has no table. */
+  gameId: uuidSchema.nullable(),
+  seatId: uuidSchema.nullable(),
+  publicState: publicGameStateSchema.nullable(),
+  /** Non-empty for a drill, empty for a standard node. */
+  scenarios: z.array(careerDrillScenarioSchema),
+  /** Best stars already recorded for this node, 0 if never completed. */
+  bestStars: z.number().int().min(0).max(3),
+  /** True when the first-completion reward has already been paid for this node. */
+  rewardPaid: z.boolean(),
+});
+
+/** A graded drill, as the server scored it. */
+export const careerDrillGradedResponseSchema = z.strictObject({
+  status: z.literal("career_drill_graded"),
+  attemptId: uuidSchema,
+  nodeSlug: careerNodeSlugSchema,
+  stars: z.number().int().min(0).max(3),
+  decisions: z.number().int().nonnegative(),
+  correct: z.number().int().nonnegative(),
+  /** Chips actually credited. Zero on a repeat completion. */
+  rewardChips: chipAmountSchema,
+  rewardXp: z.number().int().nonnegative(),
+  walletBalance: chipAmountSchema,
+  /** Per scenario, in the order they were answered. */
+  verdicts: z.array(
+    z.strictObject({
+      chosen: z.enum(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"]),
+      recommended: z.enum(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"]),
+      correct: z.boolean(),
+    }),
+  ),
+});
+
 export const sessionResponseSchema = z.discriminatedUnion("status", [
   openedResponseSchema,
   cashedOutResponseSchema,
@@ -206,9 +330,16 @@ export const sessionResponseSchema = z.discriminatedUnion("status", [
   publicSeatTakenResponseSchema,
   dailyChallengeStartedResponseSchema,
   sprintRegisteredResponseSchema,
+  careerNodeStartedResponseSchema,
+  careerDrillGradedResponseSchema,
   rejectedResponseSchema,
 ]);
 
+export type StartCareerNodeRequest = z.infer<typeof startCareerNodeRequestSchema>;
+export type SubmitCareerDrillRequest = z.infer<typeof submitCareerDrillRequestSchema>;
+export type CareerDrillScenario = z.infer<typeof careerDrillScenarioSchema>;
+export type CareerNodeStartedResponse = z.infer<typeof careerNodeStartedResponseSchema>;
+export type CareerDrillGradedResponse = z.infer<typeof careerDrillGradedResponseSchema>;
 export type OpenSessionRequest = z.infer<typeof openSessionRequestSchema>;
 export type CashOutRequest = z.infer<typeof cashOutRequestSchema>;
 export type StartPrivateTableRequest = z.infer<typeof startPrivateTableRequestSchema>;

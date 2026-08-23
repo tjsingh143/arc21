@@ -23,7 +23,9 @@ export type CommandOutcome =
   | "private_stack_reset"
   | "public_seat_taken"
   | "daily_challenge_started"
-  | "sprint_registered";
+  | "sprint_registered"
+  | "career_node_started"
+  | "career_drill_graded";
 
 export interface LogFields {
   /** Correlates a client-visible failure with the server-side detail. */

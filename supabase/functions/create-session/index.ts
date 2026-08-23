@@ -32,6 +32,16 @@ import {
 } from "../../../shared/blackjack/index.js";
 import { DAILY, hmacCounterStream, isRankedAttempt } from "../_shared/daily-challenge.ts";
 import {
+  buildDrillScenarios,
+  careerNodeBySlug,
+  CAREER_RULES,
+  evaluateStars,
+  gradeDrillDecision,
+  maxWagerForNode,
+  type CareerNode,
+} from "../_shared/career/index.ts";
+import { settleCareerReward } from "../_shared/career-rewards.ts";
+import {
   maxBetForHand,
   rotateToButton,
   SPRINT,
@@ -46,6 +56,9 @@ import {
   type JoinPublicTableRequest,
   type StartDailyChallengeRequest,
   type RegisterSprintRequest,
+  type StartCareerNodeRequest,
+  type SubmitCareerDrillRequest,
+  type CareerDrillScenario,
 } from "../../../shared/contracts/index.js";
 import { authenticate } from "../_shared/identity.ts";
 import { classify, CommandError, toRejectedResponse } from "../_shared/command-errors.ts";
@@ -147,6 +160,12 @@ Deno.serve(async (request: Request): Promise<Response> => {
         startDailyChallenge(tx, identity.userId, command, log),
       );
       log.outcome = "daily_challenge_started";
+    } else if (command.action === "START_CAREER_NODE") {
+      response = await withTransaction((tx) => startCareerNode(tx, identity.userId, command, log));
+      log.outcome = "career_node_started";
+    } else if (command.action === "SUBMIT_CAREER_DRILL") {
+      response = await withTransaction((tx) => submitCareerDrill(tx, identity.userId, command, log));
+      log.outcome = "career_drill_graded";
     } else if (command.action === "REGISTER_SPRINT") {
       response = await withTransaction((tx) => registerSprint(tx, identity.userId, command, log));
       log.outcome = "sprint_registered";
@@ -230,16 +249,15 @@ async function startPrivateTable(
   const room = rooms[0] as
     | { id: string; status: string; host_user_id: string; game_session_id: string | null }
     | undefined;
-  if (!room) throw new CommandError("NOT_FOUND", "no such table");
+  if (!room) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
 
-  const members = await tx`
+  const seated = await tx<{ user_id: string; seat_index: number; display_name: string }[]>`
     select m.user_id, m.seat_index, p.display_name
     from public.room_members m
     join public.profiles p on p.id = m.user_id
     where m.room_id = ${command.roomId}::uuid and m.status = 'joined'
     order by m.seat_index
   `;
-  const seated = members as Array<{ user_id: string; seat_index: number; display_name: string }>;
 
   if (!seated.some((member) => member.user_id === userId)) {
     throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
@@ -338,7 +356,7 @@ async function resetPrivateStack(
   log: LogFields,
 ): Promise<SessionResponse> {
   const session = await loadSession(tx, command.gameId);
-  if (!session) throw new CommandError("NOT_FOUND", "no such table");
+  if (!session) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
   if (session.mode !== "private_table") {
     throw new CommandError("ILLEGAL_ACTION", "only a private table can reset a stack");
   }
@@ -348,7 +366,7 @@ async function resetPrivateStack(
   log.seatId = seat.id;
 
   const locked = await lockEngineState(tx, command.gameId);
-  if (!locked) throw new CommandError("NOT_FOUND", "that table has no game");
+  if (!locked) throw new CommandError("NOT_A_PARTICIPANT", "that table has no game");
 
   const state = locked.state;
   if (!canCloseSession(state, seat.id)) {
@@ -454,7 +472,7 @@ async function joinPublicTable(
   const room = rooms[0] as
     | { id: string; tier: string | null; game_session_id: string | null; max_seats: number }
     | undefined;
-  if (!room) throw new CommandError("NOT_FOUND", "no such table");
+  if (!room) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
   if (!room.tier) throw new CommandError("INTERNAL", "a public table with no stakes");
 
   const seated = await tx`
@@ -494,9 +512,14 @@ async function joinPublicTable(
     `;
   }
 
-  let seat = await findSeat(tx, gameId, userId);
-  if (!seat) {
-    const seatRows = await tx`
+  // The seat ID, not the row: everything below needs only the id, and assigning
+  // a `{ id }` literal back into a `SeatRow | null` was a type error that
+  // `deno check` reports and `tsconfig.json` cannot see, because
+  // `supabase/functions` is excluded from it.
+  const existingSeat = await findSeat(tx, gameId, userId);
+  let seatId = existingSeat?.id ?? null;
+  if (!seatId) {
+    const seatRows = await tx<{ id: string }[]>`
       insert into public.game_session_seats
         (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
       values
@@ -507,11 +530,10 @@ async function joinPublicTable(
          ${tier.buyIn}::bigint, 'active')
       returning id
     `;
-    const seatId = (seatRows[0] as { id?: string } | undefined)?.id;
+    seatId = seatRows[0]?.id ?? null;
     if (!seatId) throw new CommandError("INTERNAL", "seat insert returned no id");
-    seat = { id: seatId };
   }
-  log.seatId = seat.id;
+  log.seatId = seatId;
 
   const now = serverNow();
   const locked = room.game_session_id ? await lockEngineState(tx, gameId) : null;
@@ -521,14 +543,14 @@ async function joinPublicTable(
     const created = createGame({
       gameId,
       rules: rulesForTier(tier),
-      seats: [{ seatId: seat.id, userId, displayName: profile.displayName, stack: tier.buyIn }],
+      seats: [{ seatId, userId, displayName: profile.displayName, stack: tier.buyIn }],
       random: serverRandom(),
       timing: PRIVATE_TIMING,
       now,
     });
     const opened = startSession(created, { now, random: serverRandom() });
     await insertEngineState(tx, gameId, opened.state);
-  } else if (!locked.state.seats.some((candidate) => candidate.seatId === seat.id)) {
+  } else if (!locked.state.seats.some((candidate) => candidate.seatId === seatId)) {
     /*
      * A later arrival. The seat is appended with its own funded stack and the
      * version bumped, so every client refetches. The specification says a
@@ -542,12 +564,18 @@ async function joinPublicTable(
       seats: [
         ...locked.state.seats,
         {
-          seatId: seat.id,
+          seatId,
           userId,
           displayName: profile.displayName,
           stack: tier.buyIn,
           originalBet: 0,
           insuranceBet: 0,
+          // Present, not omitted. Every read path happens to treat `undefined`
+          // as "not pending", which is the right answer for a seat that was not
+          // dealt in — but a persisted seat missing a required field is a state
+          // that only stays harmless by luck, and the engine resets this to
+          // exactly this value at the start of the next hand anyway.
+          insuranceDecision: "NOT_OFFERED",
           hands: [],
           currentHandIndex: 0,
           connected: true,
@@ -598,7 +626,7 @@ async function joinPublicTable(
     status: "public_seat_taken",
     gameId,
     roomId: command.roomId,
-    seatId: seat.id,
+    seatId,
     buyIn: tier.buyIn,
     walletBalance: balance,
     publicState: sanitise(finalState.state),
@@ -612,7 +640,7 @@ async function describePrivateTable(
   userId: string,
 ): Promise<SessionResponse> {
   const locked = await lockEngineState(tx, gameId);
-  if (!locked) throw new CommandError("NOT_FOUND", "that table has no game");
+  if (!locked) throw new CommandError("NOT_A_PARTICIPANT", "that table has no game");
 
   const seat = await findSeat(tx, gameId, userId);
   if (!seat) throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
@@ -1295,6 +1323,448 @@ async function debitSprintEntry(
     }
     throw error;
   }
+}
+
+// ---------------------------------------------------------------------------
+// CAREER
+// ---------------------------------------------------------------------------
+
+/**
+ * Start or resume a reward-bearing attempt at a career node.
+ *
+ * The specification puts career rewards on the server in three separate places
+ * — the authority table, the offline-design paragraph, and the build phases —
+ * and this is where that becomes true. Nothing was writing `career_progress` at
+ * all before it: the table existed, the cosmetic gates read it, and no code
+ * path anywhere put a row in it.
+ *
+ * WHAT THE CLIENT SUPPLIES: the node's slug. That is the whole list. The
+ * bankroll, the hand count, the wager ceiling, the shoe, the accuracy basis and
+ * whether the prerequisite is met are all read here.
+ *
+ * A STANDARD node becomes a real single-seat session in the `career` mode — the
+ * server owns the shoe, validates every action and grades every decision — and
+ * finishes through the boundary in `_shared/session-boundary.ts`. A DRILL has
+ * no table: its scenarios are constructed from a secret held in `private`, and
+ * graded by `submitCareerDrill` below.
+ *
+ * A career stack is a SCORING MEDIUM. No wallet is debited to sit down, and the
+ * stack vanishes with the session — `career` is deliberately absent from
+ * `WALLET_BACKED_MODES`, because crediting 2,000 chips back per attempt is a
+ * chip mint, which is the exact defect that module was written for.
+ */
+async function startCareerNode(
+  tx: Tx,
+  userId: string,
+  command: StartCareerNodeRequest,
+  log: LogFields,
+): Promise<SessionResponse> {
+  const node = careerNodeBySlug(command.nodeSlug);
+  if (!node) throw new CommandError("INVALID_REQUEST", `no career node ${command.nodeSlug}`);
+
+  const rows = await tx<{ id: string; reward_chips: unknown; reward_xp: unknown }[]>`
+    select id, reward_chips, reward_xp from public.career_nodes
+    where code = ${node.slug} and is_active
+  `;
+  const nodeRow = rows[0];
+  if (!nodeRow) throw new CommandError("INTERNAL", `career node ${node.slug} not in the catalogue`);
+
+  /*
+   * The prerequisite, checked from the player's OWN progress rather than from
+   * anything the client said. One star is enough and completion always awards
+   * one, so this can never be closed by bad cards — see `stars.ts`.
+   */
+  if (node.prerequisiteSlug !== null) {
+    const met = await tx<{ ok: boolean }[]>`
+      select true as ok
+      from public.career_progress p
+      join public.career_nodes n on n.id = p.career_node_id
+      where p.user_id = ${userId}::uuid
+        and n.code = ${node.prerequisiteSlug}
+        and p.status = 'completed'
+    `;
+    if (!met[0]) {
+      throw new CommandError("TABLE_LOCKED", `${node.slug} needs ${node.prerequisiteSlug}`);
+    }
+  }
+
+  const priorRows = await tx<{ stars: unknown; reward_claimed_at: string | null }[]>`
+    select stars, reward_claimed_at from public.career_progress
+    where user_id = ${userId}::uuid and career_node_id = ${nodeRow.id}::uuid
+  `;
+  const bestStars = toInteger(priorRows[0]?.stars ?? 0, "career_progress.stars");
+  const rewardPaid = priorRows[0]?.reward_claimed_at !== null && priorRows[0] !== undefined;
+
+  // An attempt already in flight is RESUMED, not restarted. Restarting would
+  // hand a player a second shoe at the same node and let them keep whichever
+  // went better, which is the career equivalent of a second ranked daily run.
+  const live = await tx<{ id: string; format: string; game_session_id: string | null }[]>`
+    select id, format, game_session_id from public.career_attempts
+    where user_id = ${userId}::uuid and career_node_id = ${nodeRow.id}::uuid
+      and status = 'in_progress'
+    for update
+  `;
+  const existing = live[0];
+  if (existing) {
+    log.gameId = existing.game_session_id ?? undefined;
+    return await describeCareerAttempt(tx, {
+      attemptId: existing.id,
+      userId,
+      node,
+      gameId: existing.game_session_id,
+      bestStars,
+      rewardPaid,
+    });
+  }
+
+  await tx`select public.record_career_attempt_started(${userId}::uuid, ${nodeRow.id}::uuid)`;
+
+  if (node.format === "drill") {
+    const decisions = node.decisions ?? 0;
+    if (decisions <= 0) throw new CommandError("INTERNAL", `drill ${node.slug} asks nothing`);
+
+    const attemptRows = await tx<{ id: string }[]>`
+      insert into public.career_attempts
+        (user_id, career_node_id, format, starting_chips)
+      values (${userId}::uuid, ${nodeRow.id}::uuid, 'drill', 0)
+      returning id
+    `;
+    const attemptId = attemptRows[0]?.id;
+    if (!attemptId) throw new CommandError("INTERNAL", "career attempt insert returned no id");
+
+    // 32 bytes of CSPRNG. The scenarios are regenerated from this to grade the
+    // answers, so a client cannot answer an easier question than it was asked.
+    const seed = seedSecret();
+    await tx`
+      insert into private.career_drill_seeds (attempt_id, seed_secret, focus, scenario_count)
+      values (${attemptId}::uuid, ${seed}, ${node.drillFocus ?? "mixed"}, ${decisions}::int)
+    `;
+
+    return {
+      status: "career_node_started",
+      attemptId,
+      nodeSlug: node.slug,
+      format: "drill",
+      startingChips: 0,
+      gameId: null,
+      seatId: null,
+      publicState: null,
+      scenarios: issuedScenarios(node, seed, decisions),
+      bestStars,
+      rewardPaid,
+    };
+  }
+
+  // --- A standard node: one seat, one server-owned shoe -------------------
+  await assertNoOtherLiveSeat(tx, userId, null);
+
+  const profile = await loadProfile(tx, userId);
+  const gameId = crypto.randomUUID();
+  log.gameId = gameId;
+
+  await tx`
+    insert into public.game_sessions
+      (id, mode, ruleset_id, host_user_id, status, max_seats, escrow_chips, started_at)
+    values
+      (${gameId}::uuid, 'career', ${await resolveRulesetId(tx)}::uuid, ${userId}::uuid,
+       'active', 1, 0, now())
+  `;
+
+  const seatRows = await tx<{ id: string }[]>`
+    insert into public.game_session_seats
+      (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
+    values
+      (${gameId}::uuid, 0, ${userId}::uuid, ${profile.displayName},
+       ${node.startingBankroll}::bigint, 0, 'active')
+    returning id
+  `;
+  const seatId = seatRows[0]?.id;
+  if (!seatId) throw new CommandError("INTERNAL", "seat insert returned no id");
+  log.seatId = seatId;
+
+  const now = serverNow();
+  const created = createGame({
+    gameId,
+    // The node's wager ceiling, applied as the table maximum. It is table
+    // configuration — a posted limit — and never a card or an outcome.
+    rules: { ...CAREER_RULES, maxBet: maxWagerForNode(node) },
+    seats: [
+      { seatId, userId, displayName: profile.displayName, stack: node.startingBankroll },
+    ],
+    // The CSPRNG. A career shoe is a normal fair shoe and nothing here inspects
+    // or arranges it to make a target reachable.
+    random: serverRandom(),
+    // No clocks, for the same reason a solo table has none: one player stalls
+    // nobody, and auto-standing would silently change their recorded accuracy.
+    timing: SOLO_TIMING,
+    now,
+  });
+  const opened = startSession(created, { now, random: serverRandom() });
+  await insertEngineState(tx, gameId, opened.state);
+  await appendEvents(tx, gameId, opened.events, opened.state);
+
+  const attemptRows = await tx<{ id: string }[]>`
+    insert into public.career_attempts
+      (user_id, career_node_id, game_session_id, format, starting_chips, final_chips)
+    values (${userId}::uuid, ${nodeRow.id}::uuid, ${gameId}::uuid, 'standard',
+            ${node.startingBankroll}::bigint, ${node.startingBankroll}::bigint)
+    returning id
+  `;
+  const attemptId = attemptRows[0]?.id;
+  if (!attemptId) throw new CommandError("INTERNAL", "career attempt insert returned no id");
+
+  return {
+    status: "career_node_started",
+    attemptId,
+    nodeSlug: node.slug,
+    format: "standard",
+    startingChips: node.startingBankroll,
+    gameId,
+    seatId,
+    publicState: sanitise(opened.state),
+    scenarios: [],
+    bestStars,
+    rewardPaid,
+  };
+}
+
+/** Resuming: the same answer the start would have given, from what is stored. */
+async function describeCareerAttempt(
+  tx: Tx,
+  params: {
+    attemptId: string;
+    userId: string;
+    node: CareerNode;
+    gameId: string | null;
+    bestStars: number;
+    rewardPaid: boolean;
+  },
+): Promise<SessionResponse> {
+  if (params.node.format === "drill") {
+    const seedRows = await tx<{ seed_secret: string; scenario_count: unknown }[]>`
+      select seed_secret, scenario_count from private.career_drill_seeds
+      where attempt_id = ${params.attemptId}::uuid
+    `;
+    const seed = seedRows[0];
+    if (!seed) throw new CommandError("INTERNAL", "a drill attempt with no scenarios");
+    const count = toInteger(seed.scenario_count, "career_drill_seeds.scenario_count");
+    return {
+      status: "career_node_started",
+      attemptId: params.attemptId,
+      nodeSlug: params.node.slug,
+      format: "drill",
+      startingChips: 0,
+      gameId: null,
+      seatId: null,
+      publicState: null,
+      // Regenerated, never stored twice. Same secret, same questions.
+      scenarios: issuedScenarios(params.node, seed.seed_secret, count),
+      bestStars: params.bestStars,
+      rewardPaid: params.rewardPaid,
+    };
+  }
+
+  if (!params.gameId) throw new CommandError("INTERNAL", "a standard attempt with no table");
+  const locked = await lockEngineState(tx, params.gameId);
+  const seat = await findSeat(tx, params.gameId, params.userId);
+  if (!locked || !seat) throw new CommandError("NOT_A_PARTICIPANT", "no attempt to resume");
+
+  return {
+    status: "career_node_started",
+    attemptId: params.attemptId,
+    nodeSlug: params.node.slug,
+    format: "standard",
+    startingChips: params.node.startingBankroll,
+    gameId: params.gameId,
+    seatId: seat.id,
+    publicState: sanitise(locked.state),
+    scenarios: [],
+    bestStars: params.bestStars,
+    rewardPaid: params.rewardPaid,
+  };
+}
+
+/**
+ * The scenarios for a drill attempt, derived from its secret.
+ *
+ * Regenerated on every call rather than stored: the secret IS the scenario
+ * list, and a stored copy is a second thing that can disagree with what the
+ * grader will use. `hmacCounterStream` is the same deterministic source the
+ * daily challenge's shoe comes from.
+ *
+ * Note what a scenario carries: the two player cards, the dealer's UP card and
+ * the legal actions. No hole card — a drill has no dealer hand to resolve — and
+ * no recommendation, because that is the question being asked.
+ */
+function issuedScenarios(
+  node: CareerNode,
+  seed: string,
+  count: number,
+): CareerDrillScenario[] {
+  const scenarios = buildDrillScenarios({
+    rules: CAREER_RULES,
+    focus: node.drillFocus ?? "mixed",
+    count,
+    random: hmacCounterStream(seed),
+  });
+  return scenarios.map((scenario, index) => ({
+    index,
+    // The engine's own `Card` shape, so the drill screen renders them with the
+    // same component the table uses and nothing has to translate a code.
+    playerCards: [...scenario.playerCards],
+    dealerUpCard: scenario.dealerUpcard,
+    legalActions: scenario.legalActions.filter(isDrillAction),
+    label: scenario.handLabel,
+    upcardLabel: scenario.upcardLabel,
+  }));
+}
+
+/** The five actions a chart can price. `INSURANCE` is not one of them. */
+type DrillAction = CareerDrillScenario["legalActions"][number];
+
+function isDrillAction(action: string): action is DrillAction {
+  return action === "HIT" || action === "STAND" || action === "DOUBLE" ||
+    action === "SPLIT" || action === "SURRENDER";
+}
+
+/** 32 bytes of CSPRNG, hex. Never `Math.random()`, and never a client value. */
+function seedSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Grade a drill and settle the attempt.
+ *
+ * The scenarios are REGENERATED from the server's secret and the answers are
+ * marked against those, by index. A client may send whatever actions it likes;
+ * it cannot send a different question, and it cannot decide what its answer was
+ * worth. `evaluateStars` — the same pure function the local runner uses, moved
+ * rather than copied — turns the counts into stars.
+ *
+ * The whole attempt arrives at once. That is no weaker than one answer at a
+ * time: a modified client that knows basic strategy answers perfectly either
+ * way, and a drill has no hidden information to protect. What matters is that
+ * the GRADE is the server's and the reward follows the grade.
+ */
+async function submitCareerDrill(
+  tx: Tx,
+  userId: string,
+  command: SubmitCareerDrillRequest,
+  log: LogFields,
+): Promise<SessionResponse> {
+  const attemptRows = await tx<
+    { id: string; user_id: string; status: string; format: string; node_code: string; node_id: string }[]
+  >`
+    select a.id, a.user_id, a.status, a.format, n.code as node_code, n.id as node_id
+    from public.career_attempts a
+    join public.career_nodes n on n.id = a.career_node_id
+    where a.id = ${command.attemptId}::uuid
+    for update of a
+  `;
+  const attempt = attemptRows[0];
+  if (!attempt) throw new CommandError("NOT_A_PARTICIPANT", "no such attempt");
+  // Identity comes from the verified JWT, never from the row the client named.
+  if (attempt.user_id !== userId) throw new CommandError("NOT_A_PARTICIPANT", "not your attempt");
+  if (attempt.format !== "drill") throw new CommandError("INVALID_REQUEST", "not a drill");
+  if (attempt.status !== "in_progress") {
+    // Not an error worth a 500: the attempt is finished, and the finished
+    // record is the answer. Replaying must not grade a second time.
+    throw new CommandError("SESSION_CLOSED", "this attempt has already been graded");
+  }
+
+  const node = careerNodeBySlug(attempt.node_code);
+  if (!node) throw new CommandError("INTERNAL", `attempt names unknown node ${attempt.node_code}`);
+
+  const seedRows = await tx<{ seed_secret: string; scenario_count: unknown }[]>`
+    select seed_secret, scenario_count from private.career_drill_seeds
+    where attempt_id = ${attempt.id}::uuid
+  `;
+  const seed = seedRows[0];
+  if (!seed) throw new CommandError("INTERNAL", "a drill attempt with no scenarios");
+  const count = toInteger(seed.scenario_count, "career_drill_seeds.scenario_count");
+
+  if (command.answers.length !== count) {
+    throw new CommandError("INVALID_REQUEST", `expected ${count} answers`);
+  }
+
+  const scenarios = buildDrillScenarios({
+    rules: CAREER_RULES,
+    focus: node.drillFocus ?? "mixed",
+    count,
+    random: hmacCounterStream(seed.seed_secret),
+  });
+
+  const verdicts: { chosen: DrillAction; recommended: DrillAction; correct: boolean }[] = [];
+  let decisions = 0;
+  let correct = 0;
+  let evLostMicros = 0;
+
+  for (const [index, scenario] of scenarios.entries()) {
+    const chosen = command.answers[index]!;
+    const verdict = gradeDrillDecision(CAREER_RULES, scenario, chosen);
+    // `drillPool` only ever emits scenarios the validated tables can answer, so
+    // null is impossible for a shipped focus — and if it ever happened the
+    // decision is DROPPED rather than marked wrong. "We could not grade that"
+    // and "you were wrong" are different statements.
+    if (!verdict) continue;
+    decisions += 1;
+    if (verdict.correct) correct += 1;
+    if (verdict.evLost !== null) evLostMicros += Math.round(verdict.evLost * 1_000_000);
+    verdicts.push({
+      chosen,
+      recommended: verdict.recommended as DrillAction,
+      correct: verdict.correct,
+    });
+  }
+
+  // Every drill decision is unaided by construction: the scenario shows the
+  // hand and asks for the play, and no recommendation is ever sent with it.
+  const evaluation = evaluateStars(node, {
+    nodeId: node.id,
+    completed: true,
+    completionReason: "target_reached",
+    handsPlayed: 0,
+    decisions,
+    correct,
+    unaidedDecisions: decisions,
+    unaidedCorrect: correct,
+    estimatedEvLost: evLostMicros / 1_000_000,
+    startingBankroll: 0,
+    endingBankroll: 0,
+  });
+
+  await tx`
+    update public.career_attempts
+    set status = 'completed', completed_at = now(), stars = ${evaluation.stars}::int,
+        decisions_total = ${decisions}::int, decisions_optimal = ${correct}::int,
+        unaided_total = ${decisions}::int, unaided_optimal = ${correct}::int,
+        ev_lost_micros = ${evLostMicros}::bigint
+    where id = ${attempt.id}::uuid
+  `;
+
+  const paid = await settleCareerReward(tx, {
+    userId,
+    nodeId: attempt.node_id,
+    node,
+    stars: evaluation.stars,
+    score: correct,
+  });
+
+  log.chipDelta = paid.rewardChips;
+  return {
+    status: "career_drill_graded",
+    attemptId: attempt.id,
+    nodeSlug: node.slug,
+    stars: evaluation.stars,
+    decisions,
+    correct,
+    rewardChips: paid.rewardChips,
+    rewardXp: paid.rewardXp,
+    walletBalance: paid.walletBalance,
+    verdicts,
+  };
 }
 
 // ---------------------------------------------------------------------------

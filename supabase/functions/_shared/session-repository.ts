@@ -371,12 +371,33 @@ export async function recordAppliedCommand(
 // Money
 // ---------------------------------------------------------------------------
 
+/**
+ * Every label of the database's `public.ledger_reason` enum.
+ *
+ * Exhaustive rather than "the ones this file happens to use". The narrower list
+ * omitted `tournament_entry` and `daily_challenge_reward` — both of which are
+ * passed by real call sites — so the type said those calls were wrong while the
+ * database accepted them happily. Nobody saw it, because
+ * `supabase/functions` is excluded from `tsconfig.json` and `deno check` had
+ * never been run on this directory.
+ *
+ * The three at the bottom are written by database functions rather than from
+ * here; they are listed because this type describes the COLUMN, and a type that
+ * describes only half a column is the thing that hid the defect.
+ */
 export type LedgerReason =
   | "table_buy_in"
   | "table_cash_out"
   | "career_reward"
+  | "tournament_entry"
   | "tournament_prize"
-  | "correction";
+  | "daily_challenge_reward"
+  | "daily_top_up"
+  | "correction"
+  // Server-side only: written by `apply_wallet_delta`'s callers in SQL.
+  | "initial_grant"
+  | "level_up_reward"
+  | "recovery_grant";
 
 export interface LedgerEntry {
   id: string;
@@ -557,6 +578,45 @@ export async function recordDecisions(
  * Keyed by the session, so an unranked replay — which has no entry row at all —
  * writes nothing without anything here having to know that it was a replay.
  */
+/**
+ * The running decision counters for a live career attempt.
+ *
+ * The same reasoning as the daily attempt's counters, one mode along: an
+ * attempt's accuracy is a fact about that attempt, and `player_decision_periods`
+ * mixes in every ranked decision of the week. `evaluateStars` needs the
+ * attempt's own numbers, so the attempt carries them.
+ *
+ * `unaided` is derived from the NODE, not from anything a client said — a
+ * "learn" node shows the recommended play before the choice, so its decisions
+ * measure recall of nothing. See `career-session-store.ts`, which draws the
+ * same line for the offline runner.
+ *
+ * Written straight to the row rather than through a function because there is
+ * no client role that could ever call either: `career_attempts` carries
+ * `deny_client_write` and no INSERT/UPDATE grant at all.
+ */
+export async function recordCareerAttemptDecisions(
+  tx: Tx,
+  params: {
+    gameId: string;
+    total: number;
+    optimal: number;
+    unaided: boolean;
+    evLostMicros: number;
+  },
+): Promise<void> {
+  if (params.total <= 0) return;
+  await tx`
+    update public.career_attempts
+    set decisions_total   = decisions_total + ${params.total}::int,
+        decisions_optimal = decisions_optimal + ${params.optimal}::int,
+        unaided_total     = unaided_total + ${params.unaided ? params.total : 0}::int,
+        unaided_optimal   = unaided_optimal + ${params.unaided ? params.optimal : 0}::int,
+        ev_lost_micros    = ev_lost_micros + ${params.evLostMicros}::bigint
+    where game_session_id = ${params.gameId}::uuid and status = 'in_progress'
+  `;
+}
+
 export async function recordDailyAttemptDecisions(
   tx: Tx,
   params: { gameId: string; total: number; optimal: number; evLostMicros: number },

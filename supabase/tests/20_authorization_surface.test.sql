@@ -106,8 +106,8 @@ select is(
   (select count(*)::int from pg_class c
    join pg_namespace n on n.oid = c.relnamespace
    where n.nspname = 'public' and c.relkind = 'r'),
-  34,
-  'the audit in docs/SECURITY.md covers every table: 32 before this phase, plus the two rate-limit tables'
+  35,
+  'the audit in docs/SECURITY.md covers every table: 34, plus career_attempts'
 );
 
 select is(

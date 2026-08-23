@@ -26,12 +26,16 @@ const SEED = "supabase/seed.sql";
 
 describe("the generated career catalogue", () => {
   it("is byte-for-byte what the generator emits from shared/career/nodes.ts", () => {
-    const committed = readFileSync(MIGRATION, "utf8");
-    // Regenerating writes the file; comparing to the text read first is what
-    // makes a hand edit fail rather than be silently overwritten by a later run.
-    execFileSync("npx", ["tsx", "scripts/generate-career-nodes.ts"], { stdio: "pipe" });
-    expect(readFileSync(MIGRATION, "utf8")).toBe(committed);
-  }, 60_000);
+    // `--stdout`, never the writing form. A test that regenerates the file is a
+    // test that MUTATES a tracked file while the suite reads it — which showed
+    // up once as an unexplained failure in an otherwise green run.
+    const generated = execFileSync(
+      "npx",
+      ["tsx", "scripts/generate-career-nodes.ts", "--stdout"],
+      { encoding: "utf8" },
+    );
+    expect(readFileSync(MIGRATION, "utf8")).toBe(generated);
+  }, 120_000);
 
   it("names every node exactly once, in the module's own order", () => {
     const sql = readFileSync(MIGRATION, "utf8");

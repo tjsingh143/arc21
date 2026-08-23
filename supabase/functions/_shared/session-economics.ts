@@ -20,8 +20,12 @@
  * Everything absent from this list is a closed economy: its chips are created
  * at the table, spent at the table and destroyed with it. Private tables are
  * closed so two accounts cannot transfer a bankroll by agreeing to lose;
- * tournaments and the daily challenge are closed because their stacks are a
- * scoring medium and their only wallet exposure is the entry fee going out.
+ * tournaments, the daily challenge and career nodes are closed because their
+ * stacks are a scoring medium and their only wallet exposure is a fee out or a
+ * reward in — never the stack itself. A career node starts on 2,000 chips that
+ * came from nowhere and vanish with the session; crediting them to a wallet
+ * would mint 2,000 chips per attempt, which is the mistake this list exists to
+ * make impossible.
  */
 export const WALLET_BACKED_MODES = ["solo", "public_table"] as const;
 
@@ -31,8 +35,8 @@ export const WALLET_BACKED_MODES = ["solo", "public_table"] as const;
  * Listed exhaustively so a new mode has to be classified here to be playable
  * rather than defaulting into either answer.
  * `supabase/tests/16_sprint_and_daily.test.sql` asserts the enum's labels match
- * this list, so adding a seventh mode fails the suite until someone decides which
- * side of the line it falls on.
+ * this list, so adding a mode fails the suite until someone decides which side
+ * of the line it falls on. `career` did, in this phase.
  */
 export const ALL_SESSION_MODES = [
   "practice",
@@ -41,6 +45,7 @@ export const ALL_SESSION_MODES = [
   "public_table",
   "tournament",
   "daily_challenge",
+  "career",
 ] as const;
 
 export type SessionMode = (typeof ALL_SESSION_MODES)[number];

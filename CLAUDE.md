@@ -499,6 +499,38 @@ fail, and it reads as a regression you just caused. It is not. Move
 point is that the flow asserts what a screen SAYS in one configuration; a
 build with a server configured has never been walked by it.
 
+**`supabase/functions` typechecks with `npm run check:functions`, not with
+`tsc`.** The directory is excluded from `tsconfig.json` because its `.js`
+specifiers resolve only through a per-function `deno.json` import map, which tsc
+cannot be given — so `deno check --config <fn>/deno.json` per directory is the
+only thing that reads it. Its FIRST run found four defects, one of them live:
+eight `throw new CommandError("NOT_FOUND", …)` where `NOT_FOUND` is not in
+`COMMAND_REJECTION_CODES`, so both lookups keyed on it returned undefined and
+the wire carried **HTTP 200** with `"message":"undefined (ref …)"` — and
+`functions.invoke` reports 200 as SUCCESS, so the refusal never reached the
+client's refusal handling at all. Also found: `LedgerReason` missing two labels
+its own callers pass, and a seat appended to a live public table without
+`insuranceDecision`. Run it before believing anything in that directory.
+
+**A read through RLS is scoped to what the POLICY permits, not to "your own
+rows".** Two test helpers made this mistake in one session and both looked
+right. `profiles?select=xp` returns EVERY profile — it is a directory — so
+`rows[0].xp` was a stranger's, and an XP assertion failed against somebody
+else's zero. `game_session_seats?status=neq.left` returns every seat at a table
+you are seated at, because `game_session_seats_select_participant` correctly
+shows a player the other stacks — so a "how many seats do I hold" check reported
+two the moment a second account was matched into the same public room, which
+reads exactly like a wallet defect. Add `user_id=eq.<you>` and check the policy
+before assuming a filter is implied.
+
+**Reproduce a flake by making the machine look like the failing run.** A server
+test failed once in six runs. The tell was in the run BEFORE it: the unit suite
+had taken 178 s instead of its usual 50 s, so the host was loaded. Starting
+`npm test` in the background and running the server suite five seconds later
+reproduced it on the second attempt, with the offending rows printed — and it
+turned out to be the RLS-scoping bug above rather than timing at all. Load was
+the trigger, not the cause: it made a second account exist at the same table.
+
 **A DEEP LINK is the reliable way to reach a screen from Maestro.**
 `arc21://table/lobby` lands directly; tapping through the tab bar cost several
 runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note

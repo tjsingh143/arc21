@@ -57,10 +57,20 @@ jobs:
         run: npm run lint
 
       - name: Typecheck
-        # NOTE: `supabase/functions` is excluded from tsconfig.json and is NOT
-        # covered by this step. It is proved by running it in the `database`
-        # job below, never by compiling it.
+        # `supabase/functions` is excluded from tsconfig.json and is NOT covered
+        # by this step — its `.js` specifiers resolve only through a per-function
+        # import map, which tsc cannot be given. The step below covers it.
         run: npx tsc --noEmit
+
+      - name: Typecheck the Edge Functions
+        # Each function checked with its OWN deno.json import map, which is the
+        # only way this directory typechecks at all. Its first run found eight
+        # throws of a rejection code that does not exist — live behaviour was
+        # HTTP 200 with the literal message "undefined" — plus a ledger reason
+        # its own callers pass and a seat persisted without a required field.
+        # Running the stack proves the paths that are exercised; this proves the
+        # ones that are not.
+        run: npm run check:functions
 
       - name: Unit and integration tests (no server stack)
         # tests/server/** is excluded here on purpose — see the header. It runs

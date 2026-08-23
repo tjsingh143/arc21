@@ -163,3 +163,138 @@ holds no `insert` at all — a file check, because a row count taken after
 survived. `06_catalog.test.sql` adds four assertions that no cosmetic gate names
 a node or chapter that does not exist.
 
+---
+
+### R3 — Career progression granted nothing · **VERIFIED COMPLETE**
+
+**Severity:** blocker. Three MVP acceptance criteria and one Definition-of-Done line.
+
+**Verified before any fix:**
+
+```
+grep -rn 'career_progress' supabase/functions/ shared/ src/ app/   → (nothing)
+```
+
+Nothing anywhere wrote `public.career_progress`. The table existed with its
+constraints, its RLS and its `deny_client_write` trigger; the cosmetic gates read
+it; `shared/career/progress.ts` marked a completed node's reward `rewardOwed` and
+left `rewardClaimed` false "until a server grants them", and `pendingRewards()`
+had zero callers.
+
+Failing: `□ Rewards`, `□ Cosmetics earned` (8 of 24 unobtainable — 3 gated on a
+chapter final's code, 5 on a chapter), and "complete career progression".
+
+**What the specification requires**, in three separate places:
+
+```
+"Career rewards | Server"                                 (authority boundaries)
+"A Career node may be practiced offline, but any reward-bearing attempt
+ requires server authority."                              (offline design)
+"Move reward-bearing Quick Play and Career attempts to authoritative server
+ commands."                                               (build phases)
+```
+
+So a ranked attempt is a real server session, not a reported score.
+
+**Built.**
+- A seventh `game_mode`, `career`, classified NOT wallet-backed in
+  `session-economics.ts` — a node's 2,000 chips are a scoring medium, and
+  crediting them would mint 2,000 per attempt. Both exhaustiveness tests failed
+  until it was classified, which is exactly what they are for.
+- `public.career_attempts` + `private.career_drill_seeds`, and
+  `record_career_completion` / `record_career_attempt_started` /
+  `my_career_progress` (`20260823130000`).
+- `START_CAREER_NODE` and `SUBMIT_CAREER_DRILL` in `create-session`. A standard
+  node opens a single-seat session on a CSPRNG shoe with the node's wager
+  ceiling as the table maximum; a drill's scenarios are built from a 32-byte
+  secret in `private` and **regenerated to grade**, so a client cannot answer an
+  easier question than it was asked.
+- `careerBoundary` in `session-boundary.ts`: stops at the node's hand count or
+  at bankroll exhaustion (which is a COMPLETION — one star is always awarded, so
+  variance can never wall a player out), calls the same `evaluateStars` the
+  offline runner uses, and pays through `_shared/career-rewards.ts` under
+  `career_reward:${nodeId}:${userId}`.
+- Career decisions are GRADED but not counted towards the ranked accuracy board:
+  half the nodes run in "learn", which shows the play before the choice, and the
+  specification excludes exactly that. `isGradedMode` is the wider predicate;
+  `ACCURACY_ELIGIBLE_MODES` is untouched.
+- `shared/career` MOVED to `supabase/functions/_shared/career` with barrels left
+  behind — the `shared/strategy` pattern, because `shared/career/**` is not in
+  the set of files the Supabase CLI bind-mounts and no import map can add a file
+  that is not in the container. One implementation, not two.
+- Client: `career-server-store.ts`, a ranked CTA on the node screen that names
+  the reward and refuses on the SERVER's prerequisite, `app/career/drill/[slug].tsx`
+  for ranked drills, and a career map that unlocks on either record and shows
+  the better star count. Offline practice is unchanged and still grants nothing.
+
+**Evidence.** `tests/server/career.integration.test.ts`, 6 tests against the
+live stack: a node played for real through the server's shoe awards stars, pays
+its chips and XP once, never touches the stack (`career_reward` appears once and
+`table_buy_in` never), closes the seat, refuses a node whose predecessor is not
+complete, resumes rather than re-deals an attempt in flight, and grades a drill
+against server-generated scenarios while refusing a second submission (409).
+`17_leaderboards_and_cosmetics.test.sql` adds 5 assertions that the eight
+career-gated cosmetics open once the rows exist.
+
+```
+supabase test db     440 assertions, PASS   (was 435)
+npm test             82 files, 1571 tests passed
+tests/server         8 files, 71 tests passed
+npm run check:functions   all Edge Functions typecheck
+tsc --noEmit / lint  exit 0 / 0 errors
+```
+
+---
+
+### R4 — Edge Functions had never been typechecked · **VERIFIED COMPLETE**
+
+**Severity:** blocker (one defect was live on the wire).
+
+`supabase/functions` is excluded from `tsconfig.json`, so `npx tsc --noEmit` had
+never read a line of it. It cannot: the `.js` specifiers resolve only through a
+per-function `deno.json` import map, and tsc cannot be given a different map per
+directory. `deno check --config <fn>/deno.json` can, and had never been run.
+
+**Its first run, and what it found.**
+
+```
+8 × TS2345  Argument of type '"NOT_FOUND"' is not assignable to CommandRejectionCode
+1 × TS2322  Type '"tournament_entry"' is not assignable to type 'LedgerReason'
+1 × TS2741  Property 'insuranceDecision' is missing … but required in 'SeatState'
+1 × TS2740  Type '{ id: string; }' is missing … from type 'SeatRow'
+5 × TS18047 'seat' is possibly 'null'
+```
+
+**The live one, measured against the running stack:**
+
+```
+POST /create-session {"action":"JOIN_PUBLIC_TABLE","roomId":"…999"}
+→ HTTP 200 {"status":"rejected","code":"NOT_FOUND","message":"undefined (ref …)"}
+```
+
+Two failures in one. The player is shown the word "undefined"; and 200 is
+SUCCESS to `functions.invoke`, so `result.error` is null and the client reads a
+body with no `gameId` in it — the refusal never reaches the code that handles
+refusals. `NOT_FOUND` was never a declared code: the contract folds "no such
+game" into `NOT_A_PARTICIPANT` deliberately, so ids cannot be enumerated by
+comparing responses.
+
+**Fixed:** every site mapped to a declared code (`NOT_A_PARTICIPANT` for
+sessions and rooms, `INVALID_REQUEST` for a catalogue slug, which is public);
+`LedgerReason` made exhaustive against `public.ledger_reason`;
+`insuranceDecision` supplied on the appended seat; the `SeatRow`/null confusion
+removed.
+
+**After:**
+
+```
+POST /create-session {"action":"JOIN_PUBLIC_TABLE","roomId":"…999"}
+→ HTTP 403 {"status":"rejected","code":"NOT_A_PARTICIPANT",
+            "message":"You do not hold a seat at this table. (ref …)"}
+```
+
+**Held there by** `npm run check:functions` (now a CI step) for the compile
+half, and `tests/server/rejection-contract.integration.test.ts` for the wire
+half — 6 cases asserting every refusal carries a 4xx status, a declared code, a
+message with no "undefined" in it, and no SQL or stack frame.
+

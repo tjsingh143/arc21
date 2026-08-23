@@ -42,6 +42,25 @@ export function countsTowardsAccuracy(mode: string): boolean {
   return (ACCURACY_ELIGIBLE_MODES as readonly string[]).includes(mode);
 }
 
+/**
+ * Modes whose decisions are GRADED, which is a wider set than the ones counted.
+ *
+ * A career node has to be graded — its second and third stars are accuracy
+ * thresholds — but it must not reach the ranked board: half the nodes run in
+ * "learn", which puts the recommended play on screen before the choice, and the
+ * specification excludes "modes where answer was shown before choice" by name.
+ * Grading it and not counting it is the only combination that satisfies both.
+ *
+ * Kept as a separate predicate rather than widening `ACCURACY_ELIGIBLE_MODES`,
+ * because that list is the leaderboard's definition and it is asserted as such
+ * in `tests/progression`. Two questions, two answers.
+ */
+export const GRADED_MODES = [...ACCURACY_ELIGIBLE_MODES, "career"] as const;
+
+export function isGradedMode(mode: string): boolean {
+  return (GRADED_MODES as readonly string[]).includes(mode);
+}
+
 /** The five decisions the chart covers. `RESOLVE_TIMEOUT` is not one of them. */
 const GRADED_ACTIONS: readonly PlayerActionType[] = [
   "HIT",
