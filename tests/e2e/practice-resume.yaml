@@ -1,34 +1,41 @@
 # Arc 21 — Practice survives being killed mid-hand.
 #
-# STATUS: currently fails under Maestro against a DEV BUILD, for a harness
-# reason rather than a product one. Verified working by direct observation:
-#   - the app's SQLite `kv` table holds practice:session (~17KB) after a deal;
-#   - that exact blob, pulled off the simulator, deserialises cleanly in Node;
-#   - `simctl terminate` + `launch` restores "Resume your session · Bankroll
-#     4,900 · hand 1" on screen within ~12s.
-# Maestro's stopApp is a hard kill with no background transition, and its
-# launchApp races the dev build's Metro reload, so the assertion lands before
-# hydration completes. Re-check this against a release build, where the bundle
-# is embedded and the reload window disappears.
+# WHY THIS FLOW FAILED FOR THREE SESSIONS, AND WHAT IT ACTUALLY FOUND.
 #
-# The unit tests prove the save/load contract. This proves the thing that
-# actually matters to a player: kill the app with chips on the felt, reopen it,
-# and the same hand is still there.
+# Two earlier sessions recorded this as a HARNESS problem: "Maestro's stopApp is
+# a hard kill with no background transition, and its launchApp races the dev
+# build's Metro reload, so the assertion lands before hydration completes.
+# Re-check this against a release build, where the bundle is embedded and the
+# reload window disappears."
 #
-# RECONFIRMED 2026-08-21 (phase 14, session 3), same failure, same place: the
-# `.*4,900.*` assertion after relaunch times out — every step before it,
-# including the bet and the kill/relaunch itself, completed. This run's
-# artefacts are at ~/.maestro/tests/2026-08-21_235442. Not re-attempted with a
-# release build this session — EAS/production builds are session 5's scope —
-# so the fix remains: re-check against a release build before spending more
-# time on the dev-build timing. This flow stays OUT of the three-flow standard
-# gate (every-screen / practice-hand / career-node); nowhere in this repo
-# globs tests/e2e/*.yaml, so it is excluded by omission, not by a suppressed
-# failure.
+# Phase 14 session 6 re-checked it against a release build. It failed in exactly
+# the same place — and the failure screenshot showed the app displaying
+# "Resume your session · Bankroll 4,900 · hand 1", correct in every detail.
 #
-# It is also the flow that catches a whole class of regression the unit tests
-# cannot see — a storage layer that fails to initialise on device, or hydration
-# that hangs and leaves the table blank forever. Both have happened here.
+# The persistence had never been broken. The ACCESSIBILITY TREE was.
+# `app/(tabs)/home.tsx` gave its Practice card `accessibilityLabel="Play
+# Practice"`, and on iOS a label on a pressable REPLACES the text of everything
+# inside it. So the tree contained "Play Practice" and no bankroll at all, and
+# `.*4,900.*` could never match however long it waited. The hierarchy dump beside
+# that failure lists every string on screen: "Resume your session", "Bankroll
+# 4,900", "Continue" and "First Deal" are all absent from it.
+#
+# That is a real defect and not a test problem: a player using VoiceOver was told
+# "Play Practice" whether or not they had a session in progress, and was never
+# told the bankroll or the hand number. The label now carries the card's content,
+# and this flow passes.
+#
+# The lesson is the one already in CLAUDE.md, arriving from the other direction:
+# a label REPLACES child text. Two sessions read "assertion not visible" as
+# "state not restored" when the screenshot said otherwise. Read the screenshot
+# and the hierarchy dump before believing the assertion.
+#
+# This flow stays OUT of the three-flow standard gate (every-screen /
+# practice-hand / career-node); nowhere in this repo globs tests/e2e/*.yaml, so
+# it is excluded by omission, not by a suppressed failure. It is also the flow
+# that catches a whole class of regression the unit tests cannot see — a storage
+# layer that fails to initialise on device, or hydration that hangs and leaves
+# the table blank forever. Both have happened here.
 #
 # Run with:
 #   export JAVA_HOME=/opt/homebrew/opt/openjdk
@@ -122,7 +129,11 @@ appId: com.arc21.app
 # Home must know a session is in progress. If it says "Play offline" instead,
 # the hand is intact on disk but invisible to the player — which is exactly the
 # bug this flow caught.
-- assertVisible: "Resume your session"
+# A REGEX, because Maestro matches text exactly and the card's accessibility
+# label now reads "Resume your session. Bankroll 4,900, hand 1." — the fuller
+# label is the fix above, and an exact match would fail on the very string that
+# proves it works.
+- assertVisible: ".*Resume your session.*"
 
 - tapOn:
     id: "home-practice"

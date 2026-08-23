@@ -125,7 +125,7 @@ export default function ProfileScreen() {
 
         <SurfaceCard
           onPress={() => router.push("/stats")}
-          accessibilityLabel="Your statistics"
+          accessibilityLabel={`Your statistics. Strategy accuracy ${headline.accuracy} per cent, unaided.`}
           accessibilityHint="Accuracy, play and decision behaviour in full"
         >
           <View style={styles.ringRow}>

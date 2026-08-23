@@ -31,7 +31,12 @@ export default function LearnScreen() {
         <ScreenHeader title="Learn" subtitle="Understand every decision." />
 
         {overall !== null ? (
-          <SurfaceCard onPress={() => router.push("/stats")} accessibilityLabel="Your accuracy">
+          <SurfaceCard
+            onPress={() => router.push("/stats")}
+            accessibilityLabel={`Strategy accuracy ${unaided ?? overall} per cent, from ${
+              unaided !== null ? `${stats.unaidedDecisions} unaided` : `${stats.decisions}`
+            } decisions.`}
+          >
             <AppText variant="overline" color="textSecondary">
               Strategy accuracy
             </AppText>

@@ -57,7 +57,19 @@ appId: com.arc21.app
 - assertVisible: ".*Blackjack, without the noise.*"
 
 # --- Play tab --------------------------------------------------------------
-- tapOn: "Play"
+# A tab tap can be SWALLOWED while the previous screen is still settling, and
+# `extendedWaitUntil` cannot recover one: it waits for a destination the finger
+# never asked for. This flow failed here with "Sprint Tournament is not visible"
+# while the failure screenshot showed the app still sitting on Home with the
+# Home tab highlighted — the tap COMPLETED and did nothing. Retrying the tap
+# until the destination appears is the same remedy the onboarding tap already
+# uses above. The assertion below is unchanged; only the tap is now durable.
+- repeat:
+    while:
+      notVisible: ".*Sprint Tournament.*"
+    times: 4
+    commands:
+      - tapOn: "Play"
 - extendedWaitUntil:
     visible: ".*Sprint Tournament.*"
     timeout: 15000
@@ -121,7 +133,12 @@ appId: com.arc21.app
     timeout: 15000
 
 # --- Social tab ------------------------------------------------------------
-- tapOn: "Social"
+- repeat:
+    while:
+      notVisible: ".*Private table.*"
+    times: 4
+    commands:
+      - tapOn: "Social"
 - extendedWaitUntil:
     visible: ".*Private table.*"
     timeout: 15000
@@ -148,7 +165,12 @@ appId: com.arc21.app
 # Reached from Social. Signed out and with no server configured, the screen must
 # state that plainly — it must never render a board of zeros, which would read as
 # real standings.
-- tapOn: "Social"
+- repeat:
+    while:
+      notVisible: ".*Friends need a server.*"
+    times: 4
+    commands:
+      - tapOn: "Social"
 - extendedWaitUntil:
     visible: ".*Friends need a server.*"
     timeout: 15000
@@ -204,7 +226,12 @@ appId: com.arc21.app
     timeout: 15000
 
 # --- Learn tab -------------------------------------------------------------
-- tapOn: "Learn"
+- repeat:
+    while:
+      notVisible: ".*Strategy Guide.*"
+    times: 4
+    commands:
+      - tapOn: "Learn"
 - extendedWaitUntil:
     visible: ".*Strategy Guide.*"
     timeout: 15000
@@ -244,7 +271,13 @@ appId: com.arc21.app
 # tab stopped offering Drills it reported SKIPPED and the run still passed — so
 # the audit flow silently stopped visiting one of the screens it exists to
 # check. A screen this flow is responsible for gets an unconditional assertion.
-- tapOn: "Learn"
+- repeat:
+    while:
+      notVisible:
+        id: "learn-drills"
+    times: 4
+    commands:
+      - tapOn: "Learn"
 - extendedWaitUntil:
     visible:
       id: "learn-drills"

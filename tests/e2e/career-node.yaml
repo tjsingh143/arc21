@@ -60,7 +60,12 @@ appId: com.arc21.app
     timeout: 30000
 
 # Reach Career through the Play tab, exercising the tab shell on the way.
-- tapOn: "Play"
+- repeat:
+    while:
+      notVisible: ".*Career.*"
+    times: 4
+    commands:
+      - tapOn: "Play"
 - extendedWaitUntil:
     visible: ".*Career.*"
     timeout: 10000

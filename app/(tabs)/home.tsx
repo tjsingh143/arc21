@@ -52,10 +52,30 @@ export default function HomeScreen() {
             wallet to show", which stopped being true several phases ago. */}
         <ScreenHeader title="Arc 21" subtitle="Blackjack, without the noise." />
 
+        {/*
+          The label CARRIES the card's content, and that is not a nicety.
+
+          `SurfaceCard` renders a Pressable, and on iOS an accessibilityLabel on
+          a pressable REPLACES the text of everything inside it. This card said
+          "Play Practice" and nothing else, so VoiceOver announced a static
+          phrase while the screen showed "Resume your session · Bankroll 4,900 ·
+          hand 1" — a player using a screen reader could not tell whether they
+          had a session in progress, let alone what was in it.
+
+          It also explains a Maestro failure that two sessions attributed to a
+          dev-build reload race: `practice-resume` asserts ".*4,900.*" after a
+          relaunch, and 4,900 was never in the accessibility tree to be found.
+          The persistence had been working the whole time; the screenshot beside
+          the failure shows the restored bankroll plainly.
+        */}
         <SurfaceCard
           onPress={() => router.push("/game/practice")}
           testID="home-practice"
-          accessibilityLabel="Play Practice"
+          accessibilityLabel={
+            bankroll === null
+              ? "Play Practice. Play offline, at your own pace."
+              : `Resume your session. Bankroll ${formatChips(bankroll)}, hand ${game?.handNumber ?? 1}.`
+          }
           accessibilityHint="Offline blackjack with disposable chips"
         >
           <AppText variant="overline" color="accent">
@@ -78,7 +98,7 @@ export default function HomeScreen() {
 
         <SurfaceCard
           onPress={() => router.push("/career")}
-          accessibilityLabel="Career"
+          accessibilityLabel={`Career. ${firstNode.title}. ${firstNode.summary}`}
           accessibilityHint="Structured challenges that build correct decisions"
         >
           <AppText variant="overline" color="textSecondary">
