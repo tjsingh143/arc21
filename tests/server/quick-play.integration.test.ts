@@ -45,25 +45,26 @@ const CASUAL_BUY_IN = 2000;
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
 /**
- * Tokens are backdated by a minute, and that is not cosmetic.
+ * The test tokens carry NO `iat`, deliberately.
  *
- * PostgREST validates `iat` against the DATABASE CONTAINER's clock and answers
- * `PGRST303 "JWT issued at future"` when it is even slightly ahead. The host
- * and the container drift by a second or two under load, so an `iat` of exactly
- * "now" is a coin flip — and the failure does not look like a clock problem. It
- * looks like a wallet that reads as -1, a profile column that reads as null, or
- * a career reward that was never paid.
+ * PostgREST validates `iat` against its own clock and answers
+ * `PGRST303 "JWT issued at future"` when it is ahead — and the failure does not
+ * look like a clock problem. It looks like a wallet that reads as -1, a profile
+ * column that reads as null, or a career reward that was never paid.
  *
- * Sixty seconds is the same allowance the FUNCTION's own verifier makes, and it
- * is test-only: Supabase issues real tokens server-side, where there is one
- * clock.
+ * Backdating by a minute was the first fix and it was not enough: the Docker VM
+ * clock jumps rather than drifts, so any constant is a guess about how far.
+ * `iat` is an OPTIONAL claim that PostgREST validates only when present, and
+ * nothing in this app reads it, so omitting it removes the failure mode instead
+ * of narrowing it. `exp` still bounds the token, and an `exp` an hour out is
+ * safe against skew in the direction that matters.
+ *
+ * Test-only: Supabase issues real tokens server-side, where there is one clock.
  */
-const CLOCK_SKEW_ALLOWANCE_SECONDS = 60;
-
 function signToken(sub: string): string {
   const header = b64({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
-  const payload = b64({ sub, role: "authenticated", aud: "authenticated", iat: now - CLOCK_SKEW_ALLOWANCE_SECONDS, exp: now + 3600 });
+  const payload = b64({ sub, role: "authenticated", aud: "authenticated", exp: now + 3600 });
   const signature = crypto
     .createHmac("sha256", LOCAL_JWT_SECRET)
     .update(`${header}.${payload}`)

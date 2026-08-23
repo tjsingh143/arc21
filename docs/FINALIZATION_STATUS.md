@@ -554,3 +554,59 @@ npm run test:server            9 files, 77 tests passed — green twice while
 tsc --noEmit / lint            exit 0 / 0 errors
 ```
 
+---
+
+### R9 — Guest conversion, and the host's power to remove a lobby member · **PARTIAL — server done, lobby UI outstanding**
+
+**Guest→account conversion · VERIFIED COMPLETE.** `buildGuestConversionPlan` and
+`describeConversion` had **no caller**: the rules were written, typed three ways
+so breaking them requires breaking all three, and covered by twenty tests — and
+no screen had ever shown them to a player. `app/(auth)/create-account.tsx` now
+renders "What carries over" ABOVE the form, so the specification's two
+prohibitions ("do NOT create server wallet winnings from guest results", "do NOT
+import guest competitive achievements") are read before an email is typed rather
+than discovered afterwards as a loss.
+
+**Host can remove a lobby member · SERVER DONE, CLIENT OUTSTANDING.**
+`room_member_status` has carried a `kicked` label since the rooms migration and
+nothing ever set it — there was no function to remove anybody, so the
+specification's rule held only because the capability was absent.
+`public.remove_room_member` (`20260823170000`) is host-only, lobby-only, refuses
+once a `game_session_id` exists (the seats hold chips by then and the server owns
+the game), and refuses to remove the host (that is `leave_room`, which migrates
+the role). Six pgTAP assertions in `14_rooms.test.sql`.
+
+**It has no client caller yet, and that is the exact pattern this mission keeps
+closing.** Do not count it as done. Still outstanding on the lobby, all three
+from the specification's own list — "room code, copy/share, host, seat list,
+ready states, invite friends, start, leave":
+
+- **copy/share** — RN's `Share.share` needs no new dependency;
+- **ready states** — `set_room_ready` and `get_room_state.member_is_ready`
+  already exist and are client-granted; only the UI is missing;
+- **host-remove** — the function above.
+
+### Known intermittent, UNRESOLVED and pre-existing
+
+`game-command.integration.test.ts > the daily challenge > deals two different
+accounts the identical shoe` failed once in the full `npm test` run, on a
+**hand-count** mismatch (18 vs 20) rather than a card mismatch — the visible
+cards agreed. It passed 77/77 in the isolated `npm run test:server` run two
+minutes earlier and in every other run today. Not reproduced deliberately yet,
+so it is recorded rather than explained. It is not one of this mission's tests.
+
+**Clock skew, fixed properly this time.** Backdating `iat` by 60 s was not
+enough — the Docker VM clock JUMPS rather than drifts, so any constant is a
+guess about how far. The test tokens now carry **no `iat` at all**: it is an
+optional claim PostgREST validates only when present, nothing in the app reads
+it, and `exp` still bounds the token. That removes the failure mode instead of
+narrowing it.
+
+```
+npm run test:server     9 files, 77 tests passed
+npm test                87 files, 1617 of 1618 (the intermittent above)
+supabase test db        450 assertions, PASS
+tsc --noEmit / lint     exit 0 / 0 errors
+npm run check:functions clean
+```
+

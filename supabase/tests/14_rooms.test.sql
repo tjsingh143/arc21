@@ -12,7 +12,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(13);
+select plan(19);
 
 select has_table('public', 'rooms', 'rooms exist');
 select has_table('public', 'room_members', 'seats at a room exist');
@@ -145,6 +145,102 @@ select is(
   (select host_user_id from public.rooms where id = (select room_id from invite)),
   'dddddddd-0000-4000-8000-000000000002'::uuid,
   'the longest-connected remaining player inherits the room'
+);
+
+-- ---------------------------------------------------------------------------
+-- "Host can remove a member only while in lobby"
+-- ---------------------------------------------------------------------------
+-- `room_member_status` has carried a `kicked` label since this file's own
+-- migration and nothing ever set it: there was no function to remove anybody,
+-- so the specification's rule held only because the capability was absent.
+--
+-- The clause that matters is "only while in lobby". Once a hand is dealt the
+-- seats hold chips and the server owns the game, so a host who could eject a
+-- player mid-session could take their table stack — the same shape of defect as
+-- a client that could move chips.
+
+reset role;
+
+insert into auth.users (id, email, aud, role) values
+  ('0f000000-0000-4000-8000-00000000000d', 'kick-host@arc21.test', 'authenticated', 'authenticated'),
+  ('0f000000-0000-4000-8000-00000000000e', 'kick-guest@arc21.test', 'authenticated', 'authenticated');
+
+insert into public.rooms (id, code, host_user_id, visibility, mode, max_seats)
+values ('0f000000-0000-4000-8000-0000000fffff', 'KICKME',
+        '0f000000-0000-4000-8000-00000000000d', 'private', 'private_table', 5);
+insert into public.room_members (room_id, user_id, seat_index) values
+  ('0f000000-0000-4000-8000-0000000fffff', '0f000000-0000-4000-8000-00000000000d', 0),
+  ('0f000000-0000-4000-8000-0000000fffff', '0f000000-0000-4000-8000-00000000000e', 1);
+
+-- A member cannot remove anybody, including the host.
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0f000000-0000-4000-8000-00000000000e","role":"authenticated"}';
+
+select is(
+  public.remove_room_member('0f000000-0000-4000-8000-0000000fffff',
+                            '0f000000-0000-4000-8000-00000000000d'),
+  false,
+  'a member cannot remove the host'
+);
+
+-- The host cannot remove themselves: that is `leave_room`, which migrates the
+-- host role. Doing it here would leave the room hostless.
+set local request.jwt.claims to
+  '{"sub":"0f000000-0000-4000-8000-00000000000d","role":"authenticated"}';
+
+select is(
+  public.remove_room_member('0f000000-0000-4000-8000-0000000fffff',
+                            '0f000000-0000-4000-8000-00000000000d'),
+  false,
+  'the host cannot remove themselves through this path'
+);
+
+select is(
+  public.remove_room_member('0f000000-0000-4000-8000-0000000fffff',
+                            '0f000000-0000-4000-8000-00000000000e'),
+  true,
+  'the host removes a member while the room is a lobby'
+);
+
+reset role;
+select is(
+  (select status::text from public.room_members
+   where room_id = '0f000000-0000-4000-8000-0000000fffff'
+     and user_id = '0f000000-0000-4000-8000-00000000000e'),
+  'kicked',
+  'and the seat is recorded as kicked, not merely left'
+);
+
+-- Once the room is playing, nobody can be removed. The seats hold chips.
+insert into public.room_members (room_id, user_id, seat_index) values
+  ('0f000000-0000-4000-8000-0000000fffff', '0f000000-0000-4000-8000-00000000000e', 1)
+on conflict (room_id, user_id) do update set status = 'joined';
+insert into public.game_sessions (id, mode, ruleset_id, tier, status, max_seats, started_at)
+select '0f000000-0000-4000-8000-0000000eeeee', 'private_table', r.id, 'standard', 'active', 5, now()
+from public.rulesets r where r.ruleset_key = 'arc-standard@1';
+update public.rooms
+set status = 'active', game_session_id = '0f000000-0000-4000-8000-0000000eeeee'
+where id = '0f000000-0000-4000-8000-0000000fffff';
+
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0f000000-0000-4000-8000-00000000000d","role":"authenticated"}';
+
+select is(
+  public.remove_room_member('0f000000-0000-4000-8000-0000000fffff',
+                            '0f000000-0000-4000-8000-00000000000e'),
+  false,
+  'once the table is playing the host cannot eject anybody'
+);
+
+reset role;
+select is(
+  (select status::text from public.room_members
+   where room_id = '0f000000-0000-4000-8000-0000000fffff'
+     and user_id = '0f000000-0000-4000-8000-00000000000e'),
+  'joined',
+  'and their seat, with its chips, is untouched'
 );
 
 select * from finish();

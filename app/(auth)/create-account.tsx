@@ -19,7 +19,7 @@
  * else, and the typed email and username survive every failure.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -31,6 +31,12 @@ import { colors, layout, spacing } from "../../src/design/tokens";
 import { AuthField, AuthStatusBanner } from "../../src/features/auth/auth-ui";
 import { authStateName, describeAuthStatus } from "../../src/features/auth/auth-machine";
 import { useAuthStore } from "../../src/features/auth/auth-store";
+import {
+  buildGuestConversionPlan,
+  describeConversion,
+} from "../../src/features/auth/conversion";
+import { usePracticeStore } from "../../src/features/practice/practice-store";
+import { useSettingsStore } from "../../src/features/settings/use-settings";
 import {
   PASSWORD_MIN_LENGTH,
   USERNAME_MAX_LENGTH,
@@ -45,6 +51,28 @@ export default function CreateAccountScreen() {
   const dispatch = useAuthStore((state) => state.dispatch);
   const setMode = useAuthStore((state) => state.setMode);
   const signUp = useAuthStore((state) => state.signUp);
+  const practiceStats = usePracticeStore((state) => state.stats);
+  const settings = useSettingsStore((state) => state.settings);
+
+  /*
+   * Derived with `useMemo` from subscribed state, never by calling a store
+   * getter during render — under the React Compiler that freezes the value.
+   *
+   * `now` is stable for the life of the screen: the plan's timestamp is not
+   * rendered, and a ticking clock here would rebuild the list on every frame.
+   */
+  const conversionLines = useMemo(
+    () =>
+      describeConversion(
+        buildGuestConversionPlan({
+          guestId: "guest",
+          preferences: settings,
+          stats: practiceStats,
+          now: new Date(0),
+        }),
+      ),
+    [settings, practiceStats],
+  );
 
   const [password, setPassword] = useState("");
 
@@ -116,6 +144,31 @@ export default function CreateAccountScreen() {
                 "This build has no server configured, so accounts are unavailable."}
             </UnavailableNote>
           )}
+
+          {/*
+            WHAT COMES WITH YOU, AND WHAT DOES NOT — before the form, not after.
+            `buildGuestConversionPlan` and `describeConversion` existed with no
+            caller: the rules were written, typed three ways and covered by
+            twenty tests, and no screen had ever shown them to a player.
+
+            The specification's conversion rules are "upload preferences",
+            "import practice statistics as practice-only history", "do NOT
+            create server wallet winnings from guest results" and "do NOT import
+            guest competitive achievements". A player about to convert deserves
+            to read the last two BEFORE they type an email — discovering
+            afterwards that their practice bankroll did not follow them is how a
+            conversion feels like a loss.
+          */}
+          <SurfaceCard>
+            <AppText variant="overline" color="textSecondary">
+              What carries over
+            </AppText>
+            {conversionLines.map((line) => (
+              <AppText key={line} variant="caption" color="textSecondary">
+                {line}
+              </AppText>
+            ))}
+          </SurfaceCard>
 
           <SurfaceCard>
             <AuthField
