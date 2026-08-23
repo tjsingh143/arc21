@@ -388,6 +388,45 @@ async function resetPrivateStack(
 }
 
 /**
+ * One live seat per player, enforced beside the money.
+ *
+ * Escrow that nobody is watching is how a wallet quietly empties into abandoned
+ * tables — but the sharper reason is that a SECOND seat means a SECOND buy-in
+ * out of the same wallet, and the buy-in idempotency key is derived from the
+ * game, so two different games are two different keys and both are honoured.
+ *
+ * `exceptGameId` is what keeps a reconnect working. The invariant is "no seat at
+ * some OTHER live table", not "no seat at all": a player re-joining the table
+ * they are already sitting at must land on the existing seat and the existing
+ * ledger row, or the guard would lock them out of their own chips.
+ *
+ * This is the CONTROL. `join_matchmaking` refuses an already-seated player too,
+ * but that one is a courtesy that keeps a client out of a queue it cannot use —
+ * the same relationship the tier's unlock level already has with this function.
+ * Being matched is not being seated, and nothing stops a matched player opening
+ * a solo table first, so the queue's refusal cannot be the only one.
+ */
+async function assertNoOtherLiveSeat(
+  tx: Tx,
+  userId: string,
+  exceptGameId: string | null,
+): Promise<void> {
+  const seated = await tx<{ game_session_id: string }[]>`
+    select s.game_session_id
+    from public.game_session_seats s
+    join public.game_sessions g on g.id = s.game_session_id
+    where s.user_id = ${userId}::uuid
+      and s.status <> 'left'
+      and g.status in ('lobby', 'active')
+      and (${exceptGameId}::uuid is null or s.game_session_id <> ${exceptGameId}::uuid)
+    limit 1
+  `;
+  if (seated.length > 0) {
+    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
+  }
+}
+
+/**
  * Take a matched seat at a public table.
  *
  * This is the only shared-table path that moves real chips, so it reuses the
@@ -423,6 +462,10 @@ async function joinPublicTable(
     where room_id = ${command.roomId}::uuid and user_id = ${userId}::uuid and status = 'joined'
   `;
   if (!seated[0]) throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
+
+  // Before anything is looked up and long before anything is charged. The
+  // exception is this room's own session, so a reconnect is still idempotent.
+  await assertNoOtherLiveSeat(tx, userId, room.game_session_id);
 
   const tier = tierFor(room.tier);
   const profile = await loadProfile(tx, userId);
@@ -613,20 +656,9 @@ async function open(
     throw new CommandError("TABLE_LOCKED", `level ${profile.level} < ${tier.unlockLevel}`);
   }
 
-  // One live seat per player. Escrow that nobody is watching is how a wallet
-  // quietly empties into abandoned tables.
-  const seated = await tx<{ game_session_id: string }[]>`
-    select s.game_session_id
-    from public.game_session_seats s
-    join public.game_sessions g on g.id = s.game_session_id
-    where s.user_id = ${userId}::uuid
-      and s.status <> 'left'
-      and g.status in ('lobby', 'active')
-    limit 1
-  `;
-  if (seated.length > 0) {
-    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
-  }
+  // One live seat per player. A solo table is never a re-join — the idempotent
+  // path for OPEN is the ledger key above — so nothing is excepted here.
+  await assertNoOtherLiveSeat(tx, userId, null);
 
   const rulesetId = await resolveRulesetId(tx);
   const buyIn = tier.buyIn;

@@ -13,6 +13,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { readRejection } from "../../lib/supabase/rejection.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toQueuePlace, type QueuePlace, type TierId } from "./matchmaking.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
@@ -39,6 +40,8 @@ export interface MatchmakingStoreState {
 
 const UNREACHABLE = "Could not reach matchmaking. Nothing has been charged.";
 const SIGNED_OUT = "Public tables need an account. Practice stays available without one.";
+const SEATED_ELSEWHERE =
+  "You are already seated at a table, and your chips are there. Leave that table first — nothing has been charged for this one.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -134,7 +137,21 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
       return null;
     }
     if (result.error) {
-      set({ notice: "That seat could not be taken. Nothing has been charged." });
+      /*
+       * Which refusal it is matters. "Nothing has been charged" is true of
+       * every one of them, but it is USEFUL advice only when the seat is
+       * genuinely still available — and the refusal this most often is says the
+       * opposite: the player's chips are already in escrow at another table, so
+       * telling them to try again sends them somewhere that will refuse them
+       * for ever. That state was reachable, and paid twice, until the server
+       * grew the guard that produces this code.
+       */
+      const rejection = await readRejection(result.error);
+      if (rejection?.code === "SESSION_ALREADY_ACTIVE") {
+        set({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
+        return null;
+      }
+      set({ notice: rejection?.message ?? "That seat could not be taken. Nothing has been charged." });
       return null;
     }
 

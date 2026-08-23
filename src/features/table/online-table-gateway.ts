@@ -39,6 +39,7 @@ import {
 import type { PublicGameState } from "../../../shared/blackjack/index.js";
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
 import { newClientActionId } from "../../lib/supabase/ids.js";
+import { readRejection } from "../../lib/supabase/rejection.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { retryWhile, type BackoffPolicy } from "../../lib/supabase/with-retry.js";
 
@@ -199,55 +200,6 @@ function readState(
     // the sequence numbers are the store's concern.
     events: (parsed.data.events ?? []).map((published) => published.event),
   };
-}
-
-/**
- * The rejection envelope, as `toRejectedResponse` builds it on the server.
- *
- * A rejection arrives with the contract's own HTTP status — 409, 422, 429 —
- * so `functions.invoke` reports it as an error and hands back the `Response`
- * rather than the body. Parsing it here is what distinguishes "the server
- * answered and said no" from "nothing answered", which is the distinction the
- * whole retry decision rests on.
- */
-const rejectionSchema = z.object({
-  status: z.literal("rejected"),
-  code: z.string().min(1).max(64),
-  message: z.string().min(1).max(500),
-});
-
-/** A Response, structurally — `FunctionsFetchError` carries something else. */
-function responseLike(value: unknown): { json: () => Promise<unknown> } | null {
-  if (typeof value !== "object" || value === null) return null;
-  const candidate = value as { json?: unknown };
-  return typeof candidate.json === "function"
-    ? (value as { json: () => Promise<unknown> })
-    : null;
-}
-
-/**
- * The server's verdict, or null when nothing recognisable came back.
- *
- * Null is the important return: a 503 from the API gateway with the Edge
- * runtime down, an HTML error page from a captive portal, or a body that fails
- * the schema all mean the same thing — this client did not learn what happened
- * to its command, and must not pretend otherwise.
- */
-async function readRejection(
-  error: unknown,
-): Promise<{ code: string; message: string } | null> {
-  const context = responseLike((error as { context?: unknown } | null)?.context);
-  if (context === null) return null;
-
-  let body: unknown;
-  try {
-    body = await context.json();
-  } catch {
-    return null;
-  }
-
-  const parsed = rejectionSchema.safeParse(body);
-  return parsed.success ? { code: parsed.data.code, message: parsed.data.message } : null;
 }
 
 export function createSupabaseTableGateway(
