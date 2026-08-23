@@ -233,6 +233,14 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * The caller's own tournament and daily-challenge totals. Derived from
+       * `auth.uid()`; returns no identifier and nothing about any other player.
+       */
+      my_competition_record: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
        * The Sprint Tournament's read side. `sprint_format` is the configuration a
        * player sees BEFORE paying an entry fee, read from the server so it cannot
        * drift from what is enforced.

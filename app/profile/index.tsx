@@ -41,7 +41,8 @@ import { describeSample, formatPercent, sampleCaveat } from "../../src/features/
 import { useLevelStore } from "../../src/features/stats/level-store";
 import { useLoadoutStore } from "../../src/features/cosmetics";
 import { CosmeticAvatar } from "../../src/features/cosmetics/art";
-import { useAuthStore } from "../../src/features/auth";
+import { useAccountProfileStore, useAuthStore } from "../../src/features/auth";
+import { useCompetitionStore } from "../../src/features/stats/competition-store";
 import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
 import { TOTAL_CAREER_STARS } from "../../shared/career/nodes.js";
@@ -62,6 +63,10 @@ export default function ProfileScreen() {
   const { progress, ready } = useCareerProgress();
 
   const session = useAuthStore((state) => state.session);
+  const accountProfile = useAccountProfileStore((state) => state.profile);
+  const loadAccountProfile = useAccountProfileStore((state) => state.load);
+  const competitionRecord = useCompetitionStore((state) => state.record);
+  const loadCompetition = useCompetitionStore((state) => state.load);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const hydrateAuth = useAuthStore((state) => state.hydrate);
   const levelRecord = useLevelStore((state) => state.record);
@@ -82,14 +87,34 @@ export default function ProfileScreen() {
       void loadLevel();
       void loadLoadout();
     }
-  }, [authHydrated, session?.account.userId, loadLevel, loadLoadout]);
+    void loadAccountProfile();
+    void loadCompetition();
+  }, [
+    authHydrated,
+    session?.account.userId,
+    loadLevel,
+    loadLoadout,
+    loadAccountProfile,
+    loadCompetition,
+  ]);
 
   const profile = summariseProfile({
     stats,
     careerStars: { earned: totalStars(progress), available: TOTAL_CAREER_STARS },
     hasAccount: session !== null,
-    displayName: session?.account.email ?? null,
+    /*
+     * The profile row's own fields, not the email.
+     *
+     * This read `session.account.email` — the email address, in the largest
+     * type on the screen. `public.profiles` carries a server-normalised
+     * `display_name` and `username`, both put through the reserved-name and
+     * profanity filter, and the specification's hierarchy is
+     * "Avatar / Display name / @username".
+     */
+    displayName: accountProfile?.displayName ?? null,
+    username: accountProfile?.username ?? null,
     progression: levelRecord,
+    tournamentWins: competitionRecord?.tournamentWins ?? null,
   });
 
   const { identity, headline, progression } = profile;
@@ -161,6 +186,15 @@ export default function ProfileScreen() {
             tone="textSecondary"
           />
           <StatRow label="Practice hands played" value={formatChips(headline.handsPlayed)} />
+          {/*
+            Tournament wins, from the server. Absent — an em dash — rather than
+            zero when it could not be read: a zero is a value, and this screen's
+            whole discipline is that no number appears unless somebody earned it.
+          */}
+          <StatRow
+            label="Tournament wins"
+            value={headline.tournamentWins === null ? "—" : String(headline.tournamentWins)}
+          />
           <StatRow
             label="Career stars"
             value={
@@ -191,6 +225,18 @@ export default function ProfileScreen() {
             testID="profile-inventory"
             accessibilityHint="Avatars, card backs and table themes you have earned"
             onPress={() => router.push("/profile/inventory")}
+          />
+          {/*
+            The Social TAB, not a `/friends` route — there is not one. Friends,
+            requests and blocks all live on `app/(tabs)/social.tsx`, and the
+            route contract forbids a dead link, so this names the screen that
+            exists rather than the one the specification's button label implies.
+          */}
+          <Button
+            label="Friends"
+            variant="secondary"
+            onPress={() => router.push("/(tabs)/social")}
+            testID="profile-friends"
           />
           <Button
             label="Settings"

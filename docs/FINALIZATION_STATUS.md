@@ -439,3 +439,60 @@ npx expo export           6 MB Hermes bundle, every import resolves
 tsc --noEmit / lint       exit 0 / 0 errors
 ```
 
+---
+
+### R7 — Three screens asserting things about the player that were not true · **VERIFIED COMPLETE**
+
+**Severity:** major. Two MVP surfaces and one privacy defect.
+
+**Statistics told every signed-in player their competition record required an
+account.** `app/stats/index.tsx:94` read
+`competitionState({ hasAccount: false, online: false })` — both values written
+as **literals**. Nothing anywhere fetched a record either, so fixing the flag
+alone would have left the section loading for ever.
+
+`public.my_competition_record()` (`20260823160000`) returns five numbers about
+the caller, derived from `auth.uid()`: tournaments entered, wins, best finish,
+daily challenges played, best daily rank. The rank uses
+`leaderboard_daily_challenge`'s own ordering, tie-breaks included, so "your best
+rank" and the board a player can open cannot disagree. No identifier and nothing
+about any other player, which is the projection discipline the leaderboards keep.
+
+**Profile rendered the player's EMAIL ADDRESS as their display name**
+(`app/profile/index.tsx:91`, `displayName: session?.account.email`) — the
+largest type on the screen, in a screenshot anybody might share.
+`public.profiles` carries a server-normalised `display_name` and `username`, and
+the specification's hierarchy is "Avatar / Display name / @username". All three
+are now read through `useAccountProfileStore`, scoped to `id = <you>`.
+
+Also added, from the same spec list: **tournament wins** (null, not zero, until
+the server has answered) and a **Friends** button — pointed at `/(tabs)/social`,
+because there is no `/friends` route and the route contract forbids a dead link.
+
+**Home advertised career node one to everybody.** `CAREER_NODES[0]`, a literal,
+so a player who had finished Foundations was offered "First Deal". It names the
+next unfinished node now — merged from the local and server records, so neither
+can drag the other back — with its chapter, its star count and a Continue
+button, which are the four things the specification asks a progression card to
+carry.
+
+Home also gained the compact tiles the spec names (Daily Challenge, Tournament,
+Friends, Leaderboards), a **Quick Play primary card** for a signed-in player
+that resumes the last setup in one tap, and — the offline rule — Practice as the
+primary card when there is no account, because "Quick Play online CTA becomes
+Practice" rather than explaining itself. The "you need an account" note is now
+shown only to somebody it applies to; it was unconditional, on a screen already
+displaying the player's balance.
+
+**Evidence.** 9 new unit tests pinning the boundaries that decide whether a name
+or a number appears at all — including that no email can reach either identity
+line, and that `tournamentWins` is null rather than 0 before the server has
+answered.
+
+```
+npm test                85 files, 1604 tests passed
+supabase test db        444 assertions, PASS
+npx expo export         every import resolves
+tsc --noEmit / lint     exit 0 / 0 errors
+```
+

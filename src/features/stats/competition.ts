@@ -32,7 +32,13 @@ export type CompetitionState =
   | { status: "ready"; record: CompetitionRecord; stale: boolean };
 
 export interface CompetitionContext {
-  /** True once an authenticated session exists. Always false in this build. */
+  /**
+   * True once an authenticated session exists.
+   *
+   * It was written as the literal `false` at both call sites — a fact about a
+   * build with no sign-in, never revisited once accounts shipped — so every
+   * signed-in player was told their competition record required an account.
+   */
   hasAccount: boolean;
   online: boolean;
   /** A record already fetched and cached for this account, if any. */

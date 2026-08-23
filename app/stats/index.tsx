@@ -15,7 +15,16 @@
  * because "100%" from two decisions is not mastery, and no percentage is drawn
  * from a zero denominator — an unattempted category shows an em dash, never 0%.
  *
- * Competition is server-owned, so it says so rather than showing zeros.
+ * Competition is server-owned, so it is READ from the server. It used to say
+ * "requires an account" to everybody, including players who had one: the call
+ * was `competitionState({ hasAccount: false, online: false })` with both values
+ * written as literals, and nothing anywhere fetched a record. That is the same
+ * defect the Profile screen carried, and its header documents the shape —
+ * `hasAccount` was written when there genuinely was no sign-in and never
+ * revisited once accounts shipped.
+ *
+ * Practice statistics stay local and stay available to everyone. Only the
+ * Competition section needs an account, and it is the only part that says so.
  */
 
 import { useEffect, useState } from "react";
@@ -57,6 +66,8 @@ import {
   usePracticeStore,
 } from "../../src/features/practice/practice-store";
 import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
+import { useAuthStore } from "../../src/features/auth";
+import { useCompetitionStore } from "../../src/features/stats/competition-store";
 
 export default function StatsScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -71,6 +82,33 @@ export default function StatsScreen() {
   useEffect(() => {
     if (!hydrated) void hydrate();
   }, [hydrated, hydrate]);
+
+  /*
+   * The Competition section's three inputs, all read rather than asserted.
+   *
+   * `session !== null` is the whole fix for `hasAccount`. `online` is what the
+   * last fetch actually managed, not a guess: a store that reported "offline"
+   * after a server REFUSED a call would put an offline message in front of a
+   * player who is plainly not offline.
+   */
+  const session = useAuthStore((state) => state.session);
+  const authHydrated = useAuthStore((state) => state.hydrated);
+  const hydrateAuth = useAuthStore((state) => state.hydrate);
+  const competitionRecord = useCompetitionStore((state) => state.record);
+  const competitionLoading = useCompetitionStore((state) => state.loading);
+  const competitionOnline = useCompetitionStore((state) => state.online);
+  const loadCompetition = useCompetitionStore((state) => state.load);
+
+  useEffect(() => {
+    if (!authHydrated) void hydrateAuth();
+  }, [authHydrated, hydrateAuth]);
+
+  // Re-read on every change of session: signing out must empty this section,
+  // and signing in must fill it without a relaunch.
+  useEffect(() => {
+    if (!authHydrated) return;
+    void loadCompetition();
+  }, [authHydrated, session?.account.userId, loadCompetition]);
 
   const [mode, setMode] = useState<StatsMode>("all");
   const selected = statsMode(mode);
@@ -91,7 +129,12 @@ export default function StatsScreen() {
   });
 
   const { mastery, play, behaviour, streaks, trend } = statistics;
-  const competition = competitionState({ hasAccount: false, online: false });
+  const competition = competitionState({
+    hasAccount: session !== null,
+    online: competitionOnline,
+    cached: competitionRecord,
+    loading: competitionLoading,
+  });
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
