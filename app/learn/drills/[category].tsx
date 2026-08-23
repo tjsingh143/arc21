@@ -99,6 +99,13 @@ export default function DrillSessionScreen() {
   // empty record that happens to be on screen first.
   useEffect(() => {
     if (!ready || question !== null) return;
+    /*
+     * Drawing needs randomness, so it cannot happen during render, and it
+     * cannot happen before stored history has loaded without defeating the
+     * weighting this effect exists for. The guard above makes it run exactly
+     * once per question rather than cascade.
+     */
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     draw(null);
   }, [ready, question, draw]);
 

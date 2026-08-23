@@ -40,9 +40,11 @@ import { ExpoAudioSink, configureAudioSession } from "../src/lib/audio/expo-audi
 import { installLiveAnnouncementSink } from "../src/lib/accessibility/announce";
 import { configureNotificationHandler, ensureAndroidChannels } from "../src/lib/notifications/push";
 import { useNotificationRouting } from "../src/lib/notifications/use-notification-routing";
+import { useProfilePrivacySync } from "../src/features/settings/use-profile-privacy-sync";
 
 export default function RootLayout() {
   useNotificationRouting();
+  useProfilePrivacySync();
 
   const hydrateAuth = useAuthStore((state) => state.hydrate);
   useEffect(() => {

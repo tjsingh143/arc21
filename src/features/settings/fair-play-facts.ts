@@ -22,6 +22,10 @@
 
 import { ARC_STANDARD_RULES, type BlackjackRules } from "../../../shared/blackjack/rules.js";
 import { computeCutIndex, SAFETY_RESERVE_CARDS } from "../../../shared/blackjack/shoe.js";
+import {
+  RECOVERY_GRANT_COOLDOWN_MS,
+  RECOVERY_GRANT_THRESHOLD,
+} from "../wallet/recovery-grant.js";
 
 export interface ShuffleFacts {
   deckCount: number;
@@ -180,6 +184,102 @@ export const NO_GUARANTEE_STATEMENT =
   "A fair shuffle is a statement about the process, not a promise about your session. " +
   "Blackjack is dominated by variance in the short run: you can play every hand correctly " +
   "and still lose for a long time. Basic strategy narrows the house edge — it never removes it.";
+
+export interface ResponsiblePlayStatement {
+  id: string;
+  title: string;
+  body: string;
+}
+
+/**
+ * Playing responsibly — a SHIPPED surface, not only store copy.
+ *
+ * A simulated casino game owes the player this whether or not a store asks for
+ * it, and the store will ask. Every statement below is checkable against the
+ * repository, exactly like `fairPlayClaims`:
+ *
+ *   adults      → the onboarding disclosure, which states 18+ before play
+ *   not-a-bet   → no purchase, cash-out or prize path exists anywhere
+ *   no-transfer → NO_PROFIT_CLAIM, and the solver that computes the advice
+ *   broke       → `RECOVERY_GRANT_THRESHOLD` / `RECOVERY_GRANT_COOLDOWN_MS`
+ *   no-pressure → no login streak and no consecutive-day bonus exists; the one
+ *                 reminder is scheduled on the device and has a Settings switch
+ *   help        → deliberately names no service, claims no affiliation
+ *
+ * The last one is the one to be careful with. Arc 21 has no relationship with
+ * any support organisation, so it must not imply one, must not print a number
+ * it cannot keep correct in every country, and must not present itself as help.
+ * Saying plainly that it is a simulation and not a treatment is the honest
+ * version of this paragraph.
+ */
+export function responsiblePlayStatements(): ResponsiblePlayStatement[] {
+  const cooldownHours = Math.round(RECOVERY_GRANT_COOLDOWN_MS / 3_600_000);
+
+  return [
+    {
+      id: "adults",
+      title: "For adults",
+      body:
+        "Arc 21 is intended for players aged 18 and over. It simulates a casino game, " +
+        "and it says so before the first hand is dealt.",
+    },
+    {
+      id: "not-a-bet",
+      title: "Nothing here is a bet",
+      body:
+        "No money enters or leaves this app. There is nothing to buy, no way to cash out, " +
+        "no prizes, and no advantage that could be paid for. A wager here moves virtual " +
+        "chips between your own stack and a simulated table and nothing else.",
+    },
+    {
+      id: "no-transfer",
+      title: "This does not transfer to real money",
+      body:
+        "Playing well here does not improve your chances of winning money anywhere else. " +
+        "Basic strategy narrows the house edge; it never removes it, and no run of results " +
+        "here predicts a run of results somewhere real.",
+    },
+    {
+      id: "broke",
+      title: "Running out costs you nothing",
+      body:
+        `If your bankroll falls below ${RECOVERY_GRANT_THRESHOLD.toLocaleString("en-GB")} chips, a Recovery Grant ` +
+        `restores it, once every ${cooldownHours} hours. You cannot buy your way back, because ` +
+        "there is nothing to buy — and Practice never touches your bankroll at all.",
+    },
+    {
+      id: "no-pressure",
+      title: "Nothing here is designed to keep you playing",
+      body:
+        "There is no login streak, no bonus for consecutive days, and nothing is taken away " +
+        "for not playing. The one reminder Arc 21 sends is scheduled on your own device and " +
+        "can be switched off in Settings.",
+    },
+    {
+      id: "help",
+      title: "If real gambling is causing you harm",
+      body:
+        "Arc 21 is a simulation, not treatment and not advice, and it is not affiliated with " +
+        "any support organisation. If gambling with real money is affecting you or someone " +
+        "close to you, a national support service is the right place to look — not this app.",
+    },
+  ];
+}
+
+/**
+ * The one-line disclosure that sits at the foot of Home, Profile, Statistics
+ * and Fair Play.
+ *
+ * It was typed out four times, and `app.json` carried a FIFTH wording that no
+ * code read at all — "cannot be redeemed", with the "for money or prizes"
+ * dropped. Four copies drift slowly; a copy nothing renders drifts silently,
+ * and it is the one a store listing would most likely be written from.
+ * `tests/stats/fair-play.test.ts` pins `app.json` to this constant so the
+ * config and the app cannot say different things.
+ */
+export const CHIPS_NOT_MONEY_FOOTER =
+  "Simulated card game. Virtual chips have no monetary value and cannot be " +
+  "redeemed for money or prizes.";
 
 /**
  * Words that would turn this page into a false claim.

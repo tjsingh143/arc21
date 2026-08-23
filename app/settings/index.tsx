@@ -40,6 +40,7 @@ import {
   type StatsVisibility,
 } from "../../src/features/settings/settings";
 import { useSettings } from "../../src/features/settings/use-settings";
+import { syncProfilePrivacy } from "../../src/features/settings/profile-privacy";
 import { usePushRegistration } from "../../src/features/notifications";
 import { applyDailyReminderPreference } from "../../src/lib/notifications/daily-reminder";
 import { hasRoute } from "../../src/features/home/route-availability";
@@ -64,6 +65,21 @@ export default function SettingsScreen() {
     // Applied to the table now, not only to the next one. The practice store
     // persists its mode with the session, so this survives a restart.
     setPracticeMode(mode);
+  }
+
+  /**
+   * The visibility choice is stored locally AND carried to the profile row.
+   *
+   * It used to be stored only, which meant the control displayed the player's
+   * answer back to them while `profiles.privacy` stayed at its default of
+   * `public` for every account ever created. The write is best-effort: a guest
+   * has no row to write, and a preference that blocks on the network is a
+   * control that feels broken. `syncProfilePrivacy` also runs when a session
+   * appears, which is what covers a choice made before signing in.
+   */
+  async function changeVisibility(visibility: StatsVisibility): Promise<void> {
+    await update({ statsVisibility: visibility });
+    await syncProfilePrivacy(visibility);
   }
 
   function confirmResetStatistics(): void {
@@ -243,7 +259,7 @@ export default function SettingsScreen() {
                   label={STATS_VISIBILITY_LABELS[visibility]}
                   size="medium"
                   variant={settings.statsVisibility === visibility ? "primary" : "secondary"}
-                  onPress={() => void update({ statsVisibility: visibility })}
+                  onPress={() => void changeVisibility(visibility)}
                   disabled={!ready}
                   style={styles.choice}
                 />

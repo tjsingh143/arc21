@@ -10,7 +10,7 @@
  * settlement never read one.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createElement, useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -188,18 +188,30 @@ export default function Inventory() {
   );
 }
 
+/**
+ * The card-back preview, as its own component.
+ *
+ * Same shape as `PlayingCard`: subscribe or receive a key, resolve the art
+ * through `useMemo`, render it — and nothing else in the body. Resolving a
+ * component into a local and then rendering it from inside a BRANCH is what
+ * the React Compiler cannot verify, so the branch is lifted out here rather
+ * than the lookup being pushed down into it.
+ */
+function CardBackPreview({ assetKey }: { assetKey: string | null }) {
+  return (
+    <View style={styles.backPreview}>
+      {createElement(cardBackArt(assetKey), { width: 40, height: 56 })}
+    </View>
+  );
+}
+
 /** Each kind previews as the thing it is: a badge, a card back, a surface. */
 function ItemPreview({ item }: { item: CosmeticItem }) {
   if (item.kind === "avatar") {
     return <CosmeticAvatar assetKey={item.asset_key} size={48} />;
   }
   if (item.kind === "card_back") {
-    const Back = cardBackArt(item.asset_key);
-    return (
-      <View style={styles.backPreview}>
-        <Back width={40} height={56} />
-      </View>
-    );
+    return <CardBackPreview assetKey={item.asset_key} />;
   }
   const theme = tableThemeArt(item.asset_key);
   return (

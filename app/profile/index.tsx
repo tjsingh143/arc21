@@ -46,6 +46,7 @@ import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
 import { TOTAL_CAREER_STARS } from "../../shared/career/nodes.js";
 import { totalStars } from "../../shared/career/progress.js";
+import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function ProfileScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -211,8 +212,7 @@ export default function ProfileScreen() {
         <Button label="Back" variant="quiet" onPress={() => router.back()} />
 
         <AppText variant="caption" color="textDisabled" align="center">
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>

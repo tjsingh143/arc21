@@ -27,6 +27,8 @@
 import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { stackUp } from "./stack-guard.js";
+
 const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
 const REST = "http://127.0.0.1:54321/rest/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
@@ -109,23 +111,7 @@ async function drain(limit = 500): Promise<Record<string, number>> {
   return (await response.json()) as Record<string, number>;
 }
 
-let stackUp = false;
-try {
-  const probe = await fetch(`${FUNCTIONS}/send-notifications`, { method: "POST", body: "{}" });
-  // Only a 401 proves the FUNCTION is serving; the gateway answers 503 when the
-  // Edge runtime is down.
-  stackUp = probe.status === 401;
-} catch {
-  stackUp = false;
-}
-
 const suite = stackUp ? describe : describe.skip;
-if (!stackUp) {
-  console.warn(
-    "[tests/server] notifications SKIPPED — run `supabase start` and " +
-      "`supabase functions serve --no-verify-jwt`.",
-  );
-}
 
 suite("who may drain the queue", () => {
   it("refuses an unauthenticated caller", async () => {

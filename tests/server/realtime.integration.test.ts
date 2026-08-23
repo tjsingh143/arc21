@@ -29,6 +29,8 @@
 
 import crypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
+
+import { stackUp } from "./stack-guard.js";
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
@@ -118,21 +120,7 @@ async function rpc(token: string, name: string, args: Record<string, unknown> = 
 
 const iso = () => new Date().toISOString();
 
-let stackUp = false;
-try {
-  const probe = await fetch(`${FUNCTIONS}/game-command`, { method: "POST", body: "{}" });
-  stackUp = probe.status === 401;
-} catch {
-  stackUp = false;
-}
-
 const suite = stackUp ? describe : describe.skip;
-if (!stackUp) {
-  console.warn(
-    "[tests/server] SKIPPED — local stack not reachable. Run `supabase start` and " +
-      "`supabase functions serve --no-verify-jwt` to exercise these.",
-  );
-}
 
 let openClients: SupabaseClient[] = [];
 afterEach(async () => {

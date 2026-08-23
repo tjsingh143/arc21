@@ -130,9 +130,19 @@ export const STATS_VISIBILITY_LABELS: Record<StatsVisibility, string> = {
  * accuracy figure produced with the recommendation on screen would flatter a
  * profile without measuring anything, and it must not become a leaderboard.
  */
+/**
+ * What this control actually does, stated accurately.
+ *
+ * The second sentence used to read "Nothing on this device is uploaded today."
+ * That was true when it was written and false by the time anyone read it: a
+ * signed-in player's hands, decisions and standings are recorded on the server,
+ * which is the whole reason leaderboards can be trusted. A privacy note is the
+ * single worst place in a product for a sentence that has quietly expired.
+ */
 export const STATS_VISIBILITY_NOTE =
-  "Profile visibility applies to a published profile, which needs an account. " +
-  "Nothing on this device is uploaded today.";
+  "This controls who can see your profile and standings once you have an account. " +
+  "It is sent to the server when you are signed in. Practice on this device is " +
+  "never uploaded and is not covered by this setting.";
 
 // ---------------------------------------------------------------------------
 // Validation

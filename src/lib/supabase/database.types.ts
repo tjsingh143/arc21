@@ -38,6 +38,37 @@ type ReadOnly<TRow extends Record<string, unknown>> = {
   Relationships: [];
 };
 
+/**
+ * Readable in full, writable in exactly the columns the schema grants.
+ *
+ * `profiles` was declared `ReadOnly` under the comment above, and the comment
+ * was wrong about it: `20260813120100_profiles.sql` carries a column-level
+ * `grant update (username, display_name, bio, avatar_url, country_code,
+ * privacy)` for `authenticated`, which the live database confirms.
+ *
+ * That mislabelling had a consequence, not just an inaccuracy. Because every
+ * write to `profiles` was a compile error, nothing ever wrote
+ * `profiles.privacy` — so the Settings screen's "Statistics visibility" control
+ * stored the player's choice locally and never told the server, and every
+ * account stayed at the column default of `public`. The row policy that
+ * enforces it, `profiles_select_visible`, was correct the whole time; it was
+ * simply never given an answer.
+ *
+ * The narrowing this file exists for is kept, and tightened: `Update` is the
+ * granted columns and nothing else, so `update({ level: 99 })` is still a
+ * compile error rather than a runtime rejection. `Insert` stays closed —
+ * a profile row is created by a trigger on sign-up, never by a client.
+ */
+type WritableColumns<
+  TRow extends Record<string, unknown>,
+  TColumn extends keyof TRow,
+> = {
+  Row: TRow;
+  Insert: Record<string, never>;
+  Update: Partial<Pick<TRow, TColumn>>;
+  Relationships: [];
+};
+
 /** Mirrors `public.ledger_reason` in `20260813120000_foundation.sql`. */
 export type LedgerReason =
   | "initial_grant"
@@ -106,7 +137,10 @@ export interface Database {
     Tables: {
       wallets: ReadOnly<WalletRow>;
       wallet_ledger: ReadOnly<WalletLedgerRow>;
-      profiles: ReadOnly<ProfileRow>;
+      profiles: WritableColumns<
+        ProfileRow,
+        "username" | "display_name" | "bio" | "avatar_url" | "country_code" | "privacy"
+      >;
     };
     Views: Record<string, never>;
     Functions: {

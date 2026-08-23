@@ -1,0 +1,143 @@
+# Arc 21 — continuous integration.
+#
+# The specification's rule is the whole point of this file: "A pull request must
+# not pass with TypeScript errors or failing engine tests."
+#
+# WHAT HAS ACTUALLY BEEN RUN. There is no remote and no CI runner has ever
+# executed this workflow, so every step below was instead run locally, in this
+# order, and its output pasted into the session report. A workflow whose steps
+# have never been run is a wish. What has NOT been exercised is the runner
+# plumbing itself — `actions/checkout`, `actions/setup-node` and
+# `supabase/setup-cli` — because that cannot exist on this machine.
+#
+# TWO JOBS, AND WHY THE SPLIT MATTERS. `tests/server/**` talks to real Edge
+# Functions over HTTP and SKIPS when no stack is reachable. A skip is not a
+# pass. So `checks` explicitly EXCLUDES that directory rather than running it
+# and quietly skipping it, and `database` runs it with
+# ARC21_REQUIRE_SERVER_STACK=1, which turns the skip into a hard failure. A
+# database job whose stack failed to come up therefore reports a broken stack
+# instead of a green suite that tested nothing. The two together run every test
+# in the repository exactly once: 1,476 + 52 = 1,528.
+#
+# Node is pinned to the version every local run was validated on. package.json
+# `engines` permits >=22, but only 26 has been exercised here, and claiming
+# otherwise is the kind of untested assertion this repository keeps a list of.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "26"
+
+jobs:
+  checks:
+    name: Lint, typecheck, unit tests, bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        # 0 errors is the bar. Warnings are tracked but do not fail the build.
+        run: npm run lint
+
+      - name: Typecheck
+        # NOTE: `supabase/functions` is excluded from tsconfig.json and is NOT
+        # covered by this step. It is proved by running it in the `database`
+        # job below, never by compiling it.
+        run: npx tsc --noEmit
+
+      - name: Unit and integration tests (no server stack)
+        # tests/server/** is excluded here on purpose — see the header. It runs
+        # in the `database` job, where a stack exists and a skip is a failure.
+        run: npx vitest run --exclude 'tests/server/**'
+
+      - name: Expo config doctor
+        run: npx expo-doctor@latest
+
+      - name: Build validation — the app must bundle
+        # Not a store build: this proves every import resolves and the bundler
+        # produces a Hermes bytecode bundle. A native build needs EAS and
+        # credentials, which are the deployment boundary.
+        #
+        # --clear is not cosmetic. Without it this step failed locally with
+        # "Failed to get the SHA-1 for … react-native-worklets/.worklets/…":
+        # the worklets plugin writes generated files under node_modules, and a
+        # Metro cache that outlives a dependency change points at files that no
+        # longer exist. A fresh runner would not usually have that cache, but
+        # the command below is the one that was actually run and proved.
+        run: npx expo export --platform ios --output-dir /tmp/arc21-export --clear
+
+  database:
+    name: pgTAP and server integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Start the stack
+        run: supabase start
+
+      - name: Apply every migration from scratch
+        run: supabase db reset
+
+      - name: pgTAP
+        run: supabase test db
+
+      - name: Serve the Edge Functions
+        # --no-verify-jwt tells the GATEWAY not to pre-check the token. The
+        # function still authenticates every request itself, which is what the
+        # 401 below proves.
+        run: supabase functions serve --no-verify-jwt &
+
+      - name: Wait for the functions to serve
+        # Only a 401 proves the FUNCTION is up. With the Edge runtime stopped
+        # the API gateway still answers — 503 — and an "any response" check
+        # once reported the stack as up while nine tests failed instead of
+        # skipping.
+        run: |
+          for attempt in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              http://127.0.0.1:54321/functions/v1/game-command \
+              -H "content-type: application/json" -d '{}' || true)
+            if [ "$code" = "401" ]; then
+              echo "functions serving (401 after ${attempt}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the Edge Functions never answered 401; last code was '${code}'" >&2
+          exit 1
+
+      - name: Server integration tests
+        # The flag is the point: without it these SKIP when the stack is down,
+        # and the job would pass having tested nothing.
+        env:
+          ARC21_REQUIRE_SERVER_STACK: "1"
+        run: npx vitest run tests/server

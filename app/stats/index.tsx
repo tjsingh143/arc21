@@ -56,6 +56,7 @@ import {
   PRACTICE_STARTING_BANKROLL,
   usePracticeStore,
 } from "../../src/features/practice/practice-store";
+import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function StatsScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -366,8 +367,7 @@ export default function StatsScreen() {
         />
 
         <AppText variant="caption" color="textDisabled" align="center">
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>

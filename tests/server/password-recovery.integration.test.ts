@@ -24,6 +24,8 @@
 
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
+
+import { stackUp } from "./stack-guard.js";
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
@@ -31,6 +33,7 @@ const FUNCTIONS = `${SUPABASE_URL}/functions/v1`;
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
 const MAILPIT = "http://127.0.0.1:54324";
 
+/** Published local-development keys. Identical on every machine, useless elsewhere. */
 const LOCAL_SERVICE_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImV4cCI6MTk4MzgxMjk5Nn0.EGIM96RAZx35lJzdJsyH-qQwv8Hdp7fsn3W0YpN81IU";
 const LOCAL_ANON_KEY =
@@ -82,21 +85,7 @@ async function verifyLinkFrom(messageId: string): Promise<string> {
   return match[0];
 }
 
-let stackUp = false;
-try {
-  const probe = await fetch(`${FUNCTIONS}/game-command`, { method: "POST", body: "{}" });
-  stackUp = probe.status === 401;
-} catch {
-  stackUp = false;
-}
-
 const suite = stackUp ? describe : describe.skip;
-if (!stackUp) {
-  console.warn(
-    "[tests/server] SKIPPED — local stack not reachable. Run `supabase start` and " +
-      "`supabase functions serve --no-verify-jwt` to exercise these.",
-  );
-}
 
 suite("password reset, end to end via Mailpit", () => {
   it(

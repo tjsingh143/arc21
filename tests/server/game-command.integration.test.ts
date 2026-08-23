@@ -22,6 +22,8 @@
 import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { stackUp } from "./stack-guard.js";
+
 const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
 
@@ -98,30 +100,7 @@ async function createUser(): Promise<string> {
   return json.id;
 }
 
-let stackUp = false;
-try {
-  const probe = await fetch(`${FUNCTIONS}/game-command`, { method: "POST", body: "{}" });
-  /**
-   * Only a 401 proves the FUNCTION is serving.
-   *
-   * "Any HTTP answer" is not enough: with the Edge runtime stopped, the API
-   * gateway is still listening on this port and replies 503 — which made this
-   * guard report the stack as up and every test fail instead of skip. An
-   * unauthenticated command is rejected by the function's own auth check, so a
-   * 401 is the narrowest signal that the code under test is actually reachable.
-   */
-  stackUp = probe.status === 401;
-} catch {
-  stackUp = false;
-}
-
 const suite = stackUp ? describe : describe.skip;
-if (!stackUp) {
-  console.warn(
-    "[tests/server] SKIPPED — local stack not reachable. Run `supabase start` and " +
-      "`supabase functions serve --no-verify-jwt` to exercise these.",
-  );
-}
 
 const iso = () => new Date().toISOString();
 

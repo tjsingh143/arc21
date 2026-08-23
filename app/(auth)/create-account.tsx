@@ -61,6 +61,15 @@ export default function CreateAccountScreen() {
 
   useEffect(() => {
     if (form.status.kind !== "signedIn") return;
+    /*
+     * The one setState this screen makes from an effect, and it is deliberate.
+     * The password is held here and nowhere else (see the note at the top of
+     * this file); it is cleared the moment a session exists rather than left
+     * in state until the unmount happens to land. The cascading render the
+     * rule warns about is one render on a screen `router.replace` is already
+     * replacing.
+     */
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setPassword("");
     router.replace("/(tabs)/home");
   }, [form.status.kind]);

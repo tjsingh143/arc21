@@ -22,6 +22,7 @@ import { colors, layout, spacing } from "../../src/design/tokens";
 import { formatChips } from "../../src/design/typography";
 import { CAREER_NODES } from "../../shared/career/nodes.js";
 import { usePracticeStore } from "../../src/features/practice/practice-store";
+import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function HomeScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -122,8 +123,7 @@ export default function HomeScreen() {
         </View>
 
         <AppText variant="caption" color="textDisabled" align="center" style={styles.disclaimer}>
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>

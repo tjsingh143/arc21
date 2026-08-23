@@ -26,9 +26,11 @@ import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { colors, layout, spacing } from "../../src/design/tokens";
 import {
+  CHIPS_NOT_MONEY_FOOTER,
   fairPlayClaims,
   NO_CERTIFICATION_STATEMENT,
   NO_GUARANTEE_STATEMENT,
+  responsiblePlayStatements,
   shuffleFacts,
 } from "../../src/features/settings/fair-play-facts";
 import { ARC_STANDARD_RULES } from "../../shared/blackjack/rules.js";
@@ -36,6 +38,7 @@ import { ARC_STANDARD_RULES } from "../../shared/blackjack/rules.js";
 export default function FairPlayScreen() {
   const claims = fairPlayClaims(ARC_STANDARD_RULES);
   const shoe = shuffleFacts(ARC_STANDARD_RULES);
+  const responsible = responsiblePlayStatements();
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -95,6 +98,23 @@ export default function FairPlayScreen() {
           </AppText>
         </SurfaceCard>
 
+        {/*
+          Playing responsibly. This lives on a shipped screen rather than only
+          in a store listing, because the person who needs to read it is the
+          one already using the app, not the one deciding whether to install it.
+        */}
+        <View style={styles.section}>
+          <AppText variant="sectionTitle">Playing responsibly</AppText>
+          {responsible.map((statement) => (
+            <SurfaceCard key={statement.id}>
+              <AppText variant="bodyStrong">{statement.title}</AppText>
+              <AppText variant="body" color="textSecondary">
+                {statement.body}
+              </AppText>
+            </SurfaceCard>
+          ))}
+        </View>
+
         {/* The two paragraphs that make the rest worth reading. */}
         <View style={styles.section}>
           <AppText variant="sectionTitle">What this page is not</AppText>
@@ -105,8 +125,7 @@ export default function FairPlayScreen() {
         <Button label="Back" variant="quiet" onPress={() => router.back()} />
 
         <AppText variant="caption" color="textDisabled" align="center">
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>
