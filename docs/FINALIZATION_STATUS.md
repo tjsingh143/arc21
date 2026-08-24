@@ -1103,3 +1103,50 @@ tests/progression/decision-grading    32 tests (was 21)
 .github/workflows/ci.yml              runs `npm run test:coverage`; yaml-lint clean
 npm test                              1,632 unit + 109 server = 1,741 PASS
 ```
+
+---
+
+## R15 — the database audit, and the one thing `supabase db lint` had to say
+
+```
+{"function":"public.cosmetic_is_earned",
+ "issues":[{"level":"warning extra",
+            "message":"control reached end of function without RETURN",
+            "sqlState":"2F005"}]}
+```
+
+The body is one `case v_kind` over `public.cosmetic_unlock_type`, and all seven
+of its values are handled, so the warning is not a live defect — the function
+cannot currently fall off its end.
+
+**It is worth fixing anyway, and the reason is the caller.** A `case` with no
+`else` does not return NULL when nothing matches; it RAISES `CASE_NOT_FOUND`.
+And `grant_earned_cosmetics_for` runs inside the COMMAND TRANSACTION —
+`_shared/session-boundary.ts` calls it while settling a sprint placement and
+while paying a career node. So the day somebody adds an eighth unlock type, and
+adding one is a one-line `alter type` that nothing forces them to follow up, the
+first player to finish a tournament would have their settlement rolled back by
+an exception raised inside a cosmetics check. Placements, prize chips and XP,
+undone by a decoration.
+
+`else return false` is the same answer the `achievement` branch already gives in
+its own words — "granting one would hand out an item for a condition nobody can
+meet or check". An unimplemented unlock type now grants nothing until somebody
+implements it, and settles everything else normally.
+
+The body was carried forward WHOLE from `20260817310000_cosmetic_unlocks.sql`,
+the last file to define it, because `create or replace function` silently
+reverts every later redefinition — this project has already lost a `notify_user`
+call and an `expire_stale_rooms()` call that way, one of them with nothing
+failing to say so. The ACL is restated as `20260818120000` left it (revoked from
+`public`, `anon` AND `authenticated` — it is server-only), and the migration
+calls `assert_client_authorization_surface()` as its last line.
+
+**Evidence.**
+
+```
+supabase db lint                        "No schema errors found" (was 1 warning)
+supabase db reset && supabase test db   452 assertions, PASS
+npm test                                1,632 + 109 = 1,741 PASS against the
+                                        freshly reset database
+```
