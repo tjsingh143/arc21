@@ -109,6 +109,26 @@ export interface OnlineTableStoreState {
   lockBet: () => Promise<void>;
   act: (action: PlayerActionType) => Promise<void>;
   /**
+   * Answer the insurance offer.
+   *
+   * ADDED AFTER THIS WAS UNREACHABLE FOR A WHOLE PHASE. `INSURANCE` and
+   * `DECLINE_INSURANCE` are engine commands, they are in
+   * `COMMAND_TYPES`, the server applies them, and `tests/server` sends
+   * `DECLINE_INSURANCE` on every hand of every daily-challenge attempt — but
+   * `act()` takes a `PlayerActionType`, which is HIT/STAND/DOUBLE/SPLIT/
+   * SURRENDER and nothing else, and no other method existed. So at EVERY
+   * server table — Quick Play, public, private, tournament, daily — the
+   * insurance offer could not be answered at all. The player saw "Waiting for
+   * the next hand." until the deadline expired and the server applied its
+   * default.
+   *
+   * Nothing caught it because the InsuranceSheet was mounted by
+   * `app/game/practice.tsx` and `app/career/play/[slug].tsx`, both of which
+   * drive the LOCAL engine, and neither goes anywhere near this store.
+   */
+  takeInsurance: () => Promise<void>;
+  declineInsurance: () => Promise<void>;
+  /**
    * Ask the server to start the next round.
    *
    * At a shared table whoever taps first starts it for everyone; the losers get
@@ -349,27 +369,15 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   },
 
   act: async (action) => {
-    const current = get().status;
-    if (current.kind !== "at-table" || get().pending) return;
+    await sendSimpleCommand(get, set, action);
+  },
 
-    set({ pending: true, notice: null });
-    const result = await activeTableGateway().command(
-      current.state.gameId,
-      { type: action, expectedVersion: current.state.version, payload: {} },
-      { onRetry: () => set({ connection: RECONNECTING }) },
-    );
+  takeInsurance: async () => {
+    await sendSimpleCommand(get, set, "INSURANCE");
+  },
 
-    if (!result.ok) {
-      const { connection, notice } = afterFailure(result);
-      set({ pending: false, connection, notice });
-      return;
-    }
-    set({
-      pending: false,
-      connection: LIVE,
-      status: { kind: "at-table", state: result.state, seatId: current.seatId },
-      lastEvents: result.events,
-    });
+  declineInsurance: async () => {
+    await sendSimpleCommand(get, set, "DECLINE_INSURANCE");
   },
 
   nextHand: async () => {
@@ -444,6 +452,46 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     });
   },
 }));
+
+/**
+ * One command with an empty payload, sent and applied.
+ *
+ * `act`, `takeInsurance` and `declineInsurance` are the same six lines with a
+ * different string, and they were about to become three copies of them. The
+ * shape is deliberately narrow — no payload — because the two that DO carry one
+ * (`PLACE_BET` and `LOCK_BET`) also differ in what they clear afterwards, and
+ * folding them in here would hide that.
+ *
+ * Nothing is predicted locally. The snapshot in the reply is the whole of the
+ * new state, so a refusal leaves the table exactly where the server has it.
+ */
+async function sendSimpleCommand(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  type: "INSURANCE" | "DECLINE_INSURANCE" | PlayerActionType,
+): Promise<void> {
+  const current = get().status;
+  if (current.kind !== "at-table" || get().pending) return;
+
+  set({ pending: true, notice: null });
+  const result = await activeTableGateway().command(
+    current.state.gameId,
+    { type, expectedVersion: current.state.version, payload: {} },
+    { onRetry: () => set({ connection: RECONNECTING }) },
+  );
+
+  if (!result.ok) {
+    const { connection, notice } = afterFailure(result);
+    set({ pending: false, connection, notice });
+    return;
+  }
+  set({
+    pending: false,
+    connection: LIVE,
+    status: { kind: "at-table", state: result.state, seatId: current.seatId },
+    lastEvents: result.events,
+  });
+}
 
 /** The seat this player occupies, or null while the table is not loaded. */
 export function ownSeat(status: OnlineTableStatus) {

@@ -25,6 +25,8 @@ export {
   type OnlineTableStoreState,
 } from "./online-table-store.js";
 
+export { insuranceOffer, type InsuranceOffer } from "./insurance-affordance.js";
+
 export {
   describeDealerUpCardForAnnouncement,
   describeOutcomeForAnnouncement,

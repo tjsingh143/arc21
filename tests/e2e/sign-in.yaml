@@ -1,0 +1,84 @@
+# Arc 21 — sign in, from whatever state the app is actually in.
+#
+# A SUBFLOW, used by every server-configured flow. It is not a test of sign-in;
+# it is the preamble those flows need, and it is here because getting it wrong
+# costs a run and reads as a broken app.
+#
+# THREE ENTRY STATES, and the flow cannot know which it will get:
+#
+#   * ONBOARDING — the ordinary one after `clearState: true`.
+#   * THE AUTH SCREEN — a previous attempt got that far.
+#   * ALREADY HOME — and this is the one that cost a run. `clearState: true`
+#     wipes the app's data container; it does NOT clear the iOS KEYCHAIN, which
+#     is where `src/lib/supabase/client.ts` keeps the session. So a relaunch can
+#     show onboarding for a moment, restore the session underneath it, and land
+#     on Home — and a flow that hard-waits for the auth screen fails against an
+#     app that did exactly the right thing.
+#
+# So the loop runs until HOME is reached rather than through a fixed sequence,
+# and each state is handled at the TOP level of the iteration. `career-node.yaml`
+# deadlocked for a year of runs because its only progress branch was nested
+# inside one state; the fix there was structural and it is the same fix here.
+#
+# Needs `npx tsx scripts/e2e-account.ts` first: it makes the account exist,
+# leaves any table or room a failed run left open, and puts the credential on
+# the simulator pasteboard.
+
+appId: com.arc21.app
+---
+- repeat:
+    times: 6
+    while:
+      notVisible:
+        id: "home-practice"
+    commands:
+      # A leftover deep-link confirmation from an earlier run.
+      - runFlow:
+          when:
+            visible: "Open"
+          commands:
+            - tapOn: "Cancel"
+
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-sign-in"
+          commands:
+            - tapOn:
+                id: "onboarding-sign-in"
+
+      # PASTED, not typed. `inputText` drops characters on this simulator and a
+      # half-typed password fails a sign-in in a way that reads as a broken auth
+      # screen. The password IS the email, so one pasteboard serves both fields.
+      - runFlow:
+          when:
+            visible:
+              id: "auth-email"
+          commands:
+            - longPressOn:
+                id: "auth-email"
+            - tapOn: "Paste"
+            - longPressOn:
+                id: "auth-password"
+            - tapOn: "Paste"
+            # The paste LANDED. A step that COMPLETED did not necessarily do
+            # anything; the password cannot be read back but the email can, and
+            # the two carry the same value.
+            - assertVisible: "e2e-lobby@arc21.test"
+            - tapOn:
+                id: "auth-submit"
+
+      # iOS offers to save the password. It is a SYSTEM alert over the app, it
+      # can arrive a screen or two after the sign-in that caused it, and while
+      # it is up every assertion underneath it fails — which reads as a screen
+      # that did not render.
+      - runFlow:
+          when:
+            visible: "Save Password?"
+          commands:
+            - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 60000

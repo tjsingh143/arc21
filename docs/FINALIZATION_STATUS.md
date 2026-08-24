@@ -913,3 +913,131 @@ The server suite is the part that matters most here, because
 disclosure-shaped read in this schema. Public, friends-only-with-a-friendship,
 friends-only-without, private, a block in both directions, a nonexistent id, and
 an unauthenticated caller are each asserted against the running database.
+
+---
+
+## R13 — nobody could play a second hand at any online table
+
+The repository's first two SERVER-CONFIGURED end-to-end flows, and the three
+defects they found in one evening. Every other Maestro flow here runs against an
+UNCONFIGURED build — `every-screen.yaml` asserts `.*no server configured.*` in
+five places — so until this row, **nothing had ever walked a screen whose
+content comes from the server**, and no flow had ever played an online table.
+
+### The flows
+
+`tests/e2e/private-lobby.yaml` signs in, opens a private table, proves the ready
+toggle changes the SERVER's count, proves the host is offered no Remove against
+themselves, force-quits and relaunches to prove the room code survives, and
+leaves. **Passes: exit 0, 40 COMPLETED steps.** It closes R10's last outstanding
+item.
+
+`tests/e2e/online-table.yaml` is the one that matters most. Quick Play is the
+only server table one account can play alone, which is the whole reason it can
+exist: it buys in, **stages a chip and presses Deal at a server table**, plays
+the hand out, answers the insurance offer, **starts a second hand**, then leaves
+and proves the seat was released. **Passes: exit 0, 41 COMPLETED steps.**
+
+`tests/e2e/sign-in.yaml` is a subflow both use. It loops until Home rather than
+following a fixed sequence, because `clearState: true` wipes the app's data
+container and does NOT clear the iOS KEYCHAIN, where the Supabase session lives
+— so a relaunch can show onboarding, restore the session underneath it and land
+on Home, and a flow that hard-waits for the auth screen fails against an app
+that did exactly the right thing. Each state is handled at the TOP level of the
+iteration, the same structural fix `career-node.yaml` needed.
+
+### 1. THE BIG ONE — `canStartNextHand` was deleted on the way to the client
+
+`shared/contracts/public-game-state.ts` never named `canStartNextHand` in
+`legalActionSetSchema`. **`z.object` strips unknown keys** — a narrower payload
+is a valid one, so there is no parse error and nothing to notice. The server
+sent `canStartNextHand: true` at every HAND_COMPLETE, the client parsed it away
+to `undefined`, and `app/table/[gameId].tsx` gates the "Next hand" button on
+exactly that field.
+
+**So no online table could ever start a second hand through the UI** — private,
+public, Quick Play, tournament or daily. The screen fell through to "Waiting for
+the next hand.", a sentence describing the thing it was itself preventing.
+
+It survived 1,600 tests because every layer was individually right. The engine
+sets the flag and `tests/engine/next-hand.test.ts` proves it. The server returns
+it — a script against the running stack confirmed `canStartNextHand: true` in
+both the command reply and the three-second poll, on the ordinary path and on
+the dealer-natural path. The store's `nextHand()` is unit-tested by calling it.
+The button is in the JSX. The only thing wrong was a schema quietly deleting the
+field in between, and **nothing in the repository compared the two shapes.**
+
+**The guard that should have existed did not.** That file's header has claimed
+since it was written that "`tests/contracts/public-state-contract.test.ts`
+asserts, at compile time and at runtime, that this schema and the engine's
+interface describe the same object. Adding a field to one without the other
+fails the suite." **That file did not exist.** It does now, and it does both:
+
+- COMPILE TIME — a contract value must be assignable to the ENGINE type. That
+  direction is load-bearing; the reverse passes with a field missing, because a
+  wider value is assignable to a narrower type, which is exactly how the drift
+  went unnoticed. Breaching it fails `tsc` with *"Property 'canStartNextHand' is
+  missing in type … but required in type 'LegalActionSet'"*.
+- RUN TIME — four real engine payloads (BETTING_OPEN, PLAYER_TURNS,
+  HAND_COMPLETE, INSURANCE_OFFER) are parsed through the schema and compared KEY
+  FOR KEY at every level, in both directions: nothing dropped and nothing
+  invented. Fixtures are built by the engine, not by hand, because a hand-built
+  fixture only ever contains the fields whoever wrote it remembered.
+
+Both halves were proved to discriminate by removing the field again: `tsc`
+fails, and two runtime tests fail naming `legalActions.s1.canStartNextHand`.
+
+### 2. Insurance was unreachable at every server table
+
+`INSURANCE` and `DECLINE_INSURANCE` are engine commands, they are in
+`COMMAND_TYPES` on the wire, `game-command` applies them, and every
+daily-challenge attempt in `tests/server` sends `DECLINE_INSURANCE`. And no
+client could send either at a server table: `act()` takes a `PlayerActionType`
+— HIT/STAND/DOUBLE/SPLIT/SURRENDER — and no other method existed.
+`InsuranceSheet` was mounted only by `app/game/practice.tsx` and
+`app/career/play/[slug].tsx`, both driving the LOCAL engine, and the online
+table screen had no insurance branch at all. Its `myTurn` check reads
+`activeSeatId`, which is null during the offer because insurance is not a turn.
+
+Nobody was ever wrongly charged — the timeout DECLINES, which is the stated
+default — but insurance could not be taken at Quick Play, public, private,
+tournament or daily tables, in a game whose rules offer it. The offer now
+renders INSTEAD of the controls rather than over them: the sheet is a Modal and
+would otherwise have overlaid "Waiting for the next hand.", which is wrong
+twice.
+
+### 3. `scripts/e2e-account.ts` could never find its own account
+
+It listed `?page=1&per_page=200` and searched the result. The local database
+holds **2,868 users** from the integration suites, the account was not in the
+first two hundred, and the script died on "no account after ensuring it exists"
+— which reads as a broken creation step rather than a broken lookup. So the
+private-lobby flow had never actually run. It asks for the one account by
+`filter=` now, and still compares the email exactly, because `filter` is a
+substring search.
+
+The same script now also CASHES OUT any table a failed run left open. A flow
+that ends early leaves a live seat, and every Quick Play, public-table and
+matchmaking screen then refuses with "You are already seated at a table, and
+your chips are there" — which the next run reads as a broken Deal button. It
+cost one run to find, which is one more than it needed to.
+
+**Evidence.**
+
+```
+tests/e2e/private-lobby.yaml            exit 0, 40 COMPLETED steps
+tests/e2e/online-table.yaml             exit 0, 41 COMPLETED steps
+tests/contracts/public-state-contract    5 tests; both halves proved to fail
+                                         when the field is removed again
+tests/table/insurance-affordance          6 tests
+tests/table/online-table-store            3 new tests for the two commands
+npm test                                 1,622 unit + 106 server = 1,728 PASS
+npm run check:functions                  clean
+tsc --noEmit / lint                      exit 0 / 0 errors
+```
+
+The wallet arithmetic was checked by eye on the running app as well as by the
+flow: 25,000 opening, 2,000 buy-in out, two 50-chip losses, 24,900 back. The
+final assertion is deliberately not a fixed number — it re-opens the setup
+screen and asserts the server does NOT say "already seated", because that is the
+one thing the client cannot fake.

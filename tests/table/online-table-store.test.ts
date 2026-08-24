@@ -226,6 +226,62 @@ describe("commands", () => {
     expect(useOnlineTableStore.getState().stagedBet).toBe(0);
   });
 
+  /**
+   * The commands that did not exist. `act()` takes a `PlayerActionType` —
+   * HIT/STAND/DOUBLE/SPLIT/SURRENDER — so there was no spelling of either
+   * insurance command anywhere in the client, at any server table.
+   */
+  it("sends INSURANCE and DECLINE_INSURANCE at the version the server reported", async () => {
+    const offered = tableState({ version: 9, phase: "INSURANCE_OFFER" });
+    const spy = gateway([
+      { ok: true, state: offered, events: [] },
+      { ok: true, state: tableState({ version: 10, phase: "PLAYER_TURNS" }), events: [] },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().declineInsurance();
+
+    expect(spy.recorded.commands.map((command) => command.type)).toEqual(["DECLINE_INSURANCE"]);
+    expect(spy.recorded.commands[0]?.expectedVersion).toBe(9);
+    // Nothing is predicted locally: the snapshot in the reply is the whole of
+    // the new state.
+    const status = useOnlineTableStore.getState().status;
+    expect(status.kind === "at-table" && status.state.phase).toBe("PLAYER_TURNS");
+  });
+
+  it("sends INSURANCE when the offer is taken", async () => {
+    const offered = tableState({ version: 9, phase: "INSURANCE_OFFER" });
+    const spy = gateway([
+      { ok: true, state: offered, events: [] },
+      { ok: true, state: tableState({ version: 10, phase: "PLAYER_TURNS" }), events: [] },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().takeInsurance();
+
+    expect(spy.recorded.commands.map((command) => command.type)).toEqual(["INSURANCE"]);
+    expect(spy.recorded.commands[0]?.expectedVersion).toBe(9);
+  });
+
+  /** A refusal leaves the table where the server has it, insurance included. */
+  it("keeps the last known table when an insurance command is refused", async () => {
+    const offered = tableState({ version: 9, phase: "INSURANCE_OFFER" });
+    const spy = gateway([
+      { ok: true, state: offered, events: [] },
+      { ok: false, reason: "refused", message: "That move was not accepted." },
+    ]);
+    setTableGateway(spy);
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().takeInsurance();
+
+    const status = useOnlineTableStore.getState().status;
+    expect(status.kind === "at-table" && status.state.phase).toBe("INSURANCE_OFFER");
+    expect(useOnlineTableStore.getState().notice).toBe("That move was not accepted.");
+  });
+
   it("keeps the last known table when a command is refused", async () => {
     const spy = gateway([
       { ok: true, state: tableState(), events: [] },

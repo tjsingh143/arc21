@@ -48,64 +48,12 @@ appId: com.arc21.app
       - tapOn: "Cancel"
 
 # --- Sign in ---------------------------------------------------------------
-- extendedWaitUntil:
-    visible:
-      id: "onboarding-guest"
-    timeout: 60000
-
-# Tapped inside a `repeat`: a tap issued while a screen is still settling can be
-# swallowed, and a single tap then leaves the flow sitting on onboarding until
-# its wait expires — which looks like a broken app.
-- repeat:
-    times: 3
-    commands:
-      - runFlow:
-          when:
-            visible:
-              id: "onboarding-sign-in"
-          commands:
-            - tapOn:
-                id: "onboarding-sign-in"
-
-- extendedWaitUntil:
-    visible:
-      id: "auth-email"
-    timeout: 30000
-
-# PASTED, not typed. `inputText` drops characters on this simulator, and a
-# half-typed password fails a sign-in in a way that reads as a broken auth
-# screen rather than a broken test. `scripts/e2e-account.ts` puts the credential
-# on the pasteboard, and the password IS the email so one value serves both.
-- longPressOn:
-    id: "auth-email"
-- tapOn: "Paste"
-- longPressOn:
-    id: "auth-password"
-- tapOn: "Paste"
-
-# The paste LANDED — asserted on the field, because a step that completed did
-# not necessarily do anything. The password cannot be read back; the email can,
-# and the two carry the same value.
-- assertVisible: "e2e-lobby@arc21.test"
-
-- tapOn:
-    id: "auth-submit"
-
-# iOS offers to save the password to the keychain. It is a SYSTEM alert over the
-# app, it can arrive a screen or two later than the sign-in that caused it, and
-# while it is up every assertion underneath it fails — which reads as a screen
-# that did not render. Dismissed here and again after the deep link, because it
-# has been seen at both points.
-- runFlow:
-    when:
-      visible: "Save Password?"
-    commands:
-      - tapOn: "Not Now"
-
-- extendedWaitUntil:
-    visible:
-      id: "home-practice"
-    timeout: 60000
+# A subflow, because the three states the app can start in are the same for
+# every server-configured flow and getting them wrong costs a run. See
+# `sign-in.yaml`: `clearState: true` does not clear the iOS keychain, so a
+# relaunch can restore the session and land on Home without ever showing the
+# auth screen.
+- runFlow: sign-in.yaml
 
 # --- The lobby -------------------------------------------------------------
 # A deep link, rather than tapping through the tab bar: several runs were lost

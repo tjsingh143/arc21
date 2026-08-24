@@ -98,6 +98,31 @@ const legalActionSetSchema = z.object({
   canDeclineInsurance: z.boolean(),
   insuranceStake: z.number().int().nonnegative().nullable(),
   insuranceIsEvenMoney: z.boolean(),
+  /**
+   * True at HAND_COMPLETE, and MISSING FROM THIS SCHEMA FOR A WHOLE PHASE.
+   *
+   * `z.object` strips unknown keys, so a field the engine sends and this schema
+   * does not name is deleted on the way in — silently, with no parse error,
+   * because a narrower payload is a valid one. The server sent
+   * `canStartNextHand: true`, the client received `undefined`, and
+   * `app/table/[gameId].tsx` gates the "Next hand" button on it. So **no online
+   * table could start a second hand through the UI** — private, public, Quick
+   * Play, tournament or daily. The screen fell through to "Waiting for the next
+   * hand.", which is a sentence describing the very thing it was preventing.
+   *
+   * The third defect of this exact shape in this project, after the Deal button
+   * and the insurance sheet, and the hardest of the three to see: the other two
+   * were a missing predicate and a missing branch, both visible in the screen's
+   * own source. This one is a correct branch reading a field that something
+   * else had already deleted.
+   *
+   * The module header above has always claimed
+   * `tests/contracts/public-state-contract.test.ts` asserts that this schema and
+   * the engine's interface describe the same object. THAT FILE DID NOT EXIST.
+   * It does now, it round-trips a real engine payload through this schema and
+   * compares key for key, and it fails if any field is dropped from any level.
+   */
+  canStartNextHand: z.boolean(),
 });
 
 /**

@@ -36,6 +36,7 @@ const DEFAULT_EMAIL = "e2e-lobby@arc21.test";
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
 const REST = `${SUPABASE_URL}/rest/v1`;
+const FUNCTIONS = `${SUPABASE_URL}/functions/v1`;
 
 /** Published local-development key. Identical on every machine, useless elsewhere. */
 const LOCAL_ANON_KEY =
@@ -84,14 +85,31 @@ function bootedUdid(): string {
 /**
  * The account's user id, whether this run created it or an earlier one did.
  *
+ * ASKS FOR THE ONE ACCOUNT, rather than listing and searching. The first
+ * version of this fetched `?page=1&per_page=200` and scanned the result, which
+ * is the same mistake as asserting a place on a global leaderboard: it worked
+ * on a fresh database and stopped working silently as the integration suites
+ * filled the local one. By the time it was first run for real there were
+ * **2,868 accounts**, the one being looked for was not in the first two
+ * hundred, and the script died on "no account after ensuring it exists" —
+ * which reads as a broken creation step rather than a broken lookup. The E2E
+ * flow it exists for had therefore never run at all.
+ *
+ * GoTrue's `filter` is a SUBSTRING search over email and phone, so the exact
+ * comparison stays: `e2e-lobby@arc21.test` must not be satisfied by
+ * `e2e-lobby@arc21.test.invalid`.
+ *
  * Throws when it cannot be found. A helper that reads something must throw
  * rather than return a sentinel: a null here would silently skip the cleanup
  * below and leave the next flow starting from a state nobody chose.
  */
 async function findUserId(email: string): Promise<string> {
-  const response = await fetch(`${AUTH_ADMIN}?page=1&per_page=200`, {
+  const response = await fetch(`${AUTH_ADMIN}?filter=${encodeURIComponent(email)}&per_page=200`, {
     headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${LOCAL_SERVICE_KEY}` },
   });
+  if (!response.ok) {
+    throw new Error(`could not look up ${email}: ${response.status} ${await response.text()}`);
+  }
   const body = (await response.json()) as { users?: Array<{ id: string; email: string }> };
   const found = body.users?.find((user) => user.email === email);
   if (!found) throw new Error(`no account for ${email} after ensuring it exists`);
@@ -129,6 +147,65 @@ async function leaveAnyOpenRoom(userId: string): Promise<void> {
   process.stdout.write(`left a table still open from an earlier run\n`);
 }
 
+/**
+ * Cash out of whatever TABLE this account is still seated at.
+ *
+ * The same reason as `leaveAnyOpenRoom`, one layer over: a flow that ends early
+ * — and an E2E flow that fails ends early by definition — leaves a live seat on
+ * the server, and every quick-play, public-table and matchmaking screen then
+ * refuses with "You are already seated at a table, and your chips are there."
+ * The NEXT run reads that as a broken Deal button. It cost one run to find,
+ * which is one more than it needed to.
+ *
+ * Cashed out through `create-session`'s CASH_OUT, the same call the Leave
+ * button makes, so the escrow is settled exactly as it would be in the app —
+ * the idempotency key is derived from `gameId:seatId`, so this cannot credit
+ * twice however many times it runs.
+ *
+ * A seat that cannot be given up mid-hand is left alone rather than forced: the
+ * server refuses SESSION_BUSY and it will settle on its own.
+ */
+async function leaveAnyOpenTable(userId: string): Promise<void> {
+  const token = signToken(userId);
+  const headers = { apikey: LOCAL_ANON_KEY, Authorization: `Bearer ${token}` };
+
+  // Own seats only. `game_session_seats_select_participant` correctly shows a
+  // player the OTHER stacks at a table they are at, so a filter on the user id
+  // is required rather than implied — a lesson this repository has already
+  // learned twice.
+  const found = await fetch(
+    `${REST}/game_session_seats` +
+      `?select=game_session_id,status&user_id=eq.${userId}&status=eq.active&limit=5`,
+    { headers },
+  );
+  const rows = (await found.json()) as unknown;
+  if (!Array.isArray(rows)) throw new Error(`could not read seats: ${JSON.stringify(rows)}`);
+
+  for (const row of rows as Array<{ game_session_id?: string }>) {
+    if (!row.game_session_id) continue;
+    const response = await fetch(`${FUNCTIONS}/create-session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        action: "CASH_OUT",
+        gameId: row.game_session_id,
+        clientRequestId: crypto.randomUUID(),
+        clientSentAt: new Date().toISOString(),
+      }),
+    });
+    if (response.ok) {
+      process.stdout.write(`cashed out of a table left open from an earlier run\n`);
+      continue;
+    }
+    const body = await response.text();
+    if (/SESSION_BUSY/.test(body)) {
+      process.stdout.write(`a table is mid-hand and was left to settle itself\n`);
+      continue;
+    }
+    throw new Error(`could not cash out ${row.game_session_id}: ${response.status} ${body}`);
+  }
+}
+
 async function ensureAccount(email: string): Promise<void> {
   const response = await fetch(AUTH_ADMIN, {
     method: "POST",
@@ -160,7 +237,9 @@ async function main(): Promise<void> {
   const udid = argument("udid") ?? bootedUdid();
 
   await ensureAccount(email);
-  await leaveAnyOpenRoom(await findUserId(email));
+  const userId = await findUserId(email);
+  await leaveAnyOpenRoom(userId);
+  await leaveAnyOpenTable(userId);
 
   // Onto the simulator's pasteboard, which is what the flow long-presses to
   // paste into both fields.

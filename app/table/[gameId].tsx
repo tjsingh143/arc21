@@ -22,6 +22,7 @@ import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
 import { TableSurface } from "../../src/features/cosmetics/art";
 import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
+import { InsuranceSheet } from "../../src/components/table/InsuranceSheet";
 import { HandCards } from "../../src/components/table/HandCards";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
@@ -35,6 +36,7 @@ import type { PublicGameState } from "../../shared/blackjack/index.js";
 import { mayLeaveTable } from "../../src/features/table/leave-guard";
 import {
   describeDealerUpCardForAnnouncement,
+  insuranceOffer,
   isMyTurn,
   ownSeat,
   useOnlineTableStore,
@@ -68,6 +70,8 @@ export default function SharedTable() {
   const clearBet = useOnlineTableStore((state) => state.clearBet);
   const lockBet = useOnlineTableStore((state) => state.lockBet);
   const act = useOnlineTableStore((state) => state.act);
+  const takeInsurance = useOnlineTableStore((state) => state.takeInsurance);
+  const declineInsurance = useOnlineTableStore((state) => state.declineInsurance);
   const nextHand = useOnlineTableStore((state) => state.nextHand);
   const setOwnPresence = usePresenceStore((state) => state.setOwnState);
   const lastEvents = useOnlineTableStore((state) => state.lastEvents);
@@ -114,6 +118,20 @@ export default function SharedTable() {
     () => (status.kind === "at-table" ? status.state.legalActions[status.seatId] : undefined),
     [status],
   );
+  /*
+   * The insurance offer, or null.
+   *
+   * There was no branch here at all until this phase, and the consequence was
+   * quiet: `myTurn` reads `activeSeatId`, which is null during the offer
+   * because insurance is not a turn, so the screen fell through to "Waiting for
+   * the next hand." and sat there until the deadline expired and the server
+   * declined for the player. Insurance was unreachable at EVERY server table.
+   */
+  const offer = useMemo(
+    () => (status.kind === "at-table" ? insuranceOffer(status.state.phase, legal ?? null) : null),
+    [status, legal],
+  );
+
   const dealerUpCard = useMemo(() => {
     if (status.kind !== "at-table") return null;
     const first = status.state.dealer.cards[0];
@@ -291,6 +309,29 @@ export default function SharedTable() {
             Nothing more will be dealt here. Any result has already been recorded.
           </AppText>
         </SurfaceCard>
+      ) : offer ? (
+        /*
+         * The insurance offer, first in the chain and rendering INSTEAD of the
+         * controls rather than over them.
+         *
+         * It has to come before the fall-through, not merely alongside it: the
+         * sheet is a Modal and would have overlaid "Waiting for the next hand."
+         * — a sentence that is wrong twice, because nothing is waiting and the
+         * next hand is not what is being asked about.
+         *
+         * Unmounted the instant the phase advances. Relying on the Modal's
+         * `visible` prop alone left it on screen rendering "Insurance costs 0
+         * chips", because the stake is only defined while the offer is live —
+         * the same lesson `app/game/practice.tsx` learned.
+         */
+        <InsuranceSheet
+          visible
+          stake={offer.stake}
+          isEvenMoney={offer.isEvenMoney}
+          canAfford={offer.canAfford}
+          onTake={() => void takeInsurance()}
+          onDecline={() => void declineInsurance()}
+        />
       ) : legal?.canPlaceBet && seat ? (
         <BettingBar
           legal={legal}
