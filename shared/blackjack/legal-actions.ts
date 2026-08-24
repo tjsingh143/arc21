@@ -216,7 +216,19 @@ export function getLegalActions(state: BlackjackGameState, actorId: string): Leg
   };
 }
 
-/** Convenience predicate used by the server before applying a command. */
+/**
+ * Convenience predicate over `getLegalActions`, for a caller that wants one
+ * answer rather than the whole set.
+ *
+ * It used to claim the SERVER called it "before applying a command". The server
+ * does not: `engine-bridge.assertCommandIsLegal` reads the full
+ * `LegalActionSet`, because it has to distinguish "not your turn" from "not a
+ * legal action" and needs the chip costs anyway. Nothing else calls this either.
+ * It is kept because it is the natural one-question form of the same lookup, and
+ * `tests/engine/engine-api.test.ts` pins it to `getLegalActions` so the two can
+ * never answer differently — but the comment now says what is true, because a
+ * false claim about a call site is how a control ends up guarded by nothing.
+ */
 export function isActionLegal(
   state: BlackjackGameState,
   actorId: string,

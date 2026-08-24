@@ -85,6 +85,31 @@ export function visibleDealerValue(faceUpCards: Card[]): HandValue {
   return evaluateHand(faceUpCards);
 }
 
+/**
+ * The dealer's entire procedure: draw below 17, stand at 17 or better, and hit
+ * a SOFT 17 only when the ruleset says so. The dealer makes no decisions, so
+ * this is the whole of it.
+ *
+ * It lives here because it had been written down twice — once in the engine's
+ * `playDealer` and once in `scripts/strategy-solver.ts`, which needs the same
+ * rule to compute the dealer's final-total distribution. Two copies of the
+ * dealer's rule means the basic-strategy chart can be solved for a game the
+ * engine does not deal, and the chart is what the product grades players
+ * against. Both now call this.
+ *
+ * Takes primitives rather than a `HandValue` so the solver, which works over
+ * rank counts and has no `Card[]` to evaluate, can call it too. The rules
+ * parameter is structural for the same reason.
+ */
+export function dealerMustDraw(
+  value: Pick<HandValue, "bestTotal" | "isSoft">,
+  rules: { dealerHitsSoft17: boolean },
+): boolean {
+  if (value.bestTotal > 21) return false; // already bust; there is nothing to draw to
+  if (value.bestTotal < 17) return true;
+  return value.bestTotal === 17 && value.isSoft && rules.dealerHitsSoft17;
+}
+
 /** Human-readable classification, e.g. "Soft 17", "Hard 16", "Blackjack". */
 export function describeHandValue(value: HandValue): string {
   if (value.isNaturalBlackjack) return "Blackjack";

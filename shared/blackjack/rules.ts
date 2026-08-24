@@ -189,6 +189,38 @@ export function assertRulesAreCoherent(rules: BlackjackRules): void {
     problems.push("cannot peek without a hole card");
   }
 
+  /*
+   * The engine has no model of "double on 9-11 only".
+   *
+   * `doubleOnAnyTwoCards: false` reads like a restriction to certain totals, and
+   * that is what a future ruleset author would mean by it — but `getLegalActions`
+   * has no allowlist to consult, so the flag does not restrict doubling, it
+   * REMOVES it. A table advertising "double on 9, 10 and 11" that in fact offers
+   * no double at all is exactly the silent divergence this guard exists to stop.
+   * Model the restriction first, then relax this check.
+   */
+  if (rules.doubleAllowed && !rules.doubleOnAnyTwoCards) {
+    problems.push(
+      "doubleOnAnyTwoCards: false does not restrict doubling to certain totals — " +
+        "the engine models no such allowlist, so it disables doubling entirely. " +
+        "Set doubleAllowed: false to mean that, or add the allowlist first",
+    );
+  }
+
+  /*
+   * Split aces that may be hit are ordinary split hands, and a hand that keeps
+   * drawing has no "exactly one card" rule to break. But split aces that may NOT
+   * be hit are completed by the engine the instant they receive their card, so a
+   * ruleset that forbids hitting them and permits doubling them is asking for a
+   * decision the player will never be offered.
+   */
+  if (rules.splitAcesAllowed && rules.doubleSplitAcesAllowed && !rules.hitSplitAcesAllowed) {
+    problems.push(
+      "doubleSplitAcesAllowed requires hitSplitAcesAllowed: a split ace that " +
+        "cannot be hit is completed on its one card and never offered a decision",
+    );
+  }
+
   // A blackjack payout on the minimum bet must be exact, or the house is
   // quietly shaving chips off every natural.
   const bjProfit = (rules.minBet * rules.blackjackPayoutNumerator) / rules.blackjackPayoutDenominator;

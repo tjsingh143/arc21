@@ -91,6 +91,7 @@
  *    is never part of a basic-strategy cell.
  */
 
+import { dealerMustDraw } from "../shared/blackjack/hand-value.js";
 import type { BlackjackRules } from "../shared/blackjack/rules.js";
 import { DEALER_UPCARD_VALUES, normalizeStrategyKey } from "../supabase/functions/_shared/strategy/keys.js";
 import type { HandClass, StrategyAction, StrategyState } from "../supabase/functions/_shared/strategy/types.js";
@@ -190,7 +191,8 @@ function dealerDrawDistribution(
 
   if (best > 21) return bustDistribution();
 
-  const mustDraw = best < 17 || (best === 17 && soft && rules.dealerHitsSoft17);
+  // The engine's rule, imported rather than restated. See `dealerMustDraw`.
+  const mustDraw = dealerMustDraw({ bestTotal: best, isSoft: soft }, rules);
   if (!mustDraw) return standDistribution(best);
 
   const key = `${compositionKey(counts)}|${hardTotal}|${hasAce ? 1 : 0}`;

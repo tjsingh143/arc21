@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 1 — Blackjack Engine (not started)
-**Last Completed Phase:** 0 — Baseline (PASS, 2026-08-24)
+**Current Phase:** 2 — Practice / Learning / Local Persistence (not started)
+**Last Completed Phase:** 1 — Blackjack Engine (PASS, 2026-08-24)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -14,7 +14,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | Phase | Status | One-line basis |
 |-------|--------|----------------|
 | 0 — Baseline | **PASS** | Every gate below run and green on 2026-08-24. |
-| 1 — Blackjack Engine | IN PROGRESS | Built; AUDIT grades it RAN. Not signed off under this sequence. |
+| 1 — Blackjack Engine | **PASS** | 471 engine tests; six defects fixed, each regression proved to fail without its fix. |
 | 2 — Practice / Learning / Local Persistence | IN PROGRESS | Built; RAN (`practice-hand.yaml`, device SQLite inspected). |
 | 3 — Database / Auth | IN PROGRESS | Built; 453 pgTAP assertions pass; auth boundary RAN. |
 | 4 — Economy / Server Solo | IN PROGRESS | Built; escrow/idempotency/overflow all graded RAN. |
@@ -38,7 +38,18 @@ off. Treat every one as unverified until its own phase runs.
 `CLAUDE.md` is authoritative and long; these are the ones that bite first.
 
 - **One engine.** `shared/blackjack` is runtime-neutral. Never write a second
-  implementation of a rule.
+  implementation of a rule. Phase 1 found the one that existed: the dealer's
+  drawing rule was in `playDealer` AND in `scripts/strategy-solver.ts`, so the
+  strategy chart could be solved for a dealer the engine does not deal. It is now
+  `dealerMustDraw` in `hand-value.ts`, called by both.
+- **A disconnected seat is a DEPARTED seat.** `connected` is cleared by LEAVE, by
+  a closure and by tournament elimination, and nothing ever sets it back, so
+  `openBetting` sits it out. Before phase 1 a player who left mid-hand kept being
+  staked the table minimum every hand by the betting timeout.
+- **Three definitions mirror the engine's vocabularies** — the TS union, a Zod
+  enum in `shared/contracts`, and a Postgres enum in the foundation migration.
+  `tests/engine/status-taxonomy.test.ts` compares all three; add a value to one
+  and you must add it to the others.
 - **`toPublicState()` is the only sanitisation boundary.** Undealt cards and the
   unrevealed hole card never leave the server.
 - **Integer chips only**; chips move only through `apply_wallet_delta`; identity
@@ -103,18 +114,24 @@ project, APNs/FCM credentials, a physical iOS device. Documented in
 npx tsc --noEmit                    exit 0
 npm run lint                        0 errors (38 warnings)
 npm run check:functions             all 3 Edge Functions typecheck
-npm run test:unit                   86 files / 1,639 tests PASS
-npm run test:server                 13 files /   116 tests PASS  (load 5.8, 0 absorptions)
-npm run test:coverage               exit 0 — 84 files / 1,613 tests, every gate met
+npx vitest run tests/engine         17 files /   471 tests PASS   (phase 1: was 209)
+npm run test:unit                   94 files / 1,901 tests PASS   (phase 0: 86 / 1,639)
+npm run test:server                 13 files /   116 tests PASS  (load ~5, 0 absorptions)
+npm run test:coverage               exit 0 — every gate met; shared/blackjack 98.76/95.85/100/99.70
+supabase db reset                   43 migrations + seed, clean
 supabase test db                    23 files /   453 assertions PASS
-supabase db lint                    No schema errors found
-npm run contrast:check              exit 0
-npx expo-doctor@latest              21/21
-npx expo export --platform ios      6.1 MB Hermes bundle
+npm run benchmark                   1204-1347 us/hand (stashed baseline 1204-1246 on the same host)
 ```
 
-**Not re-run this phase:** the four Maestro E2E flows (need an idle host, a
-booted simulator and a debug build) and `npm run benchmark`.
+**Not re-run in phase 1:** the four Maestro E2E flows (need an idle host, a
+booted simulator and a debug build), `supabase db lint`, `npm run contrast:check`,
+`expo-doctor` and `expo export` — phase 1 changed no schema, no colour and no
+asset. All were green in phase 0 and nothing since touches them.
+
+**Benchmark note:** both figures above sit well over the 752-808 us/hand
+`CLAUDE.md` records. That is this host today, not a regression — proved by
+stashing the phase-1 changes and re-measuring, rather than by comparing against a
+written-down number.
 
 ## How to bring the stack up — THE PART THAT WASTED A WHOLE SESSION
 
@@ -134,6 +151,14 @@ proof in `docs/phase-reports/phase-00.md`. CI already does this correctly.
 
 ## Exact next phase
 
-**Phase 1 — Blackjack Engine.** Do not start it from this file alone: read
-`docs/phase-reports/phase-00.md` for the baseline evidence and `CLAUDE.md` for
-the invariants. Phase 0 changed no product code.
+**Phase 2 — Practice / Learning / Local Persistence.** Do not start it from this
+file alone: read `docs/phase-reports/phase-01.md` for what the engine now
+guarantees and `CLAUDE.md` for the invariants.
+
+Two things phase 1 leaves for phase 2 to know. `src/features/practice/
+persistence.ts` proves a restored blob by issuing one `ADVANCE` — the engine's
+round-trip safety is now tested directly in `tests/engine/serialization.test.ts`,
+so a Practice resume failure is a persistence-layer question, not an engine one.
+And `tests/helpers/engine-harness.ts` now REFUSES a fixture shoe shorter than the
+52-card safety reserve: such a fixture used to be silently reshuffled away by
+`startSession` and the test then ran against random cards.

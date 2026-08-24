@@ -16,7 +16,7 @@
  */
 
 import { cardValue, isAce, isSplitEligible } from "./cards.js";
-import { evaluateHand, evaluatePlayerHand } from "./hand-value.js";
+import { dealerMustDraw, evaluateHand, evaluatePlayerHand } from "./hand-value.js";
 import {
   activeHandOf,
   findSeat,
@@ -35,6 +35,7 @@ import {
 } from "./shoe.js";
 import { insuranceStakeFor, settleSeat, describeDealerFinal } from "./settlement.js";
 import {
+  DEAD_TERMINAL_STATUSES,
   EngineError,
   type BlackjackGameState,
   type Card,
@@ -472,6 +473,16 @@ function handleLeave(
     seat.sittingOut = true;
   }
 
+  // An unanswered insurance offer is answered the way the clock would answer it.
+  // The alternative is a table that waits on somebody who has gone: the cascade
+  // holds at INSURANCE_OFFER while any decision is PENDING, and on a table with
+  // no insurance clock there is then nothing left to move it. Declining is the
+  // stated default, costs the departing seat nothing, and touches no card.
+  if (state.phase === "INSURANCE_OFFER" && seat.insuranceDecision === "PENDING") {
+    seat.insuranceDecision = "DECLINED";
+    events.push({ type: "INSURANCE_DECLINED", seatId });
+  }
+
   events.push({ type: "SEAT_LEFT", seatId });
   return cascade(state, events, context);
 }
@@ -537,7 +548,13 @@ function cascade(state: EngineState, events: EngineEvent[], context: CommandCont
       case "INSURANCE_OFFER": {
         const pending = state.seats.some((seat) => seat.insuranceDecision === "PENDING");
         if (pending) return state;
-        state.phase = "DEALER_PEEK";
+        // Insurance is settled BEFORE the peek, which is the whole reason the
+        // offer exists — but taking the offer must not conjure a peek a ruleset
+        // has switched off. `performInitialDeal` already routes a non-peeking
+        // ruleset straight to PLAYER_TURNS on a ten upcard; an ace upcard has to
+        // arrive at the same answer after the offer, or insurance would quietly
+        // change how the dealer's blackjack is checked.
+        state.phase = state.rules.dealerPeeksForBlackjack ? "DEALER_PEEK" : "PLAYER_TURNS";
         state.actionDeadlineAt = null;
         break;
       }
@@ -692,9 +709,26 @@ function openBetting(state: EngineState, events: EngineEvent[], context: Command
       // the tournament's whole shape.
       seat.sittingOut = true;
       seat.sitOutNextHand = false;
-    } else if (seat.sittingOut && seat.connected && seat.stack >= state.rules.minBet) {
+    } else if (!seat.connected) {
+      /*
+       * A seat that has gone is not dealt in, and is never staked again.
+       *
+       * `connected` is only ever cleared by LEAVE, by a table closure or by a
+       * tournament elimination, and nothing in the engine or the server sets it
+       * back — so a disconnected seat is a DEPARTED seat, not a flaky one.
+       *
+       * Without this branch a player who left MID-HAND kept a live seat: the
+       * closure path only runs at a phase where no wager is committed, so their
+       * seat came back round to BETTING_OPEN still eligible, and the betting
+       * deadline then staked the table minimum out of their stack — hand after
+       * hand, in absentia, until it fell below the minimum. "Leaving is never a
+       * way to escape a committed wager" is right; leaving must not become a way
+       * to keep committing them either.
+       */
+      seat.sittingOut = true;
+    } else if (seat.sittingOut && seat.stack >= state.rules.minBet) {
       // A seat that sat out for lack of chips rejoins as soon as it can afford
-      // the table minimum again.
+      // the table minimum again. Reaching here means it is connected.
       seat.sittingOut = false;
     }
   }
@@ -773,22 +807,20 @@ function playDealer(state: EngineState, events: EngineEvent[]): EngineState {
   // would consume cards without affecting any outcome.
   const mustDraw = state.seats.some((seat) =>
     seat.hands.some((hand) => {
-      if (hand.status === "BUSTED" || hand.status === "SURRENDERED") return false;
+      if (DEAD_TERMINAL_STATUSES.includes(hand.status)) return false;
       const value = evaluatePlayerHand(hand, state.rules.splitAceTwentyOneIsBlackjack);
       return !value.isNaturalBlackjack;
     }),
   );
 
   if (mustDraw) {
+    // `dealerMustDraw` is the ONLY statement of the drawing rule; the solver
+    // that builds the strategy chart calls the same function, so the chart
+    // cannot be solved against a dealer this engine does not play.
     for (;;) {
       const value = evaluateHand(state.dealer.cards);
-      if (value.isBust) break;
-      const hitsSoft17 = value.bestTotal === 17 && value.isSoft && state.rules.dealerHitsSoft17;
-      if (value.bestTotal < 17 || hitsSoft17) {
-        state = dealToDealer(state, events);
-        continue;
-      }
-      break;
+      if (!dealerMustDraw(value, state.rules)) break;
+      state = dealToDealer(state, events);
     }
   }
 
