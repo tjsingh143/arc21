@@ -1101,5 +1101,5 @@ npm run test:coverage                 exit 0 (was exit 1, four threshold errors)
   _shared/career/**                   72.61 / 63.51 / 79.24 / 79.12, gated
 tests/progression/decision-grading    32 tests (was 21)
 .github/workflows/ci.yml              runs `npm run test:coverage`; yaml-lint clean
-npm test                              1,634 unit + 109 server = 1,743 PASS
+npm test                              1,632 unit + 109 server = 1,741 PASS
 ```
