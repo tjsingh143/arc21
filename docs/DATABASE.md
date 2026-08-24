@@ -205,9 +205,9 @@ server: a correction is a new row, never an edit to history.
 | `game_sessions` | One table/room. Sanitised metadata; `escrow_chips` blocks deletion while chips are unreconciled |
 | `game_session_seats` | Seat occupancy and table stack. The membership source every game-scoped policy consults |
 | `game_events` | Append-only sanitised event stream with a monotonic `seq`. `visibility` is `public` or `seat`; a seat-scoped row reaches only its recipient |
-| `hand_records` | Completed-hand archive. Dealer cards may only be stored once `completed_at` is set |
-| `hand_players` | One settled player hand. `net = credit - wager` is a constraint |
-| `player_actions` | Per-decision log with optional strategy grading. Readable only by the player who made the decision |
+| `hand_records` | **V1.1, unwritten.** Completed-hand archive. Dealer cards may only be stored once `completed_at` is set |
+| `hand_players` | **V1.1, unwritten.** One settled player hand. `net = credit - wager` is a constraint |
+| `player_actions` | **V1.1, unwritten.** Per-decision log with optional strategy grading. Readable only by the player who made the decision |
 | `private.game_state_private` | See above |
 
 `game_session_seats` is not in the original table list but is required: RLS needs
@@ -218,6 +218,21 @@ hand has been dealt.
 exactly the sort of place a hole card leaks from — an "archive" row written at
 deal time would publish the dealer's down card to every participant before the
 peek. The constraint makes that shape unstorable rather than merely discouraged.
+
+**Those three tables are empty, and that is the specification's instruction.**
+"hand history/replay" is listed under **V1.1 — DO NOT LET THESE DELAY MVP**, so
+the schema is architected for it and nothing writes a row. The tables, their
+CHECK constraints, their indexes, their RLS policies and their
+`deny_client_write` triggers all exist and are asserted; the archive does not.
+Until this note existed, the migration header said "Written by the server at
+settlement" and this table said "Completed-hand archive" — both describing a
+feature that records nothing, which is the same class of untruth as a screen
+claiming a shipped feature is missing.
+
+`tests/server/rls-idor.integration.test.ts` asserts they are EMPTY rather than
+skipping them: zero rows after a full hand at a Quick Play table is the evidence
+that this is a decision. The day one gains a row, that test fails and the
+participant-visibility assertions have to be written before the suite is green.
 
 ### Career, competition, cosmetics
 

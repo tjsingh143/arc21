@@ -71,8 +71,8 @@ is ever loosened.
 | `game_events` | yes | select participant | `SELECT` to `authenticated` | Public event payloads for a table you hold a seat at |
 | `game_session_seats` | yes | select participant | `SELECT` to `authenticated` | Stacks and seat state at your own table. server-owned |
 | `game_sessions` | yes | select participant | `SELECT` to `authenticated` | The session you are seated at. server-owned |
-| `hand_players` | yes | select participant | `SELECT` to `authenticated` | Your own settlement history. server-owned |
-| `hand_records` | yes | select participant | `SELECT` to `authenticated` | Hands you played. server-owned |
+| `hand_players` | yes | select participant | `SELECT` to `authenticated` | Settlement history. Server-owned, and **V1.1: nothing writes it yet** |
+| `hand_records` | yes | select participant | `SELECT` to `authenticated` | Hands you played. Server-owned, and **V1.1: nothing writes it yet** |
 | `loadouts` | yes | select / insert / update own | `SELECT`, `INSERT` + `UPDATE` on the three slot columns | Equipping is a client action; ownership is re-checked by a trigger, so equipping an unowned item is refused by the database |
 | `matchmaking_queue` | yes | select own | `SELECT` to `authenticated` | Your own place in the queue. The queue is not a directory of who is playing |
 | `notifications` | yes | select / update / delete own | `SELECT`, `DELETE` + `UPDATE (read_at)` to `authenticated` | You may mark your own read and delete it. `read_at` is the only writable column, enforced by comparing the whole row rather than a column list |

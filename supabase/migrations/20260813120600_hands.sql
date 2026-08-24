@@ -1,8 +1,17 @@
 -- =============================================================================
 -- Arc 21 — 0600 Hand history
 --
--- The auditable record of what was actually dealt. Written by the server at
--- settlement, never during play.
+-- The auditable record of what was actually dealt.
+--
+-- NOTHING WRITES THESE TABLES, and that is the specification's instruction:
+-- "hand history/replay" is listed under **V1.1 — DO NOT LET THESE DELAY MVP**.
+-- The schema is architected for it — constraints, indexes, RLS policies and
+-- `deny_client_write` triggers all present and asserted — and the archive is
+-- deliberately not built. This header used to say "written by the server at
+-- settlement", which described a feature that records nothing.
+--
+-- When it IS built it will be written at SETTLEMENT, never during play, for the
+-- reason the constraint below already enforces.
 --
 -- `hand_records.dealer_cards` is constrained so it can only be non-empty once
 -- `completed_at` is set. A hand history table is exactly the sort of place a

@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(16);
+select plan(17);
 
 -- ---------------------------------------------------------------------------
 -- The gate, run as a test
@@ -204,6 +204,50 @@ select is(
    where n.nspname = 'public' and has_function_privilege('anon', p.oid, 'EXECUTE')),
   1,
   'and can execute exactly one function — the predicate that reports its own role'
+);
+
+-- ---------------------------------------------------------------------------
+-- The set of client-readable tables is CLOSED
+-- ---------------------------------------------------------------------------
+-- Enforced here rather than in `tests/server/rls-idor.integration.test.ts`,
+-- which is where a reader would look for it. That file sweeps every one of
+-- these tables with two real JWTs and asserts what a stranger gets back — but it
+-- talks to PostgREST, PostgREST does not expose `information_schema`, and its
+-- first attempt at proving its own coverage ended up comparing its four lists
+-- with themselves. A check that matches nothing reads as enforcement; this
+-- repository has hit that three times now.
+--
+-- So the catalogue is read HERE, where it is one query away, and the list below
+-- is the same one that file classifies. A new table with a SELECT grant fails
+-- this test, and whoever adds it has to go and decide what a stranger may see of
+-- it before the suite is green again.
+select bag_eq(
+  $$ select distinct g.table_name::text
+     from information_schema.role_table_grants g
+     join pg_class c on c.relname = g.table_name
+     join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+     where g.table_schema = 'public'
+       and g.grantee in ('anon', 'authenticated')
+       and g.privilege_type = 'SELECT'
+       and c.relkind = 'r' $$,
+  $$ values
+      -- owned: a stranger sees none of it
+      ('wallets'), ('wallet_ledger'), ('player_stats'), ('player_mode_stats'),
+      ('player_daily_xp'), ('player_decision_periods'), ('career_attempts'),
+      ('career_progress'), ('daily_entries'), ('loadouts'), ('push_tokens'),
+      ('notifications'), ('user_cosmetics'), ('matchmaking_queue'), ('blocks'),
+      ('friendships'), ('tournament_entries'),
+      -- shared: a participant sees it, a stranger does not
+      ('game_sessions'), ('game_session_seats'), ('game_events'), ('rooms'),
+      ('room_members'),
+      -- open: catalogue or directory, readable on purpose
+      ('career_nodes'), ('cosmetics'), ('rulesets'), ('profiles'),
+      -- relationship, and the competition's public shape
+      ('friend_requests'), ('tournaments'), ('tournament_matches'),
+      -- V1.1, architected for and written by nothing: "hand history/replay"
+      -- is under DO NOT LET THESE DELAY MVP
+      ('hand_records'), ('hand_players'), ('player_actions') $$,
+  'every client-readable table is one the IDOR sweep classifies'
 );
 
 select * from finish();

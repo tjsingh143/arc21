@@ -1150,3 +1150,98 @@ supabase db reset && supabase test db   452 assertions, PASS
 npm test                                1,632 + 109 = 1,741 PASS against the
                                         freshly reset database
 ```
+
+---
+
+## R16 — the security audit: a systematic IDOR sweep, and three tables the docs lied about
+
+### What was missing
+
+`assert_client_authorization_surface()` proves RLS is ON, that every client grant
+has a policy behind it, that nothing reaches `private`, and that no client role
+can execute a server-only function. `20_authorization_surface.test.sql` proves
+the same things again in pgTAP. **Neither of them reads a single ROW.** They
+assert the shape of the permission system, not what it returns to a second
+account holding a second real token — and a policy can be present, granted, and
+wrong.
+
+Two things found by hand this phase were exactly that kind, and both looked like
+something else: `profiles?select=xp` returns EVERY profile because it is a
+directory by design, and `game_session_seats` returns every seat at a table you
+are seated at, correctly. Neither was a vulnerability. Both were a policy
+behaving as designed with nothing in the repository saying what that design IS.
+
+### The sweep
+
+`tests/server/rls-idor.integration.test.ts` creates an OWNER and a STRANGER with
+two real JWTs, has the owner play a full Quick Play hand, open a private room,
+register a push token and be sent a friend request — then asks, per table, what
+the stranger gets back. Every client-readable table is in exactly one of five
+groups:
+
+- **OWNED** (19) — a stranger must see none of it: wallets, ledger, statistics,
+  decision periods, career attempts and progress, daily entries, loadouts, push
+  tokens, notifications, cosmetics, matchmaking, blocks, friendships,
+  tournament entries.
+- **SHARED** (6) — a stranger sees nothing; a PARTICIPANT sees it on purpose:
+  sessions, seats, events, rooms, room members.
+- **OPEN** (4) — catalogue or directory, asserted READABLE so that "it returns
+  nothing" can never be mistaken for privacy.
+- **EXPLAINED** (3) — friend requests, and the competition's public bracket.
+- **RESERVED_FOR_V1_1** (3) — below.
+
+It also asserts the owner CAN see their own rows, and that the fixture tables
+have rows to begin with. Without those two, every privacy assertion would pass
+against a database that returns nothing to anybody — the failure mode a security
+sweep is most likely to hide.
+
+### The completeness check that could not work
+
+The first version tried to prove its own coverage by reading the grants back out
+of the catalogue. It could not: PostgREST does not expose `information_schema`,
+so it fell back to comparing its own lists with themselves and passed against
+anything. **A check that matches nothing reading as enforcement — the third time
+this repository has hit that.**
+
+It lives in pgTAP now, where the catalogue is one query away:
+`20_authorization_surface.test.sql` asserts the set of client-readable tables is
+EXACTLY the set the sweep classifies. Proved to discriminate — removing one
+table from the expected list fails test 17 by name.
+
+### Three tables the documentation described as working
+
+`hand_records`, `hand_players` and `player_actions` are **completely empty** —
+zero rows across 47 sessions and 3,602 game events on a freshly reset database
+that had just run the entire suite. Nothing in the repository writes them.
+
+**That is correct.** The specification lists "hand history/replay" under
+**"V1.1 — DO NOT LET THESE DELAY MVP"**. The schema is architected for it and the
+archive is deliberately not built.
+
+**The documentation said otherwise**, in three places: the migration header said
+"Written by the server at settlement", `docs/DATABASE.md` called it a
+"Completed-hand archive", and `docs/SECURITY.md` called it "your own settlement
+history". All three now say V1.1 and unwritten. It is the same class of untruth
+as the Statistics Career filter in R12, in the other direction: a document
+describing a feature that records nothing.
+
+The sweep asserts they are EMPTY rather than skipping them. Zero rows after a
+full hand at a Quick Play table is the evidence that this is a decision — and
+the day one gains a row, that test fails and the participant-visibility
+assertions have to be written before the suite is green again.
+
+**Evidence.**
+
+```
+tests/server/rls-idor.integration.test.ts   8 tests, two real JWTs, 32 tables
+supabase test db                            453 assertions PASS (was 452);
+                                            test 17 proved to fail when the
+                                            expected set is edited
+npm test                                    1,632 unit + 116 server = 1,748 PASS
+supabase db lint                            No schema errors found
+```
+
+**Nothing was leaking.** Every OWNED table returned zero rows to the stranger,
+every SHARED table returned zero to a non-participant, and `anon` was refused
+outright. The value here is not a defect found; it is that the claim is now
+asserted per table rather than inferred from the shape of the grants.
