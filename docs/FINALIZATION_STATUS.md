@@ -1041,3 +1041,65 @@ flow: 25,000 opening, 2,000 buy-in out, two 50-chip losses, 24,900 back. The
 final assertion is deliberately not a fixed number — it re-opens the setup
 screen and asserts the server does NOT say "already seated", because that is the
 one thing the client cannot fake.
+
+---
+
+## R14 — the coverage gate was failing, and the career gate could not fail
+
+`npm run test:coverage` **exited 1**, and had done since the assistance selector
+shipped. Nothing noticed because **CI never ran it**: `.github/workflows/ci.yml`
+had a lint step, two typecheck steps, a unit-test step, a doctor step and a
+bundle step, and no coverage step at all. A gate nobody runs is not a gate.
+
+### What was uncovered
+
+`supabase/functions/_shared/decision-grading.ts` measured **47.76% statements
+against an 85% bar** — lines 234-291, which is the whole of `adviceFor`. That is
+not a minor function. It decides what a **Learn or Analysis table TELLS a player
+before they choose**, and it is the SAME advisor that then grades the choice; if
+the two ever disagreed, a Learn table would recommend a play and mark it wrong.
+It had no unit test whatsoever.
+
+It has eleven now, and one of them is not about coverage at all:
+
+> **advice cannot be influenced by the hole card, because it never reads it.**
+> `adviceFor` holds the whole dealer hand — the hole card is `cards[1]`, one
+> index away — and a slip there would silently turn Learn into an oracle that
+> reads the unrevealed card. That is the most valuable thing anyone could take
+> from this product and it would look exactly like better advice. Asserted by
+> changing ONLY the hole card and requiring a byte-identical recommendation,
+> explanation and EV table. Nothing else in the repository asserted it.
+
+The first version of that test used an ace as the second hole card, the dealer
+peeked, the hand settled before anybody could act, and the assertion failed on a
+`null` that was entirely correct. Two and seven both leave the hand live.
+
+### The career gate could not fail
+
+`"shared/career/**"` measured **nothing**. The career module was MOVED to
+`supabase/functions/_shared/career/` so the Edge runtime could resolve it, and
+`shared/career/*.ts` is now five seven-line `export *` shims plus an `index.ts`
+that `coverage.exclude` skips. A re-export has no executable statements, so v8
+reports nothing and a threshold over it passes whatever the number is.
+
+Proved rather than argued: **setting that bar to 100/100/100/100 still exits 0
+with no error.** Eighteen career nodes, the star evaluation and the progression
+record were behind a gate that could not fail.
+
+CLAUDE.md already records this exact trap — "a coverage threshold that matches
+no files reads as enforcement" — for `shared/strategy`. It had happened a second
+time, to the module moved in the same commit, and nobody noticed. The gate now
+names `supabase/functions/_shared/career/**`, with the same numbers, and **the
+new gate was proved to fail when breached**: 100% statements exits 1 with
+`Coverage for statements (72.61%) does not meet … threshold (100%)`.
+
+**Evidence.**
+
+```
+npm run test:coverage                 exit 0 (was exit 1, four threshold errors)
+  decision-grading.ts                 47.76% → above its 85/80/90/90 bars
+  _shared/career/**                   72.61 / 63.51 / 79.24 / 79.12, gated
+tests/progression/decision-grading    32 tests (was 21)
+.github/workflows/ci.yml              runs `npm run test:coverage`; yaml-lint clean
+npm test                              1,634 unit + 109 server = 1,743 PASS
+```

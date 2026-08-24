@@ -83,6 +83,19 @@ jobs:
         # keeps the workflow and a local run from drifting apart.
         run: npm run test:unit
 
+      - name: Per-area coverage gates
+        # NEVER RUN BY CI UNTIL THIS STEP EXISTED, and it had been FAILING.
+        # `decision-grading.ts` sat at 47.76% statements against an 85% bar from
+        # the moment the assistance selector shipped — `adviceFor`, the function
+        # that decides what a Learn table TELLS a player before they choose, had
+        # no unit test at all. A gate nobody runs is not a gate.
+        #
+        # It is the unit half only: `tests/server/**` is excluded from the
+        # COVERAGE run because those tests drive the real functions over HTTP
+        # and score zero under unit instrumentation, which would average real
+        # logic against untestable plumbing.
+        run: npm run test:coverage
+
       - name: Expo config doctor
         run: npx expo-doctor@latest
 

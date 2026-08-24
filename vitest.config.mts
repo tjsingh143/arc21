@@ -195,7 +195,34 @@ export default defineConfig({
           functions: 95,
           lines: 95,
         },
-        "shared/career/**": {
+        /*
+         * THE CAREER LOGIC, at the path where it actually lives.
+         *
+         * This gate used to read `shared/career/**` and it MEASURED NOTHING.
+         * The career module was MOVED to `supabase/functions/_shared/career/`
+         * so the Edge runtime could resolve it, and `shared/career/*.ts` is now
+         * five seven-line `export *` shims plus an `index.ts` that
+         * `coverage.exclude` skips. A re-export has no executable statements, so
+         * v8 reports nothing for it and a threshold over it passes whatever the
+         * number is.
+         *
+         * Proved rather than reasoned: setting this bar to 100/100/100/100 at
+         * the old path still exits 0 with no error. Eighteen career nodes, the
+         * star evaluation and the progression record were behind a gate that
+         * could not fail.
+         *
+         * CLAUDE.md already records this exact trap for `shared/strategy` — "a
+         * coverage threshold that matches no files reads as enforcement" — and
+         * it had happened a second time, to the module moved in the same
+         * commit, without anybody noticing. When you move code, check the gate
+         * still points at it.
+         *
+         * The numbers are the old ones, unchanged: they were chosen as the
+         * honest bar for this module and they sit just under what it measures
+         * (72.61 / 63.51 / 79.24 / 79.12), so the gate ratchets rather than
+         * aspires. It just applies to the code now.
+         */
+        "supabase/functions/_shared/career/**": {
           statements: 70,
           branches: 60,
           functions: 75,

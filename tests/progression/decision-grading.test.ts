@@ -14,6 +14,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   ACCURACY_ELIGIBLE_MODES,
+  adviceFor,
   assistanceShowsTheAnswer,
   countsTowardsAccuracy,
   gradeDecision,
@@ -267,5 +268,195 @@ describe("what a decision cost", () => {
       gradeDecision({ mode: "solo", state, seatId: "s1", action: "STAND", wasTimeout: true })
         .evLostMicros,
     ).toBe(0);
+  });
+});
+
+/**
+ * What a Learn or Analysis table SHOWS, which had no unit test at all.
+ *
+ * `adviceFor` was the whole uncovered half of this module — lines 234-291,
+ * 47.76% statements against an 85% gate — and the coverage run that says so is
+ * not in CI, so it had been failing unnoticed since the assistance selector
+ * shipped. It is not a minor function: it decides what a player is told to do
+ * before they choose, and it is the SAME advisor that then grades the choice.
+ * If the two ever disagreed, a Learn table would recommend a play and mark it
+ * wrong.
+ *
+ * The last test here is the one that matters most, and it is about integrity
+ * rather than coverage: advice must be computed from the UPCARD alone. Nothing
+ * else in the repository asserts that the recommendation cannot depend on the
+ * hole card.
+ */
+describe("the recommendation a Learn table shows", () => {
+  /** Hard 16 against a dealer 10 — a coordinate every chart prices. */
+  const SIXTEEN_VS_TEN = "10S 10D 6H 7C";
+
+  function advise(state: EngineState, assistance: string) {
+    return adviceFor({ state, seatId: "s1", assistance });
+  }
+
+  it("says nothing at all when the session did not ask for help", () => {
+    const state = tableAt(SIXTEEN_VS_TEN);
+    // The two modes that do NOT put the answer on screen. `challenge` is the
+    // subtle one: it is a distinct product mode and still shows nothing.
+    expect(advise(state, "play")).toBeNull();
+    expect(advise(state, "challenge")).toBeNull();
+    expect(advise(state, "")).toBeNull();
+  });
+
+  it("answers on a learn table, from the seat's own cards and the upcard", () => {
+    const advice = advise(tableAt(SIXTEEN_VS_TEN), "learn");
+    expect(advice).not.toBeNull();
+    expect(advice?.seatId).toBe("s1");
+    expect(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"]).toContain(advice?.recommended);
+    // Says WHY, naming the hand and the upcard rather than only the verb.
+    expect(advice?.explanation).toMatch(/against/);
+  });
+
+  /**
+   * `actionEvMicros` is `analysis`-only, and integer millionths. No float
+   * decides anything a player is scored on, and this is the only place in the
+   * advice payload where a number could have been one.
+   */
+  it("prices every legal action on an analysis table, and only there", () => {
+    const state = tableAt(SIXTEEN_VS_TEN);
+    expect(advise(state, "learn")?.actionEvMicros).toBeNull();
+
+    const priced = advise(state, "analysis")?.actionEvMicros;
+    expect(priced).not.toBeNull();
+    const entries = Object.entries(priced ?? {});
+    expect(entries.length).toBeGreaterThan(0);
+    for (const [action, ev] of entries) {
+      expect(["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"]).toContain(action);
+      expect(Number.isInteger(ev)).toBe(true);
+    }
+  });
+
+  it("says nothing before the turns begin or after they end", () => {
+    // BETTING_OPEN: no hand to advise on.
+    const betting = harness({
+      shoe: SIXTEEN_VS_TEN,
+      seats: [{ seatId: "s1", displayName: "P", stack: 5_000 }],
+    }).state;
+    expect(advise(betting, "learn")).toBeNull();
+
+    // HAND_COMPLETE: the decision has been made.
+    const settled = harness({
+      shoe: SIXTEEN_VS_TEN,
+      seats: [{ seatId: "s1", displayName: "P", stack: 5_000 }],
+    })
+      .send({ type: "PLACE_BET", seatId: "s1", amount: 100 })
+      .send({ type: "LOCK_BET", seatId: "s1" })
+      .send({ type: "STAND", seatId: "s1" }).state;
+    expect(settled.phase).toBe("HAND_COMPLETE");
+    expect(advise(settled, "learn")).toBeNull();
+  });
+
+  /** Advice is addressed to whoever is ACTING. A seat that is not gets none. */
+  it("says nothing to a seat whose turn it is not", () => {
+    const state = tableAt(SIXTEEN_VS_TEN);
+    expect(adviceFor({ state, seatId: "s2", assistance: "learn" })).toBeNull();
+    expect(adviceFor({ state, seatId: "", assistance: "learn" })).toBeNull();
+  });
+
+  /**
+   * THE ONE THAT IS NOT ABOUT COVERAGE.
+   *
+   * The recommendation must come from the seat's cards and the dealer's UPCARD
+   * and nothing else. The hole card is at `dealer.cards[1]` and this function
+   * has it in hand — a single index slip would silently turn Learn into an
+   * oracle that reads the unrevealed card, which is the most valuable thing
+   * anyone could steal from this product and would look exactly like better
+   * advice.
+   *
+   * Asserted by changing ONLY the hole card and requiring the identical answer.
+   */
+  it("cannot be influenced by the hole card, because it never reads it", () => {
+    /*
+     * Same player hand and same upcard; the dealer's second card differs. Deal
+     * order is player, dealer UP, player, dealer HOLE — so the fourth card is
+     * the one under test.
+     *
+     * Neither hole card may make a natural. The first version of this used an
+     * ace, the dealer peeked, the hand settled before anyone could act, and the
+     * assertion failed on a null that was entirely correct. Two and seven both
+     * leave the hand live.
+     */
+    const withTwo = tableAt("10S 10D 6H 2C");
+    const withSeven = tableAt("10S 10D 6H 7C");
+
+    expect(withTwo.phase).toBe("PLAYER_TURNS");
+    expect(withTwo.dealer.cards[0]?.rank).toBe(withSeven.dealer.cards[0]?.rank);
+    expect(withTwo.dealer.cards[1]?.rank).not.toBe(withSeven.dealer.cards[1]?.rank);
+
+    const a = advise(withTwo, "analysis");
+    const b = advise(withSeven, "analysis");
+    expect(a).not.toBeNull();
+    expect(a?.recommended).toBe(b?.recommended);
+    expect(a?.explanation).toBe(b?.explanation);
+    expect(a?.actionEvMicros).toEqual(b?.actionEvMicros);
+  });
+});
+
+/**
+ * The refusals both halves of this module make on a state they cannot price.
+ *
+ * Every one of these returns "say nothing" rather than a guess. That is the
+ * contract the advisor sets — `adviseAction` answers null rather than guessing
+ * — and grading has to follow it, because a grade that assumes the player was
+ * wrong on a coordinate nobody priced takes credit for play they may have got
+ * right.
+ *
+ * They are also the branches the coverage gate was missing. The gate had been
+ * failing since the assistance selector shipped and nothing noticed, because
+ * `npm run test:coverage` is not run by CI.
+ */
+describe("states neither half will price", () => {
+  const SIXTEEN_VS_TEN = "10S 10D 6H 7C";
+
+  /** Everything the engine can be sent that is not a player DECISION. */
+  it("does not grade a command that is not a decision", () => {
+    const state = tableAt(SIXTEEN_VS_TEN);
+    for (const action of ["NEXT_HAND", "PLACE_BET", "LOCK_BET", "DECLINE_INSURANCE"]) {
+      const grade = gradeDecision({
+        mode: "solo",
+        state,
+        seatId: "s1",
+        action: action as never,
+      });
+      expect(grade.counted).toBe(false);
+      expect(grade.skipped).toBe("not-an-action");
+    }
+  });
+
+  /**
+   * No upcard is not a state the engine can reach during PLAYER_TURNS — it is
+   * patched here deliberately. The guard exists because grading against a
+   * dealer card that is not there would price a decision nobody faced, and both
+   * functions must refuse rather than reach into `cards[1]`.
+   */
+  it("refuses when there is no dealer upcard, rather than reaching further in", () => {
+    const noUpcard = harness({
+      shoe: SIXTEEN_VS_TEN,
+      seats: [{ seatId: "s1", displayName: "P", stack: 5_000 }],
+    })
+      .send({ type: "PLACE_BET", seatId: "s1", amount: 100 })
+      .send({ type: "LOCK_BET", seatId: "s1" })
+      .patch((state) => ({ ...state, dealer: { ...state.dealer, cards: [] } })).state;
+
+    const grade = gradeDecision({ mode: "solo", state: noUpcard, seatId: "s1", action: "HIT" });
+    expect(grade.counted).toBe(false);
+    expect(grade.skipped).toBe("no-upcard");
+
+    expect(adviceFor({ state: noUpcard, seatId: "s1", assistance: "learn" })).toBeNull();
+  });
+
+  /** A seat id that is not at this table gets no grade and no advice. */
+  it("refuses a seat that is not seated here", () => {
+    const state = tableAt(SIXTEEN_VS_TEN);
+    const grade = gradeDecision({ mode: "solo", state, seatId: "nobody", action: "HIT" });
+    expect(grade.counted).toBe(false);
+    expect(grade.skipped).toBe("no-hand");
+    expect(adviceFor({ state, seatId: "nobody", assistance: "analysis" })).toBeNull();
   });
 });
