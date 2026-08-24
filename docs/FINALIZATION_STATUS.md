@@ -1456,3 +1456,117 @@ tsc --noEmit / lint                  exit 0 / 0 errors
 Four Maestro flows now, two configurations, and the two that need opposite
 configurations both say so in their own headers rather than in a note somebody
 has to have read.
+
+---
+
+## R20 — CI's readiness probe said "up" about a stack whose functions could not reach the database
+
+### The gap, found by running CI's own steps
+
+The mission's "validate CI behaviour" item meant running every step of
+`.github/workflows/ci.yml` locally, in the order the workflow runs them. The
+`checks` job passed all seven. The `database` job is where the finding is.
+
+Both `.github/workflows/ci.yml` and `tests/server/stack-guard.ts` decide the
+stack is ready when `POST /functions/v1/game-command` with no credentials
+answers **401**. That comment is careful and correct as far as it goes — "any
+HTTP answer is not enough: with the Edge runtime stopped the gateway still
+answers 503" — and it stops one step short.
+
+**A 401 does not prove the function can reach Postgres.** The auth check runs
+before anything is read, so a function that is serving perfectly and cannot
+resolve the database answers 401 exactly like a healthy one.
+
+That is not hypothetical. After the database container was recreated while the
+Edge runtime kept running, every command returned
+
+```
+HTTP 500 {"code":"INTERNAL"} … "Error: getaddrinfo ENOTFOUND supabase_db_arc21"
+```
+
+while the guard reported the stack as UP. The server suite then ran against it
+and produced a page of product-looking failures for a container-network problem.
+
+### The second probe
+
+Both places now send a real command, signed for an account that does not exist,
+naming a game that does not exist. `handle()` takes the engine-state lock BEFORE
+anything else, so it reaches Postgres on every code path:
+
+- database reachable → `NOT_A_PARTICIPANT`, a 4xx. The stack is up.
+- database unreachable → `INTERNAL`, a 500. The stack is NOT up.
+
+Nothing is moved and nothing is created — the command is refused either way.
+
+**Proved by breaking exactly that path and nothing else:**
+`docker network disconnect supabase_network_arc21 supabase_db_arc21`. The 401
+probe went on answering 401; the new probe refused, with a message naming
+`ENOTFOUND` and `docker restart supabase_edge_runtime_arc21` as the fix.
+
+Both probes are also `AbortSignal.timeout(5000)` now. Without it a gateway that
+accepts the socket and never answers hangs the retry loop for ever — which is
+what a half-started stack looks like, and a retry budget only means something if
+each attempt can end. Found by the loop hanging for ten minutes instead of the
+sixty seconds it budgets for.
+
+### What the new probe then caught, and it is not the product
+
+Immediately after it went in, the guard started refusing the local stack. It was
+right to. **Deno cannot resolve a hostname containing underscores, and the
+Supabase CLI points the Edge Functions at `supabase_db_arc21`.** Established by
+running both runtimes side by side, on the same Docker network, at the same
+moment:
+
+```
+$ docker run --rm --network supabase_network_arc21 node:22-alpine node -e "…"
+underscore name: 172.18.0.2          ← Node resolves it
+alias db      : 172.18.0.2
+
+$ docker run --rm --network supabase_network_arc21 denoland/deno:2.1.4 eval "…"
+DENO underscore -> Error: getaddrinfo ENOTFOUND supabase_db_arc21
+DENO alias      -> 172.18.0.2        ← the same address, via a name with no underscore
+```
+
+`SUPABASE_DB_URL` is injected by the CLI as
+`postgresql://postgres:postgres@supabase_db_arc21:5432/postgres`, the runtime is
+`supabase-edge-runtime-1.74.3 (compatible with Deno v2.1.4)`, and
+`postgres-client.ts` connects through npm `postgres` under Deno's Node compat —
+which is why the error arrives in Node's shape.
+
+**It is not a product defect and cannot be fixed in this repository.** A deployed
+Supabase project addresses its database by a real DNS name
+(`db.<ref>.supabase.co`), which has no underscores. Rewriting the host inside
+`databaseUrl()` to work around a local tool would be exactly the fudge this
+project already caught itself making once, when the first fix for
+`${json}::jsonb` was to make the parser tolerate strings.
+
+Ruled out along the way, each by measurement rather than by reasoning: stale
+Deno DNS caching (survives a container restart, a container REBUILD, a Docker
+Desktop restart and a `docker network rm`), the Docker network itself (Node
+resolves the same name on it), `/etc/hosts` (Deno does not consult it),
+`[edge_runtime.secrets]` in `config.toml` and `supabase/functions/.env` (the CLI
+overwrites `SUPABASE_DB_URL` in both cases), and an extra network alias (a
+connected endpoint cannot gain one, and the URL would still name the container).
+
+### What this leaves outstanding
+
+Everything that does not go through an Edge Function was re-run and passes:
+
+```
+npx tsc --noEmit                       PASS
+npm run lint                           PASS (0 errors)
+npm run check:functions                PASS
+npm run test:unit                      1,639 tests PASS
+supabase test db                       453 assertions PASS
+npm run test:coverage                  PASS
+supabase db lint                       No schema errors found
+```
+
+**`npm run test:server` (116 tests) could not be re-run at the end of this
+session**, and neither could the four Maestro flows, because both drive the Edge
+Functions. All of them passed earlier in this session against a working stack,
+and every change made since is either a test, a document, a probe, or the
+`cosmetic_is_earned` migration that `supabase test db` covers. The guard now
+refuses that stack instead of reporting a hundred product failures, which is the
+point of R20 — but the guard being right is not the same as the suite having
+run, and this row says so.

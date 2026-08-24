@@ -164,6 +164,75 @@ jobs:
           echo "the Edge Functions never answered 401; last code was '${code}'" >&2
           exit 1
 
+      - name: And the functions can reach the database
+        # A 401 DOES NOT PROVE THIS. The auth check runs before anything is
+        # read, so a function that is serving perfectly and cannot resolve
+        # Postgres answers 401 exactly like a healthy one. Proved by
+        # disconnecting the database container from the Docker network: the
+        # probe above still returned 401 while every command returned
+        # `INTERNAL … getaddrinfo ENOTFOUND supabase_db_arc21`, and a hundred
+        # server tests would have reported a broken container network as a
+        # broken product.
+        #
+        # `tests/server/stack-guard.ts` makes the same second check, for the
+        # same reason — this step exists so the JOB fails on the stack rather
+        # than on the suite, which is a shorter path to the actual cause.
+        #
+        # The command is signed for an account that does not exist and names a
+        # game that does not exist. `handle()` takes the engine-state lock
+        # before anything else, so it reaches Postgres either way:
+        # NOT_A_PARTICIPANT (4xx) means the database answered; INTERNAL (500)
+        # means it did not. Nothing is moved and nothing is created.
+        run: |
+          node -e '
+            const { createHmac } = require("node:crypto");
+            const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
+            const header = b64({ alg: "HS256", typ: "JWT" });
+            const payload = b64({
+              sub: "00000000-0000-4000-8000-0000000000ff",
+              role: "authenticated",
+              aud: "authenticated",
+              exp: Math.floor(Date.now() / 1000) + 300,
+            });
+            const secret = "super-secret-jwt-token-with-at-least-32-characters-long";
+            const sig = createHmac("sha256", secret).update(header + "." + payload).digest("base64url");
+            const token = header + "." + payload + "." + sig;
+            (async () => {
+              for (let attempt = 1; attempt <= 60; attempt += 1) {
+                try {
+                  const response = await fetch("http://127.0.0.1:54321/functions/v1/game-command", {
+                    method: "POST",
+                    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+                    body: JSON.stringify({
+                      gameId: "00000000-0000-4000-8000-0000000000fe",
+                      clientActionId: "00000000-0000-4000-8000-0000000000fd",
+                      type: "NEXT_HAND",
+                      payload: {},
+                      expectedVersion: 1,
+                      clientSentAt: new Date().toISOString(),
+                    }),
+                    // BOUNDED. Without it one hung connection blocks the whole
+                    // loop for ever: a gateway that accepts the socket and never
+                    // answers is exactly what a half-started stack looks like,
+                    // and the retry budget below only means something if each
+                    // attempt can end.
+                    signal: AbortSignal.timeout(5000),
+                  });
+                  if (response.status < 500) {
+                    console.log("functions reached the database (" + response.status + " after " + attempt + "s)");
+                    process.exit(0);
+                  }
+                  if (attempt === 60) console.error(await response.text());
+                } catch (error) {
+                  if (attempt === 60) console.error(String(error));
+                }
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+              }
+              console.error("the functions are serving but never reached Postgres");
+              process.exit(1);
+            })();
+          '
+
       - name: Server integration tests
         # `npm run test:server` carries BOTH halves of what this step needs, and
         # carrying them in the script rather than here is deliberate:
