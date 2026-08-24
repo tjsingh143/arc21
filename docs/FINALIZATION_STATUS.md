@@ -586,14 +586,209 @@ ready states, invite friends, start, leave":
   already exist and are client-granted; only the UI is missing;
 - **host-remove** — the function above.
 
-### Known intermittent, UNRESOLVED and pre-existing
+### R10 — The private lobby: three controls with no client, and two defects underneath · **IN PROGRESS**
+
+**The specification's list for this screen** is one sentence — "Lobby shows: room
+code, copy/share, host, seat list, ready states, invite friends, start, leave" —
+plus "Host can remove a member only while in lobby" and, on the creation screen,
+"MVP fields: max players 2–5" and "Loading/reconnect must preserve room code".
+Four of those were missing and two of the four were missing in the way this
+mission keeps finding: the server half existed, tested, with no caller.
+
+**Two defects found by reading the server halves before wiring them, both
+reproduced against the running stack by client-reachable RPCs only.**
+
+**(a) A removed player walked straight back in.** `remove_room_member` shipped
+last commit with six pgTAP assertions, all passing, and removed nobody:
+`join_private_room` ends in `on conflict (room_id, user_id) do update set status
+= 'joined'`, so the removed player typed the same six characters and was seated
+again. pgTAP proved the row said `kicked`; nothing proved it STAYED kicked, which
+is the only thing a host removing somebody is asking for.
+
+**(b) A vacated seat could not be refilled — and this one predates the kick
+feature entirely.** `leave_room` keeps the member row AND its `seat_index`;
+`join_private_room` allocates "the lowest seat no JOINED member holds", the right
+rule; and the table carried `unique (room_id, seat_index)` across every row
+whatever its status. So the most ordinary sequence a private table has:
+
+```
+A joins:  200
+A leaves: 204
+B joins:  409 {"code":"23505","details":"Key (room_id, seat_index)=(…, 1) already exists.",
+               "message":"duplicate key value violates unique constraint
+                          \"room_members_room_id_seat_index_key\""}
+```
+
+A table refused a join for as long as anybody had ever left it, at a table with a
+seat visibly free. Nothing covered it: every room test until now filled a room
+and stopped.
+
+**Fix — `20260823180000_room_seats_and_removal.sql`.** The whole-table constraint
+becomes a PARTIAL unique index over `status = 'joined'`, which is the same
+predicate the allocator uses (the migration says so, and says to change both
+together). `join_private_room` — redefined from `20260818100000_rate_limits.sql`,
+the LAST definition, so the rate-limit charge and the returns-no-row refusal
+contract survive — refuses a `kicked` member, and re-seats a returning player
+with `seat_index = excluded.seat_index` rather than their stale number.
+
+The kicked refusal is byte-identical to the answer for a code that never existed,
+asserted as such: a removed player's code going quiet is the one refusal that
+would otherwise tell a code-guesser their six characters had hit a live room.
+
+**Client half — the four missing pieces.**
+
+- **ready states**: `setReady` on the gateway, `setReady` on the store, a toggle
+  and a per-seat indicator on the screen. Re-read from the server rather than
+  patched locally, so every client renders the same row.
+- **host-remove**: `removeMember` through the gateway; the button appears only
+  where `canRemoveMember` allows it. `removed: false` is not an error — it is
+  the server's single answer to every refusal it declines to explain.
+- **copy/share**: RN `Share.share`, no new dependency; the sheet's own Copy is
+  the "copy" half. The message carries the CODE, with the deep link second,
+  because a link that dead-ends for somebody without the app is worse than six
+  characters anybody can type.
+- **max players 2–5**: a seat chooser on the create card, replacing a hardcoded
+  `createRoom(5)`.
+
+**And a fifth, found while wiring: the lobby could not be returned to.**
+`findOpenRoom` + `restore()` put a player back at the table they are already at.
+Before it, a host who force-quit was STUCK — the lobby came back empty and
+`create_private_room` refuses a second live room, so the only way out was to wait
+thirty minutes for the first to expire. It is a plain select: `rooms_select_member`
+already restricts the table to the caller's own rooms, so the policy IS the
+lookup. The filter is exported as one string and the integration test sends THAT
+string, so a change to the app's query changes the test's subject. `now()` is
+evaluated by Postgres, not by the device — an active table keeps its lobby TTL
+in `expires_at` and filtering on it would strand every game that outlived its
+lobby, so only a LOBBY is expiry-checked.
+
+**Evidence.**
+
+```
+tests/server/private-rooms.integration.test.ts   16 tests — 4 failed before the
+                                                 migration, all pass after
+supabase test db                                 452 assertions, PASS  (was 450)
+tests/rooms/                                     30 tests (was 8)
+npx tsc --noEmit / npm run lint                  exit 0 / 0 errors
+```
+
+Both new gates were proved to discriminate rather than assumed to work: deleting
+the `gameSessionId` check from `canRemoveMember` fails exactly one affordance
+test, and widening `OPEN_ROOM_FILTER` to include every lobby fails exactly the
+expiry test.
+
+**Outstanding on this row:** the end-to-end run. `tests/e2e/private-lobby.yaml`
+is written — the first Maestro flow in this repository that signs in and walks a
+SERVER-configured build — and needs a debug build to run against.
+
+### R11 — the Daily Challenge intermittent, RESOLVED with its cause named
 
 `game-command.integration.test.ts > the daily challenge > deals two different
-accounts the identical shoe` failed once in the full `npm test` run, on a
-**hand-count** mismatch (18 vs 20) rather than a card mismatch — the visible
-cards agreed. It passed 77/77 in the isolated `npm run test:server` run two
-minutes earlier and in every other run today. Not reproduced deliberately yet,
-so it is recorded rather than explained. It is not one of this mission's tests.
+accounts the identical shoe` had failed once in a full `npm test` on
+
+```
+expected [ 18 items ] to deeply equal [ 20 items ]
+```
+
+— a hand-COUNT mismatch, with every visible card agreeing. That reads as a
+defect in the deterministic shoe, which is the single most important claim the
+whole mode rests on. It was not a card defect, and it was not in the product.
+
+**The cause, from the runtime's own log** (`docker logs
+supabase_edge_runtime_arc21`), in this order:
+
+```
+CPU time soft limit reached: isolate: 01add706-…
+user worker failed to respond: request cannot be handled because the worker
+  has already retired
+{"message":"command handled", … "commandType":"LOCK_BET", …
+  "outcome":"accepted","stateVersion":14}
+WorkerAlreadyRetired: request cannot be handled because the worker has already
+  retired
+```
+
+Read the order. The Edge runtime retires a user worker when its isolate trips
+the CPU soft limit; a request already in flight is then answered by a worker
+that is gone — and the `command handled … accepted` line lands BETWEEN the
+retirement and the error. **The command committed. Only the reply was lost.**
+Seventeen of these had accumulated in the container's log, five adjacent to an
+accepted command, twice for `NEXT_HAND` — which is exactly the shape of an
+attempt that stops two hands short with every card it did record agreeing.
+
+**Why it presented as a card mismatch.** `playOut` discarded every command's
+outcome and carried one line, `if (next.status !== 200) break`, which treated
+ANY non-200 on `NEXT_HAND` as the ordinary way a finished session says so. It is
+not: a finished attempt answers **200** with a `SESSION_COMPLETE` snapshot from
+`closeCompetition`. So a lost reply silently truncated the run, the short array
+reached `expect(playedA.dealt).toEqual(playedB.dealt)`, and the caller's own
+`expect(state.phase).toBe("SESSION_COMPLETE")` — which would have named the
+problem — sat on the line AFTER the comparison and never ran.
+
+**The fix, in two parts.**
+
+1. `tests/server/call-function.ts`, the one Edge-Function caller for every
+   server suite, replays a 5xx or a thrown fetch with a **byte-identical body**.
+   That is what `src/features/table/online-table-gateway.ts` already does with a
+   real player's command — a reply it cannot read is `unreachable`, and it
+   retries presenting THE SAME `clientActionId`, so `findAppliedCommand` returns
+   the first committed result. The test was less robust than the app it tests.
+   `JSON.stringify` runs once, outside the loop, because a retry that mints a
+   fresh key is not a retry but a second command.
+2. `playOut` cannot return a truncated attempt. Every command must be accepted;
+   a `stale` verdict counts as a refusal even though it is HTTP 200, because one
+   seat playing sequentially cannot race itself; and the helper asserts
+   `SESSION_COMPLETE` before handing the array back, so any future truncation
+   names itself instead of arriving as a card comparison.
+
+**It cannot hide a real failure.** A 4xx is the server's verdict and is never
+retried. A 5xx that persists is returned with its body on the last attempt. A
+fetch that keeps throwing raises. And every absorption is announced on stderr —
+written with `process.stderr.write`, not `console.warn`, because Vitest 4
+defaults to `silent: "passed-only"` and discards console output from a test that
+PASSES, which is precisely the run the warning exists for. Measured with a probe
+emitting both, not assumed.
+
+**Reproduced deliberately**, per the repository's own rule about flakes: 14
+background busy loops driving the host to load 40–94, `tests/server` at full
+file parallelism. Three consecutive passes, 100/100 each, with genuine
+`WorkerAlreadyRetired` 500s absorbed and logged — the container's retirement
+counter moved 19 → 21 across them. Five further daily-challenge-only passes
+under load 41–45, all green.
+
+**Two regression tests.**
+
+- `tests/server/call-function.test.ts` (6 tests, needs no stack) drives the
+  caller against a stub that answers exactly what the runtime was observed to
+  answer. It asserts the retry returns the answer that arrives, that the replayed
+  body and `Authorization` header are byte-identical so the idempotency key
+  survives, that a 401/403/409/422/429 is never retried, that a persistent 5xx
+  comes back with its body, that a dead port raises, and that the diagnostic is
+  emitted. Against the old inline caller the first of those fails.
+- `deals … > replays the attempt's final command instead of paying a second
+  reward` asserts the server property the retry depends on, for the command that
+  actually lost its reply. The last `NEXT_HAND` of a challenge never reaches
+  `applyCommand`: `closeCompetition` writes the completion, marks the seat
+  `left`, marks the session `completed` and PAYS THE REWARD, and records its own
+  idempotency row on a different code path from every other command. Its replay
+  must survive both closures — which is why `findAppliedCommand` runs ahead of
+  the session-closed check. Same body, same response object, same wallet, one
+  entry row; and a DIFFERENT action id on the same finished session is refused,
+  so the replay is a replay and not an open door.
+
+**And the same latent flake was removed from the four suites that still had it.**
+`rejection-contract` and `notifications` carried their own inline `fetch` callers
+— including the two calls in the timeout-notification test, which asserts `200`
+after a sixteen-second sleep and is therefore the most exposed request in the
+repository. Both now use the shared caller. `password-recovery` carried a
+`FUNCTIONS` constant it never used; it is gone.
+
+```
+tests/server/call-function.test.ts      6 tests, no stack required
+npm run test:server                    11 files / 100 tests PASS
+npm test                               1,564 unit + 100 server = 1,664 PASS
+8 server passes under deliberate load  green, absorptions logged
+tsc --noEmit / lint                    exit 0 / 0 errors
+```
 
 **Clock skew, fixed properly this time.** Backdating `iat` by 60 s was not
 enough — the Docker VM clock JUMPS rather than drifts, so any constant is a

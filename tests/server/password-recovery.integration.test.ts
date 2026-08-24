@@ -29,7 +29,6 @@ import { stackUp } from "./stack-guard.js";
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
-const FUNCTIONS = `${SUPABASE_URL}/functions/v1`;
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
 const MAILPIT = "http://127.0.0.1:54324";
 

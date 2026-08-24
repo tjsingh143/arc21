@@ -17,7 +17,11 @@
 # ARC21_REQUIRE_SERVER_STACK=1, which turns the skip into a hard failure. A
 # database job whose stack failed to come up therefore reports a broken stack
 # instead of a green suite that tested nothing. The two together run every test
-# in the repository exactly once: 1,476 + 52 = 1,528.
+# in the repository exactly once: 1,564 + 100 = 1,664.
+#
+# Both steps call the npm script rather than repeating its command, so the
+# workflow cannot drift from what a local run does — including the
+# `--maxWorkers=2` the server half needs to stop being load-dependent.
 #
 # Node is pinned to the version every local run was validated on. package.json
 # `engines` permits >=22, but only 26 has been exercised here, and claiming
@@ -75,7 +79,9 @@ jobs:
       - name: Unit and integration tests (no server stack)
         # tests/server/** is excluded here on purpose — see the header. It runs
         # in the `database` job, where a stack exists and a skip is a failure.
-        run: npx vitest run --exclude 'tests/server/**'
+        # The npm script IS this command; calling it rather than repeating it
+        # keeps the workflow and a local run from drifting apart.
+        run: npm run test:unit
 
       - name: Expo config doctor
         run: npx expo-doctor@latest
@@ -146,8 +152,14 @@ jobs:
           exit 1
 
       - name: Server integration tests
-        # The flag is the point: without it these SKIP when the stack is down,
-        # and the job would pass having tested nothing.
-        env:
-          ARC21_REQUIRE_SERVER_STACK: "1"
-        run: npx vitest run tests/server
+        # `npm run test:server` carries BOTH halves of what this step needs, and
+        # carrying them in the script rather than here is deliberate:
+        #
+        #   ARC21_REQUIRE_SERVER_STACK=1 — without it these SKIP when the stack
+        #   is down and the job passes having tested nothing;
+        #
+        #   --maxWorkers=2 — these ten files drive ONE Edge-runtime container
+        #   over HTTP, and at full file parallelism the two tests that hold a
+        #   real race or a real clock open time out on a busy machine. A gate
+        #   must not depend on how idle the runner is.
+        run: npm run test:server

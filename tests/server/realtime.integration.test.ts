@@ -30,11 +30,11 @@
 import crypto from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { callFunction as call } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
-const FUNCTIONS = `${SUPABASE_URL}/functions/v1`;
 const REST = `${SUPABASE_URL}/rest/v1`;
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
 
@@ -94,26 +94,7 @@ async function createUser(): Promise<string> {
   return json.id;
 }
 
-interface CallResult {
-  status: number;
-  body: Record<string, unknown>;
-}
 
-async function call(fn: string, token: string, body: unknown): Promise<CallResult> {
-  const response = await fetch(`${FUNCTIONS}/${fn}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text();
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  return { status: response.status, body: parsed };
-}
 
 async function rpc(token: string, name: string, args: Record<string, unknown> = {}) {
   const response = await fetch(`${REST}/rpc/${name}`, {

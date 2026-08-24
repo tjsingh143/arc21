@@ -28,9 +28,9 @@ import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { COMMAND_REJECTION_CODES } from "../../shared/contracts/index.js";
+import { callFunction as post } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 
-const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
 
 const LOCAL_JWT_SECRET = "super-secret-jwt-token-with-at-least-32-characters-long";
@@ -84,22 +84,6 @@ async function createUser(): Promise<string> {
   const json = (await response.json()) as { id?: string };
   if (!json.id) throw new Error(`could not create a test user: ${response.status}`);
   return json.id;
-}
-
-async function post(fn: string, token: string, body: unknown) {
-  const response = await fetch(`${FUNCTIONS}/${fn}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text();
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  return { status: response.status, body: parsed, raw };
 }
 
 const iso = () => new Date().toISOString();

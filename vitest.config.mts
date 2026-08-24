@@ -17,6 +17,29 @@ export default defineConfig({
      * indistinguishable from normal operation.
      */
     /**
+     * WHY `tests/server/**` NO LONGER RUNS BESIDE THE UNIT SUITE AT ALL.
+     *
+     * `npm test` used to be one `vitest run` over everything, and on a loaded
+     * machine it failed roughly one run in three — always in one of the two
+     * places that hold a real clock or a real race open:
+     *
+     *   × accepts exactly one of twenty simultaneous commands   90065ms  (timeout)
+     *   × sends the recommendation on a Learn table            120082ms  (timeout)
+     *
+     * Neither is a product defect and both pass alone in seconds. The cause is
+     * that `tests/server/**` drives ONE local Edge-runtime container over HTTP:
+     * ten files at full parallelism queue behind a single Deno instance, and a
+     * test that fires twenty simultaneous commands at it while nine other files
+     * are mid-command exceeds any budget you give it. Reproduced deliberately —
+     * three consecutive `npm test` runs with three background unit suites
+     * loading the host, one failed — rather than retried until it passed.
+     *
+     * So `npm test` is now the two halves in SEQUENCE, and the server half runs
+     * `--maxWorkers=2`. Everything still runs exactly once, nothing is skipped,
+     * and the run stopped depending on how busy the machine happens to be. CI
+     * always split them across two jobs; this makes a local run match.
+     */
+    /**
      * `tests/server/**` is excluded from the COVERAGE run for the same reason,
      * arrived at by measurement rather than by preference.
      *

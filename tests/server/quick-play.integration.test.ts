@@ -28,9 +28,9 @@
 import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 
+import { callFunction as call } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 
-const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
 const REST = "http://127.0.0.1:54321/rest/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
 
@@ -72,21 +72,6 @@ function signToken(sub: string): string {
   return `${header}.${payload}.${signature}`;
 }
 
-async function call(fn: string, token: string, body: unknown) {
-  const response = await fetch(`${FUNCTIONS}/${fn}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text();
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  return { status: response.status, body: parsed, raw };
-}
 
 async function readAs(token: string, path: string): Promise<unknown> {
   const response = await fetch(`${REST}/${path}`, {

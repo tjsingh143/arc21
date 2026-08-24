@@ -22,9 +22,9 @@
 import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
+import { callFunction as call } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 
-const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
 
 /**
@@ -72,30 +72,7 @@ function signToken(sub: string, overrides: Record<string, unknown> = {}): string
   return `${header}.${payload}.${signature}`;
 }
 
-interface CallResult {
-  status: number;
-  body: Record<string, unknown>;
-  raw: string;
-}
 
-async function call(fn: string, token: string | null, body: unknown): Promise<CallResult> {
-  const response = await fetch(`${FUNCTIONS}/${fn}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  const raw = await response.text();
-  let parsed: Record<string, unknown> = {};
-  try {
-    parsed = JSON.parse(raw) as Record<string, unknown>;
-  } catch {
-    parsed = {};
-  }
-  return { status: response.status, body: parsed, raw };
-}
 
 async function createUser(): Promise<string> {
   const response = await fetch(AUTH_ADMIN, {
@@ -847,15 +824,22 @@ suite("closed economies and multi-hand play", () => {
     const seatId = opened.body.seatId as string;
     let state = opened.body.publicState as PublicSnapshot;
 
+    // Kept so a caller can replay the LAST command exactly as it was sent —
+    // which is the only honest way to test what a lost reply does.
+    let lastCommand: Record<string, unknown> = {};
+    let lastResponse: Record<string, unknown> = {};
+
     const send = async (type: string, payload?: Record<string, unknown>) => {
-      const result = await call("game-command", token, {
+      lastCommand = {
         gameId,
         clientActionId: crypto.randomUUID(),
         type,
         ...(payload ? { payload } : {}),
         expectedVersion: state.version,
         clientSentAt: iso(),
-      });
+      };
+      const result = await call("game-command", token, lastCommand);
+      lastResponse = result.body;
       if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
       return result;
     };
@@ -930,21 +914,79 @@ suite("the daily challenge", () => {
     });
   }
 
-  /** Plays the whole attempt, returning the cards dealt in each hand. */
+  /**
+   * Plays the whole attempt, returning the cards dealt in each hand.
+   *
+   * EVERY COMMAND IS CHECKED, and this is the whole point of the helper.
+   *
+   * It did not used to be. `send` returned the result and the loop ignored it,
+   * so a refused PLACE_BET or a 500 under load left `state` on the previous
+   * snapshot, the inner loop fell straight out, the stale snapshot was pushed
+   * as if it were a hand, and the next NEXT_HAND carried a stale
+   * `expectedVersion` and stopped the loop. The whole run then failed as
+   *
+   *     expected [ 18 items ] to deeply equal [ 20 items ]
+   *
+   * with every visible card agreeing — a card-mismatch message for something
+   * that was not a card mismatch at all. That failure was seen once in a full
+   * `npm test`, was recorded as an unexplained intermittent, and could not be
+   * diagnosed from its own output because the cause had already been discarded
+   * by the time the assertion ran.
+   *
+   * A helper that cannot do what it was asked THROWS, naming the command, the
+   * status and the body. The same rule the wallet reader learned when returning
+   * -1 turned a harness failure into "expected 25200 to be 199".
+   */
   async function playOut(token: string, gameId: string, seatId: string, opening: PublicSnapshot) {
     let state = opening;
     const dealt: string[] = [];
 
+    // Kept so a caller can replay the LAST command exactly as it was sent —
+    // which is the only honest way to test what a lost reply does.
+    let lastCommand: Record<string, unknown> = {};
+    let lastResponse: Record<string, unknown> = {};
+
     const send = async (type: string, payload?: Record<string, unknown>) => {
-      const result = await call("game-command", token, {
+      lastCommand = {
         gameId,
         clientActionId: crypto.randomUUID(),
         type,
         ...(payload ? { payload } : {}),
         expectedVersion: state.version,
         clientSentAt: iso(),
-      });
+      };
+      const result = await call("game-command", token, lastCommand);
+      lastResponse = result.body;
       if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
+      return result;
+    };
+
+    /**
+     * Every command in an attempt must be accepted, and there is no exception.
+     *
+     * A `stale` verdict counts as a refusal here even though it is HTTP 200.
+     * One seat playing strictly sequentially cannot legitimately race itself:
+     * the only way this attempt's `expectedVersion` can fall behind is a reply
+     * that never arrived, which is precisely the condition being hunted.
+     */
+    const mustSend = async (type: string, payload?: Record<string, unknown>) => {
+      // Read before `send`, which resynchronises `state` from any snapshot in
+      // the reply — including the one a `stale` verdict carries.
+      const sentVersion = state.version;
+      const result = await send(type, payload);
+      if (result.status !== 200) {
+        throw new Error(
+          `${type} was refused on hand ${dealt.length + 1} of the attempt: ` +
+            `HTTP ${result.status} ${result.raw}`,
+        );
+      }
+      if (result.body.status === "stale") {
+        throw new Error(
+          `${type} came back stale on hand ${dealt.length + 1}: the attempt sent ` +
+            `expectedVersion ${sentVersion}, the server was at ${state.version} — ` +
+            `a reply was lost, not a race`,
+        );
+      }
       return result;
     };
 
@@ -952,18 +994,27 @@ suite("the daily challenge", () => {
 
     for (let hand = 1; hand <= 25; hand += 1) {
       if (phaseNow() !== "BETTING_OPEN") break;
-      await send("PLACE_BET", { amount: 100 });
-      await send("LOCK_BET");
+      await mustSend("PLACE_BET", { amount: 100 });
+      await mustSend("LOCK_BET");
       for (let step = 0; step < 40 && phaseNow() !== "HAND_COMPLETE"; step += 1) {
         if (phaseNow() === "INSURANCE_OFFER" && state.legalActions[seatId]?.canDeclineInsurance) {
-          await send("DECLINE_INSURANCE");
+          await mustSend("DECLINE_INSURANCE");
           continue;
         }
         if (phaseNow() === "PLAYER_TURNS" && state.activeSeatId === seatId) {
-          await send("STAND");
+          await mustSend("STAND");
           continue;
         }
         break;
+      }
+      // The hand must actually have finished. Falling out of the loop above on
+      // an unexpected phase and recording the previous snapshot as this hand's
+      // cards is exactly how a stale reading became a card comparison.
+      if (phaseNow() !== "HAND_COMPLETE") {
+        throw new Error(
+          `hand ${dealt.length + 1} stopped in ${phaseNow()} rather than HAND_COMPLETE ` +
+            `(active seat ${String(state.activeSeatId)})`,
+        );
       }
       const snapshot = state as unknown as {
         seats: Array<{ hands: Array<{ cards: Array<{ id: string }> }> }>;
@@ -974,10 +1025,34 @@ suite("the daily challenge", () => {
           "|" +
           snapshot.dealer.cards.map((c) => c.id ?? "hidden").join(","),
       );
-      const next = await send("NEXT_HAND");
-      if (next.status !== 200) break;
+      // NEXT_HAND is not special. It ends the attempt by ANSWERING 200 with a
+      // SESSION_COMPLETE snapshot — `closeCompetition` records that response
+      // against the idempotency key like any other — so a refusal here is a
+      // refusal, and the loop above exits on the phase rather than on a status.
+      await mustSend("NEXT_HAND");
     }
-    return { state, dealt };
+
+    /*
+     * THE ATTEMPT MUST HAVE FINISHED, and this line is the whole guard.
+     *
+     * Every way this loop can stop early — a lost response, a `stale` verdict
+     * that resynchronised onto HAND_COMPLETE, a hand cap reached — leaves a
+     * SHORT `dealt` array and nothing else wrong with it. Returning that array
+     * is how a truncated run reached `expect(playedA.dealt).toEqual(playedB.dealt)`
+     * and was reported as a card mismatch: the caller's own
+     * `expect(state.phase).toBe("SESSION_COMPLETE")` sat on the line AFTER the
+     * comparison and never ran.
+     *
+     * Asserting it here, before the array is handed back, means the failure
+     * names itself wherever the truncation came from.
+     */
+    if (state.phase !== "SESSION_COMPLETE") {
+      throw new Error(
+        `the attempt stopped after ${dealt.length} hand(s) in phase ${state.phase} ` +
+          `(version ${state.version}) rather than completing`,
+      );
+    }
+    return { state, dealt, lastCommand, lastResponse };
   }
 
   it("deals two different accounts the identical shoe", async () => {
@@ -1052,6 +1127,73 @@ suite("the daily challenge", () => {
     // because it never writes.
     expect(rows).toHaveLength(1);
     expect(rows[0]?.status).toBe("completed");
+  }, 120_000);
+
+  /**
+   * THE REGRESSION FOR THE 18-vs-20 INTERMITTENT, on the server side.
+   *
+   * The local Edge runtime retires a user worker on its CPU soft limit and
+   * answers a request already in flight with HTTP 500 — after that command has
+   * COMMITTED. `tests/server/call-function.ts` carries the log evidence; the
+   * caller now replays the identical body, exactly as
+   * `online-table-gateway.ts` does for a real player, and the whole safety of
+   * that rests on one property of the server.
+   *
+   * The property is asserted here for the command that actually lost its reply:
+   * the LAST `NEXT_HAND` of a Daily Challenge. That one is not an ordinary
+   * command. It does not reach `applyCommand` at all — `resolveHandBoundary`
+   * reports the attempt finished and `closeCompetition` writes the completion,
+   * marks the seat `left`, marks the session `completed` and PAYS THE REWARD.
+   * Its idempotency record is written on a different code path from every other
+   * command's, and its replay has to survive both of the closures it just made,
+   * which is why `findAppliedCommand` runs ahead of the session-closed check.
+   *
+   * If any of that were wrong, the retry would turn a lost reply into a second
+   * reward, a `SESSION_CLOSED` refusal, or a twenty-first hand of a twenty-hand
+   * challenge. So: same body, same answer, same wallet, one entry row.
+   */
+  it("replays the attempt's final command instead of paying a second reward", async () => {
+    const token = signToken(await createUser());
+    const before = await walletOf(token);
+    const opened = await start(token);
+
+    const played = await playOut(
+      token,
+      opened.body.gameId as string,
+      opened.body.seatId as string,
+      opened.body.publicState as PublicSnapshot,
+    );
+    expect(played.state.phase).toBe("SESSION_COMPLETE");
+    expect(played.lastCommand.type).toBe("NEXT_HAND");
+    const paid = await walletOf(token);
+    expect(paid).toBe(before + 1_000);
+
+    // Byte-identical, exactly as `callFunction` replays it after a 5xx.
+    const replay = await call("game-command", token, played.lastCommand);
+
+    expect(replay.status).toBe(200);
+    expect(replay.body.status).toBe("accepted");
+    // The FIRST committed result, not a recomputation: same snapshot, same
+    // version, same twenty hands.
+    expect(replay.body).toEqual(played.lastResponse);
+    expect((replay.body.publicState as PublicSnapshot).phase).toBe("SESSION_COMPLETE");
+    expect((replay.body.publicState as PublicSnapshot).handNumber).toBe(20);
+
+    // No second reward, and no second entry.
+    expect(await walletOf(token)).toBe(paid);
+    const entries = await fetch(`${REST}/daily_entries?select=status,score`, {
+      headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` },
+    });
+    expect((await entries.json()) as unknown[]).toHaveLength(1);
+
+    // And a DIFFERENT action id on the same finished session is refused rather
+    // than quietly accepted — the replay above is a replay, not an open door.
+    const impostor = await call("game-command", token, {
+      ...played.lastCommand,
+      clientActionId: crypto.randomUUID(),
+    });
+    expect(impostor.status).toBeGreaterThanOrEqual(400);
+    expect(await walletOf(token)).toBe(paid);
   }, 120_000);
 
   /**
@@ -1534,15 +1676,22 @@ suite("decisions and leaderboards", () => {
     let state = opened.body.publicState as PublicSnapshot;
     const phaseNow = (): string => state.phase;
 
+    // Kept so a caller can replay the LAST command exactly as it was sent —
+    // which is the only honest way to test what a lost reply does.
+    let lastCommand: Record<string, unknown> = {};
+    let lastResponse: Record<string, unknown> = {};
+
     const send = async (type: string, payload?: Record<string, unknown>) => {
-      const result = await call("game-command", token, {
+      lastCommand = {
         gameId,
         clientActionId: crypto.randomUUID(),
         type,
         ...(payload ? { payload } : {}),
         expectedVersion: state.version,
         clientSentAt: iso(),
-      });
+      };
+      const result = await call("game-command", token, lastCommand);
+      lastResponse = result.body;
       if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
       return result;
     };
