@@ -198,6 +198,13 @@ export interface Database {
       get_room_state: { Args: { p_room_id: string }; Returns: unknown };
       leave_room: { Args: { p_room_id: string }; Returns: void };
       set_room_ready: { Args: { p_room_id: string; p_ready: boolean }; Returns: void };
+      /**
+       * The host removing somebody from the LOBBY. It returns a boolean rather
+       * than raising, because every refusal — not the host, the table is
+       * already playing, no such room — has to be the same answer: a non-host
+       * must not learn from the difference whether the room exists.
+       */
+      remove_room_member: { Args: { p_room_id: string; p_user_id: string }; Returns: boolean };
       delete_own_account: {
         Args: Record<string, never>;
         Returns: void;

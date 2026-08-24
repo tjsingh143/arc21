@@ -5,10 +5,16 @@
  * surprising part: the chips here are the table's own, nothing is at stake from
  * the global wallet, and nothing won here can leave. That is the anti-collusion
  * rule, and a player who does not know it will assume the opposite.
+ *
+ * The seated half renders the specification's list for this screen exactly —
+ * room code, copy/share, host, seat list, ready states, invite friends, start,
+ * leave — plus the host's power to remove somebody while the table is still a
+ * lobby. Every one of those is the server's decision; what is here is the way
+ * to ask.
  */
 
-import { useCallback, useEffect, useMemo } from "react";
-import { ScrollView, StyleSheet, TextInput, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Pressable, ScrollView, Share, StyleSheet, TextInput, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -16,13 +22,27 @@ import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
 import { Button } from "../../src/components/ui/Button";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
-import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { useBorderColor } from "../../src/design/accessibility";
+import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
 import { useAuthStore } from "../../src/features/auth";
 import { selectFriends, useFriendsStore } from "../../src/features/friends";
 import { usePushRegistration } from "../../src/features/notifications";
 import { useSettings } from "../../src/features/settings/use-settings";
 import { useRoomInvites } from "../../src/features/rooms/use-room-invites";
-import { canStartTable, ROOM_CODE_LENGTH, useRoomsStore } from "../../src/features/rooms";
+import {
+  canRemoveMember,
+  canSetReady,
+  canStartTable,
+  describeReadiness,
+  isReady,
+  ROOM_CODE_LENGTH,
+  shareMessage,
+  useRoomsStore,
+} from "../../src/features/rooms";
+
+/** The specification's room settings: 2–5 human seats. */
+const SEAT_CHOICES = [2, 3, 4, 5] as const;
+const DEFAULT_SEATS = 5;
 
 export default function PrivateTableLobby() {
   const status = useRoomsStore((state) => state.status);
@@ -32,7 +52,10 @@ export default function PrivateTableLobby() {
   const createRoom = useRoomsStore((state) => state.createRoom);
   const joinRoom = useRoomsStore((state) => state.joinRoom);
   const refresh = useRoomsStore((state) => state.refresh);
+  const restore = useRoomsStore((state) => state.restore);
   const startTable = useRoomsStore((state) => state.startTable);
+  const setReady = useRoomsStore((state) => state.setReady);
+  const removeMember = useRoomsStore((state) => state.removeMember);
   const dealt = useRoomsStore((state) => state.dealt);
   const leave = useRoomsStore((state) => state.leave);
 
@@ -49,6 +72,9 @@ export default function PrivateTableLobby() {
   const offerPush = usePushRegistration((state) => state.offer);
   const { settings, update: updateSettings } = useSettings();
 
+  const [seats, setSeats] = useState<number>(DEFAULT_SEATS);
+  const [shareNotice, setShareNotice] = useState<string | null>(null);
+
   /*
    * Derived from subscribed state with `useMemo`, never by calling a store
    * getter during render: under the React Compiler a getter is memoised against
@@ -60,6 +86,23 @@ export default function PrivateTableLobby() {
     () => (seated ? canStartTable(seated, userId) : false),
     [seated, userId],
   );
+  const ready = useMemo(() => (seated ? isReady(seated, userId) : false), [seated, userId]);
+  const readyOffered = useMemo(
+    () => (seated ? canSetReady(seated, userId) : false),
+    [seated, userId],
+  );
+
+  /*
+   * "Loading/reconnect must preserve room code."
+   *
+   * Asked once, on mount, before anything else. Without it a host who force-quit
+   * came back to an empty lobby AND could not open another one — the server
+   * refuses a second live room — so the only way out was to wait thirty minutes
+   * for the first to expire.
+   */
+  useEffect(() => {
+    void restore();
+  }, [restore]);
 
   // A lobby is a waiting room: other people arrive while you look at it.
   useEffect(() => {
@@ -76,10 +119,27 @@ export default function PrivateTableLobby() {
    * happens to you while you are looking at something else.
    */
   const onCreate = useCallback(async () => {
-    await createRoom(5);
+    await createRoom(seats);
     const granted = await offerPush("created-private-table", settings);
     if (granted) await updateSettings(granted);
-  }, [createRoom, offerPush, settings, updateSettings]);
+  }, [createRoom, seats, offerPush, settings, updateSettings]);
+
+  /*
+   * The share sheet carries the CODE, and its own Copy action is the "copy"
+   * half of the specification's "copy/share" — which is why no clipboard
+   * dependency was added for it.
+   */
+  const onShare = useCallback(async (code: string) => {
+    setShareNotice(null);
+    try {
+      await Share.share({ message: shareMessage(code) });
+    } catch {
+      // Dismissing the sheet is not a failure, but a sheet that never opened
+      // leaves the player looking at an unchanged screen wondering what
+      // happened. The code is on screen either way.
+      setShareNotice("The share sheet could not be opened. The code above can be typed in by hand.");
+    }
+  }, []);
 
   // The invite list needs friends, and a seated lobby is the only place it shows.
   useEffect(() => {
@@ -94,6 +154,20 @@ export default function PrivateTableLobby() {
   const invitable = useMemo(
     () => friends.filter((friend) => !seatedIds.has(friend.id)),
     [friends, seatedIds],
+  );
+
+  const members = useMemo(
+    () =>
+      (seated?.members ?? []).map((member) => ({
+        key: member.userId,
+        label: member.displayName,
+        seat: member.seatIndex + 1,
+        isHost: member.isHost,
+        isReady: member.isReady,
+        isYou: member.userId === userId,
+        removable: seated ? canRemoveMember(seated, userId, member.userId) : false,
+      })),
+    [seated, userId],
   );
 
   /*
@@ -156,6 +230,9 @@ export default function PrivateTableLobby() {
         {seated ? (
           <SeatedLobby
             code={seated.room.code}
+            readiness={describeReadiness(seated)}
+            shareNotice={shareNotice}
+            onShare={() => void onShare(seated.room.code)}
             invitable={invitable.map((friend) => ({
               id: friend.id,
               label: friend.displayName,
@@ -164,26 +241,33 @@ export default function PrivateTableLobby() {
             }))}
             inviteNotice={inviteNotice}
             onInvite={(friendId) => void invite(seated.room.id, friendId)}
-            members={seated.members.map((member) => ({
-              key: member.userId,
-              label: member.displayName,
-              seat: member.seatIndex + 1,
-              isHost: member.isHost,
-            }))}
+            members={members}
+            onRemove={(memberId) => void removeMember(memberId)}
             maxSeats={seated.room.maxSeats}
+            ready={ready}
+            readyOffered={readyOffered}
+            onToggleReady={() => void setReady(!ready)}
             startable={startable}
             onStart={() => void startTable()}
             onLeave={() => void leave()}
           />
         ) : (
           <View style={styles.actions}>
-            <Button
-              label="Open a table"
-              testID="room-create"
-              accessibilityHint="Opens a table and gives you a code to share"
-              onPress={() => void onCreate()}
-              disabled={status.kind === "working"}
-            />
+            <SurfaceCard>
+              <AppText variant="bodyStrong">Open a table</AppText>
+              <SeatChoice value={seats} onChange={setSeats} />
+              <AppText variant="caption" color="textDisabled">
+                Arc Standard rules. You can start once a second player has
+                arrived.
+              </AppText>
+              <Button
+                label="Open a table"
+                testID="room-create"
+                accessibilityHint="Opens a table and gives you a code to share"
+                onPress={() => void onCreate()}
+                disabled={status.kind === "working"}
+              />
+            </SurfaceCard>
 
             <SurfaceCard>
               <AppText variant="bodyStrong">Join with a code</AppText>
@@ -221,13 +305,66 @@ export default function PrivateTableLobby() {
   );
 }
 
+/** How many seats the table has. Fixed once the room is open. */
+function SeatChoice({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+  const borderColor = useBorderColor();
+  return (
+    <View>
+      <AppText variant="caption" color="textSecondary">
+        Seats
+      </AppText>
+      <View style={styles.seatChoices} accessibilityRole="radiogroup">
+        {SEAT_CHOICES.map((count) => {
+          const selected = count === value;
+          return (
+            <Pressable
+              key={count}
+              onPress={() => onChange(count)}
+              testID={`room-seats-${count}`}
+              accessibilityRole="radio"
+              accessibilityLabel={`${count} seats`}
+              accessibilityState={{ selected }}
+              style={[
+                styles.seatChoice,
+                { borderColor },
+                selected ? styles.seatChoiceSelected : null,
+              ]}
+            >
+              <AppText variant="bodyStrong" color={selected ? "textPrimary" : "textSecondary"}>
+                {count}
+              </AppText>
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+interface SeatedMember {
+  key: string;
+  label: string;
+  seat: number;
+  isHost: boolean;
+  isReady: boolean;
+  isYou: boolean;
+  removable: boolean;
+}
+
 interface SeatedLobbyProps {
   code: string;
+  readiness: string;
+  shareNotice: string | null;
+  onShare: () => void;
   invitable: Array<{ id: string; label: string; invited: boolean; busy: boolean }>;
   inviteNotice: string | null;
   onInvite: (friendId: string) => void;
-  members: Array<{ key: string; label: string; seat: number; isHost: boolean }>;
+  members: SeatedMember[];
+  onRemove: (userId: string) => void;
   maxSeats: number;
+  ready: boolean;
+  readyOffered: boolean;
+  onToggleReady: () => void;
   startable: boolean;
   onStart: () => void;
   onLeave: () => void;
@@ -235,11 +372,18 @@ interface SeatedLobbyProps {
 
 function SeatedLobby({
   code,
+  readiness,
+  shareNotice,
+  onShare,
   invitable,
   inviteNotice,
   onInvite,
   members,
+  onRemove,
   maxSeats,
+  ready,
+  readyOffered,
+  onToggleReady,
   startable,
   onStart,
   onLeave,
@@ -253,21 +397,52 @@ function SeatedLobby({
         <AppText variant="display" numeric testID="room-code">
           {code}
         </AppText>
+        <Button
+          label="Share code"
+          variant="secondary"
+          testID="room-share"
+          accessibilityHint="Opens the share sheet with this table's code"
+          onPress={onShare}
+        />
+        {shareNotice ? (
+          <AppText variant="caption" color="warning" testID="room-share-notice">
+            {shareNotice}
+          </AppText>
+        ) : null}
       </SurfaceCard>
 
       <SurfaceCard>
         <AppText variant="bodyStrong">
           {members.length} of {maxSeats} seated
         </AppText>
+        <AppText variant="caption" color="textSecondary" testID="room-readiness">
+          {readiness}
+        </AppText>
         {members.map((member) => (
           <View key={member.key} style={styles.seatRow}>
-            <AppText variant="body">
-              {member.seat}. {member.label}
-            </AppText>
-            {member.isHost ? (
-              <AppText variant="caption" color="textSecondary">
-                Host
+            <View style={styles.seatWho}>
+              <AppText variant="body">
+                {member.seat}. {member.label}
+                {member.isYou ? " (you)" : ""}
               </AppText>
+              <AppText
+                variant="caption"
+                color={member.isReady ? "success" : "textDisabled"}
+                testID={`room-member-ready-${member.seat}`}
+              >
+                {member.isHost ? "Host · " : ""}
+                {member.isReady ? "Ready" : "Not ready"}
+              </AppText>
+            </View>
+            {member.removable ? (
+              <Button
+                label="Remove"
+                variant="quiet"
+                size="medium"
+                testID={`room-remove-${member.seat}`}
+                accessibilityHint={`Removes ${member.label} from this table`}
+                onPress={() => onRemove(member.key)}
+              />
             ) : null}
           </View>
         ))}
@@ -277,6 +452,21 @@ function SeatedLobby({
           </AppText>
         ) : null}
       </SurfaceCard>
+
+      {/*
+        Readiness tells the host who is looking at the screen. It is deliberately
+        not a gate: the specification's start rule is two human players, so a
+        player who never touches this is still dealt in.
+      */}
+      {readyOffered ? (
+        <Button
+          label={ready ? "I'm not ready" : "I'm ready"}
+          variant="secondary"
+          testID="room-ready"
+          accessibilityHint="Tells everyone else whether you are ready to start"
+          onPress={onToggleReady}
+        />
+      ) : null}
 
       {/*
         Invites go to CONFIRMED FRIENDS only, and the server checks that again.
@@ -323,7 +513,7 @@ function SeatedLobby({
 
       {/*
         Only the host deals, and the server enforces it independently — this
-        button being hidden is a courtesy, not the control.
+        button being disabled is a courtesy, not the control.
       */}
       <Button
         label="Deal the first hand"
@@ -367,6 +557,22 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "center",
     paddingVertical: spacing.xs,
+    gap: spacing.md,
+  },
+  seatWho: { flexShrink: 1, gap: 2 },
+  seatChoices: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
+  seatChoice: {
+    minWidth: MIN_TOUCH_TARGET,
+    minHeight: MIN_TOUCH_TARGET,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: radius.small,
+    borderWidth: 1,
+    backgroundColor: colors.surfaceRaised,
+  },
+  seatChoiceSelected: {
+    backgroundColor: colors.accentSoft,
+    borderColor: colors.accent,
   },
   codeField: {
     backgroundColor: colors.surfaceRaised,

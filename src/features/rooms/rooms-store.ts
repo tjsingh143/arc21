@@ -41,8 +41,21 @@ export interface RoomsStoreState {
   joinRoom: () => Promise<void>;
   /** `roomId` is passed only when entering a room the store does not yet hold. */
   refresh: (roomId?: string) => Promise<void>;
+  /**
+   * Put the player back at the table they are already at, if any.
+   *
+   * Called when the lobby mounts. "Loading/reconnect must preserve room code"
+   * is the specification's line for this screen, and until this existed a host
+   * who force-quit the app was stuck: the lobby came back empty and
+   * `create_private_room` refused with "you already have a table open".
+   */
+  restore: () => Promise<void>;
   /** Deal the first hand. Only the host may; the server enforces it. */
   startTable: () => Promise<void>;
+  /** This player's own ready flag. Informs the host; never gates the deal. */
+  setReady: (ready: boolean) => Promise<void>;
+  /** Host only, lobby only. The server checks both again. */
+  removeMember: (userId: string) => Promise<void>;
   leave: () => Promise<void>;
 }
 
@@ -159,6 +172,19 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     }
   },
 
+  restore: async () => {
+    // Never over a room already in hand: the poll is more current than this,
+    // and a restore racing it would flicker the lobby back to an older reading.
+    if (get().status.kind === "seated") return;
+
+    const found = await activeRoomsGateway().findOpenRoom();
+    // Silent on failure, in both directions. This runs on mount, unasked, and a
+    // player who has no table open must see the ordinary create/join screen —
+    // not an error about a lookup they did not make.
+    if (!found.ok || found.room === null) return;
+    await get().refresh(found.room.id);
+  },
+
   startTable: async () => {
     const current = get().status;
     if (current.kind !== "seated") return;
@@ -175,6 +201,46 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     set({ dealt: { gameId: started.gameId, seatId: started.seatId } });
   },
 
+  setReady: async (ready) => {
+    const current = get().status;
+    if (current.kind !== "seated") return;
+
+    const result = await activeRoomsGateway().setReady(current.state.room.id, ready);
+    if (!result.ok) {
+      // Being told you are not at the table is the removal arriving; drop to
+      // the entry screen rather than leaving a lobby on screen that is not
+      // yours any more.
+      if (result.reason === "refused") {
+        set({ status: { kind: "idle" }, dealt: null, notice: result.message });
+        return;
+      }
+      set({ notice: result.message });
+      return;
+    }
+    // Re-read rather than patch: every other client sees the server's row, and
+    // a local flag that disagreed with it would be the one thing on this screen
+    // that was not the server's answer.
+    await get().refresh(current.state.room.id);
+  },
+
+  removeMember: async (userId) => {
+    const current = get().status;
+    if (current.kind !== "seated") return;
+
+    set({ notice: null });
+    const result = await activeRoomsGateway().removeMember(current.state.room.id, userId);
+    if (!result.ok) {
+      set({ notice: result.message });
+      return;
+    }
+    if (!result.removed) {
+      // The server refuses without explaining, so the client says the one thing
+      // that is true of every refusal it can reach from this screen.
+      set({ notice: "That player could not be removed. A table that has started belongs to the server." });
+    }
+    await get().refresh(current.state.room.id);
+  },
+
   leave: async () => {
     const current = get().status;
     if (current.kind !== "seated") return;
@@ -185,16 +251,3 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     set({ status: { kind: "idle" }, dealt: null, codeInput: "", notice: null });
   },
 }));
-
-/**
- * Can this table be dealt?
- *
- * Read from a snapshot rather than by calling into the store, because calling a
- * getter during render freezes the value under the React Compiler — a mistake
- * this project has already shipped once.
- */
-export function canStartTable(state: RoomState, userId: string | null): boolean {
-  if (state.room.status !== "lobby") return false;
-  if (state.members.length < 2) return false;
-  return state.members.some((member) => member.isHost && member.userId === userId);
-}

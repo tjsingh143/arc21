@@ -12,10 +12,39 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(19);
+select plan(21);
 
 select has_table('public', 'rooms', 'rooms exist');
 select has_table('public', 'room_members', 'seats at a room exist');
+
+-- --------------------------------------------------------------------------
+-- A seat is occupied only while somebody is sitting in it
+-- --------------------------------------------------------------------------
+-- `leave_room` and `remove_room_member` both KEEP the member row, and both keep
+-- its `seat_index`. A whole-table `unique (room_id, seat_index)` therefore made
+-- a vacated seat unfillable: the next player to join was allocated the free
+-- seat number, collided with the departed member's row and got 23505 at a table
+-- with a seat visibly empty. Asserted here rather than only in the integration
+-- test because the thing that must not come back is a SCHEMA decision.
+
+select is(
+  (select count(*)::int
+   from pg_constraint c
+   join pg_class t on t.oid = c.conrelid
+   join pg_namespace n on n.oid = t.relnamespace
+   where n.nspname = 'public' and t.relname = 'room_members' and c.contype = 'u'
+     and pg_get_constraintdef(c.oid) = 'UNIQUE (room_id, seat_index)'),
+  0,
+  'no whole-table unique on (room_id, seat_index) — a departed member holds no seat'
+);
+
+select matches(
+  (select indexdef from pg_indexes
+   where schemaname = 'public' and tablename = 'room_members'
+     and indexname = 'room_members_live_seat_idx'),
+  $re$WHERE \(status = 'joined'$re$,
+  'two JOINED members of one room still cannot share a seat'
+);
 
 -- --------------------------------------------------------------------------
 -- Room codes

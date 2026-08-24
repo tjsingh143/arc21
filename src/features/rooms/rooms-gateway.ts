@@ -47,11 +47,42 @@ export type RoomSeatOutcome =
   | { readonly ok: true; readonly seatId: string | null }
   | RoomsFailure;
 
+/** `room: null` is a real answer — this player has no table open. */
+export type RoomLookupOutcome = { readonly ok: true; readonly room: Room | null } | RoomsFailure;
+
+/**
+ * `removed: false` is the server's answer to every refusal it will not explain:
+ * not the host, the room is playing, no such room, no such member. It is not an
+ * error, and the lobby renders it as "that did not happen" rather than as a
+ * failure of the request.
+ */
+export type RoomRemovalOutcome = { readonly ok: true; readonly removed: boolean } | RoomsFailure;
+
 export interface RoomsGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   create(maxSeats: number): Promise<RoomOutcome>;
   join(code: string): Promise<RoomOutcome>;
   read(roomId: string): Promise<RoomStateOutcome>;
+  /**
+   * The table this player is already at, if there is one.
+   *
+   * "Loading/reconnect must preserve room code" is the specification's line for
+   * this screen, and before this existed a host who force-quit was STUCK: the
+   * lobby came back empty, `create_private_room` refused with "you already have
+   * a table open", and the only way out was waiting thirty minutes for the room
+   * to expire.
+   *
+   * A plain select, not an RPC: `rooms_select_member` already restricts the
+   * table to rooms the caller is a joined member of, so the policy is the
+   * lookup. The expiry half of the filter is evaluated by POSTGRES — `now()`
+   * reaches the database as a value — because a device clock is not something
+   * to decide a live table on.
+   */
+  findOpenRoom(): Promise<RoomLookupOutcome>;
+  /** Set or clear this player's ready flag in the lobby. */
+  setReady(roomId: string, ready: boolean): Promise<RoomVoidOutcome>;
+  /** Host only, lobby only. The server checks both again. */
+  removeMember(roomId: string, userId: string): Promise<RoomRemovalOutcome>;
   /** Deal the first hand. The server rejects anyone but the host. */
   start(roomId: string): Promise<RoomStartOutcome>;
   /**
@@ -89,6 +120,30 @@ const UNREACHABLE = "Could not reach the server, so the table could not be opene
 const NO_SUCH_TABLE = "That table is not available.";
 const SIGNED_OUT =
   "Private tables need an account, so your seat survives a reconnect. Practice stays available without one.";
+/**
+ * What being removed reads as.
+ *
+ * `get_room_state` raises P0002 for a player who is not a joined member, which
+ * is the same answer for "the host removed you", "you left on another device"
+ * and "the room closed". The player is off the table either way, and this is
+ * the sentence that says so — the server's own lower-case wording is a
+ * developer message, not a player one.
+ */
+const NO_LONGER_SEATED = "You are no longer at that table.";
+/** PostgreSQL `no_data_found`; PostgREST renders it as HTTP 404. */
+const NOT_A_MEMBER = "P0002";
+
+/**
+ * The restore filter, as one exported string.
+ *
+ * Exported so `tests/server/private-rooms.integration.test.ts` can send THIS
+ * expression to the real PostgREST rather than a paraphrase of it. The `now()`
+ * is not a client value: PostgREST passes it through and Postgres evaluates it,
+ * so the expiry comparison is made on the database's clock. A test that
+ * rewrote the string by hand would prove a query the app does not make.
+ */
+export const OPEN_ROOM_FILTER =
+  "status.in.(active,finishing),and(status.eq.lobby,expires_at.gt.now())";
 
 export function createUnconfiguredRoomsGateway(message: string): RoomsGateway {
   const refuse = async () => ({ ok: false as const, reason: "not-configured" as const, message });
@@ -97,6 +152,9 @@ export function createUnconfiguredRoomsGateway(message: string): RoomsGateway {
     create: refuse,
     join: refuse,
     read: refuse,
+    findOpenRoom: refuse,
+    setReady: refuse,
+    removeMember: refuse,
     start: refuse,
     findSeat: refuse,
     leave: refuse,
@@ -170,11 +228,81 @@ export function createSupabaseRoomsGateway(
 
       const result = await bounded(client.rpc("get_room_state", { p_room_id: roomId }));
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
-      if (result.error) return { ok: false, reason: "refused", message: result.error.message };
+      if (result.error) {
+        // The one refusal a player actually experiences: they are not a member
+        // any more. Being removed by the host arrives here, on the next poll.
+        const message =
+          result.error.code === NOT_A_MEMBER ? NO_LONGER_SEATED : result.error.message;
+        return { ok: false, reason: "refused", message };
+      }
 
       const state = toRoomState(result.data);
       if (!state) return { ok: false, reason: "refused", message: "That table is no longer open." };
       return { ok: true, state };
+    },
+
+    async findOpenRoom(): Promise<RoomLookupOutcome> {
+      const denied = await requireSession();
+      if (denied) return denied;
+
+      /*
+       * `rooms_select_member` is the whole filter for WHOSE room this is: it
+       * admits exactly the rooms the caller is a joined member of, so no user
+       * id appears here and none is trusted.
+       *
+       * The status half deserves its own sentence. A LOBBY has a 30-minute TTL
+       * and an unswept expired one must not be restored, or a player is put
+       * back into a dead waiting room. A room that is PLAYING carries the same
+       * `expires_at` it was created with — that column is the lobby timeout,
+       * not the table's — so filtering an active table on it would strand
+       * anybody whose game outlived its lobby, which is every real game.
+       */
+      const result = await bounded(
+        client
+          .from("rooms")
+          .select("id,code,host_user_id,max_seats,status,game_session_id")
+          .or(OPEN_ROOM_FILTER)
+          .order("created_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      if (result.error) return { ok: false, reason: "refused", message: result.error.message };
+      if (result.data === null) return { ok: true, room: null };
+
+      const room = toRoom(result.data);
+      // A row that will not parse is not a room to put somebody back into.
+      return { ok: true, room };
+    },
+
+    async setReady(roomId: string, ready: boolean): Promise<RoomVoidOutcome> {
+      const denied = await requireSession();
+      if (denied) return denied;
+
+      const result = await bounded(
+        client.rpc("set_room_ready", { p_room_id: roomId, p_ready: ready }),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      if (result.error) {
+        const message =
+          result.error.code === NOT_A_MEMBER ? NO_LONGER_SEATED : result.error.message;
+        return { ok: false, reason: "refused", message };
+      }
+      return { ok: true };
+    },
+
+    async removeMember(roomId: string, userId: string): Promise<RoomRemovalOutcome> {
+      const denied = await requireSession();
+      if (denied) return denied;
+
+      const result = await bounded(
+        client.rpc("remove_room_member", { p_room_id: roomId, p_user_id: userId }),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      if (result.error) return { ok: false, reason: "refused", message: result.error.message };
+      // The function returns a boolean and refuses by returning `false` rather
+      // than by raising, so that a non-host learns nothing about the room.
+      return { ok: true, removed: result.data === true };
     },
 
     /**

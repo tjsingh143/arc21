@@ -26,14 +26,29 @@ export {
   type RoomOutcome,
   type RoomStateOutcome,
   type RoomStartOutcome,
+  type RoomLookupOutcome,
+  type RoomRemovalOutcome,
 } from "./rooms-gateway.js";
 
 export {
   activeRoomsGateway,
-  canStartTable,
   setRoomsGateway,
   useRoomsStore,
   type RoomsStatus,
   type RoomsStoreState,
 } from "./rooms-store.js";
+
+/**
+ * The lobby's predicates live apart from both the store and the screen, so the
+ * question "may this control be offered?" can be asserted without a renderer.
+ */
+export {
+  canRemoveMember,
+  canSetReady,
+  canStartTable,
+  describeReadiness,
+  isHost,
+  isReady,
+  shareMessage,
+} from "./lobby-affordance.js";
 export { useRoomInvites, type RoomInvitesState } from "./use-room-invites.js";

@@ -1,0 +1,231 @@
+# Arc 21 — a private table lobby, against a REAL server.
+#
+# THE GAP THIS FILLS. Every other flow in this repository runs against an
+# UNCONFIGURED build: `every-screen.yaml` asserts ".*no server configured.*" in
+# five places, which is only true while `EXPO_PUBLIC_SUPABASE_URL` is unset. So
+# until this file existed, nothing had ever walked a screen whose content comes
+# from the server, no flow had ever signed in, and the private lobby — the one
+# feature the Definition of Done names twice ("create a private room", "have
+# another real client join") — had never been exercised end to end by anything
+# but a person.
+#
+# WHAT IT PROVES, in order:
+#   * an account can sign in and reach Home;
+#   * the lobby can open a table and the server answers with a code;
+#   * the ready toggle CHANGES THE COUNT — asserted on the rendered count, not
+#     on the tap, because a Maestro step that COMPLETED did not necessarily do
+#     anything;
+#   * the host is offered no Remove against themselves;
+#   * "Loading/reconnect must preserve room code": the app is KILLED and
+#     relaunched, and the same code comes back;
+#   * leaving returns the table and the create/join screen comes back.
+#
+# BEFORE RUNNING — three things, and the flow cannot do any of them itself:
+#   supabase start                       # the account and the room are real
+#   npx tsx scripts/e2e-account.ts       # creates the account, fills the
+#                                        # simulator pasteboard with its
+#                                        # credential (password == email)
+#   .env.local must be PRESENT           # the opposite of every-screen.yaml,
+#                                        # which needs it moved aside
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/private-lobby.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable, and above 40
+# the XCUITest runner starts losing view-hierarchy snapshots, which reads as an
+# app regression and is not one.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+# The deep-link confirmation, if one is left over from an earlier run.
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# --- Sign in ---------------------------------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 60000
+
+# Tapped inside a `repeat`: a tap issued while a screen is still settling can be
+# swallowed, and a single tap then leaves the flow sitting on onboarding until
+# its wait expires — which looks like a broken app.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-sign-in"
+          commands:
+            - tapOn:
+                id: "onboarding-sign-in"
+
+- extendedWaitUntil:
+    visible:
+      id: "auth-email"
+    timeout: 30000
+
+# PASTED, not typed. `inputText` drops characters on this simulator, and a
+# half-typed password fails a sign-in in a way that reads as a broken auth
+# screen rather than a broken test. `scripts/e2e-account.ts` puts the credential
+# on the pasteboard, and the password IS the email so one value serves both.
+- longPressOn:
+    id: "auth-email"
+- tapOn: "Paste"
+- longPressOn:
+    id: "auth-password"
+- tapOn: "Paste"
+
+# The paste LANDED — asserted on the field, because a step that completed did
+# not necessarily do anything. The password cannot be read back; the email can,
+# and the two carry the same value.
+- assertVisible: "e2e-lobby@arc21.test"
+
+- tapOn:
+    id: "auth-submit"
+
+# iOS offers to save the password to the keychain. It is a SYSTEM alert over the
+# app, it can arrive a screen or two later than the sign-in that caused it, and
+# while it is up every assertion underneath it fails — which reads as a screen
+# that did not render. Dismissed here and again after the deep link, because it
+# has been seen at both points.
+- runFlow:
+    when:
+      visible: "Save Password?"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 60000
+
+# --- The lobby -------------------------------------------------------------
+# A deep link, rather than tapping through the tab bar: several runs were lost
+# to selectors that "COMPLETED" while the app sat on the wrong tab.
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- runFlow:
+    when:
+      visible: "Save Password?"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible:
+      id: "room-seats-3"
+    timeout: 30000
+- assertVisible: ".*Everyone starts with 5,000 table chips.*"
+
+# 2-5 seats is a specification field, not a constant. Three, so the assertion
+# below is about a choice this flow made rather than about the default.
+- tapOn:
+    id: "room-seats-3"
+- tapOn:
+    id: "room-create"
+
+# The server answered with a room. Six characters from the unambiguous alphabet.
+- extendedWaitUntil:
+    visible:
+      id: "room-code"
+    timeout: 30000
+- assertVisible:
+    id: "room-code"
+    text: "[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}"
+- assertVisible: "1 of 3 seated"
+- assertVisible:
+    id: "room-share"
+
+# --- Ready states ----------------------------------------------------------
+# The host is ready on creation, which is the server's doing and not the
+# client's. Asserted before touching anything.
+- assertVisible: "1 of 1 ready"
+
+- tapOn:
+    id: "room-ready"
+# The COUNT changed, which is the only evidence that the tap reached the server
+# and the server's answer came back. `set_room_ready` returns void, so a client
+# that patched its own copy would look identical here and be wrong.
+- extendedWaitUntil:
+    visible: "0 of 1 ready"
+    timeout: 15000
+
+- tapOn:
+    id: "room-ready"
+- extendedWaitUntil:
+    visible: "1 of 1 ready"
+    timeout: 15000
+
+# The host is never offered Remove against themselves — that is `leave_room`,
+# which migrates the host role. Seat 1 is the host, sitting alone.
+- assertNotVisible:
+    id: "room-remove-1"
+
+# Nobody else has arrived, so the table cannot be dealt yet. This is the
+# specification's minimum-start rule rendered.
+#
+# SCROLLED to, not merely asserted. `assertVisible` sees the rendered viewport,
+# and the seated lobby is now longer than one screen — the caption sits under
+# the invite card. A plain assertion here failed against a screen that was
+# correct, which is the same trap as `tapOn` not scrolling.
+- scrollUntilVisible:
+    element:
+      text: "The host deals when everyone has arrived."
+    direction: DOWN
+    timeout: 20000
+
+# --- Reconnect -------------------------------------------------------------
+# "Loading/reconnect must preserve room code." Killed and relaunched WITHOUT
+# clearing state — a force-quit, which is what a player does. Before the restore
+# existed this came back to an empty lobby, and the host could not open another
+# table either: the server refuses a second live room, so the only way out was
+# to wait thirty minutes for the first to expire.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible:
+      id: "room-code"
+    timeout: 45000
+- assertVisible: "1 of 3 seated"
+
+# --- Leaving ---------------------------------------------------------------
+# Scrolled to first: `tapOn` does not scroll, and a title below the fold is in
+# the accessibility tree — so the tap would "succeed", land on empty space, and
+# the flow would carry on against an unchanged screen.
+- scrollUntilVisible:
+    element:
+      id: "room-leave"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "room-leave"
+- extendedWaitUntil:
+    visible:
+      id: "room-create"
+    timeout: 30000
+- assertVisible: "Join with a code"

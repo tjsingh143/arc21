@@ -15,23 +15,47 @@ import {
   setRoomsGateway,
   useRoomsStore,
   type RoomOutcome,
+  type RoomState,
   type RoomsGateway,
 } from "../../src/features/rooms/index.js";
+
+const UNUSED = { ok: false, reason: "unreachable", message: "not used in this test" } as const;
+
+/**
+ * Every method refuses unless the test says otherwise.
+ *
+ * One base rather than a fresh literal per suite: a gateway is a contract with
+ * eight methods now, and a fake spelled out by hand goes stale the moment a
+ * ninth arrives — which is how a store test ends up proving something about an
+ * interface the app no longer has.
+ */
+function fakeGateway(overrides: Partial<RoomsGateway> = {}): RoomsGateway {
+  return {
+    kind: "fake",
+    create: async () => UNUSED,
+    join: async () => UNUSED,
+    read: async () => UNUSED,
+    findOpenRoom: async () => UNUSED,
+    setReady: async () => UNUSED,
+    removeMember: async () => UNUSED,
+    start: async () => UNUSED,
+    findSeat: async () => UNUSED,
+    leave: async () => UNUSED,
+    ...overrides,
+  };
+}
 
 function gateway(response: RoomOutcome): RoomsGateway & { joinCalls: string[] } {
   const joinCalls: string[] = [];
   return {
-    kind: "fake",
+    ...fakeGateway({
+      create: async () => response,
+      join: async (code) => {
+        joinCalls.push(code);
+        return response;
+      },
+    }),
     joinCalls,
-    create: async () => response,
-    join: async (code) => {
-      joinCalls.push(code);
-      return response;
-    },
-    read: async () => ({ ok: false, reason: "unreachable", message: "not used in this test" }),
-    start: async () => ({ ok: false, reason: "unreachable", message: "not used in this test" }),
-    findSeat: async () => ({ ok: false, reason: "unreachable", message: "not used in this test" }),
-    leave: async () => ({ ok: false, reason: "unreachable", message: "not used in this test" }),
   };
 }
 
@@ -109,32 +133,27 @@ describe("following the host into a dealt table", () => {
   ): RoomsGateway & { findSeatCalls: string[] } {
     const findSeatCalls: string[] = [];
     return {
-      kind: "fake",
-      findSeatCalls,
-      create: async () => ({ ok: false, reason: "unreachable", message: "unused" }),
-      join: async () => ({ ok: false, reason: "unreachable", message: "unused" }),
-      read: async () => ({
-        ok: true,
-        state: {
-          room: {
-            id: ROOM_ID,
-            code: "ABCDEF",
-            hostUserId: "22222222-2222-4222-8222-222222222222",
-            maxSeats: 3,
-            status: gameSessionId === null ? "lobby" : "active",
-            gameSessionId,
+      ...fakeGateway({
+        read: async () => ({
+          ok: true,
+          state: {
+            room: {
+              id: ROOM_ID,
+              code: "ABCDEF",
+              hostUserId: "22222222-2222-4222-8222-222222222222",
+              maxSeats: 3,
+              status: gameSessionId === null ? "lobby" : "active",
+              gameSessionId,
+            },
+            members: [],
           },
-          members: [],
+        }),
+        findSeat: async (id) => {
+          findSeatCalls.push(id);
+          return seat.ok ? { ok: true, seatId: seat.seatId } : UNUSED;
         },
       }),
-      start: async () => ({ ok: false, reason: "unreachable", message: "unused" }),
-      findSeat: async (id) => {
-        findSeatCalls.push(id);
-        return seat.ok
-          ? { ok: true, seatId: seat.seatId }
-          : { ok: false, reason: "unreachable", message: "unused" };
-      },
-      leave: async () => ({ ok: false, reason: "unreachable", message: "unused" }),
+      findSeatCalls,
     };
   }
 
@@ -181,5 +200,229 @@ describe("following the host into a dealt table", () => {
 
     // One lookup, not one per three-second poll for as long as the table runs.
     expect(spy.findSeatCalls).toEqual([SESSION_ID]);
+  });
+});
+
+/**
+ * Reconnecting to a table you are already at.
+ *
+ * "Loading/reconnect must preserve room code" is the specification's line for
+ * this screen, and it was not true: the store started idle every time the lobby
+ * mounted. For a HOST that was not merely a lost code, it was a dead end —
+ * `create_private_room` refuses a second live room, so the screen offered
+ * "Open a table", the server answered "you already have a table open", and the
+ * player's only way out was to wait thirty minutes for the room to expire.
+ */
+describe("restoring the table this player is already at", () => {
+  const ROOM_ID = "55555555-5555-4555-8555-555555555555";
+
+  function roomState(): RoomState {
+    return {
+      room: {
+        id: ROOM_ID,
+        code: "QRSTUV",
+        hostUserId: "22222222-2222-4222-8222-222222222222",
+        maxSeats: 4,
+        status: "lobby",
+        gameSessionId: null,
+      },
+      members: [],
+    };
+  }
+
+  it("puts the player back in their open room, code and all", async () => {
+    setRoomsGateway(
+      fakeGateway({
+        findOpenRoom: async () => ({ ok: true, room: roomState().room }),
+        read: async () => ({ ok: true, state: roomState() }),
+      }),
+    );
+
+    await useRoomsStore.getState().restore();
+
+    const status = useRoomsStore.getState().status;
+    expect(status.kind).toBe("seated");
+    expect(status.kind === "seated" ? status.state.room.code : null).toBe("QRSTUV");
+  });
+
+  it("leaves the create/join screen alone when there is no room to restore", async () => {
+    const reads: string[] = [];
+    setRoomsGateway(
+      fakeGateway({
+        findOpenRoom: async () => ({ ok: true, room: null }),
+        read: async (id) => {
+          reads.push(id);
+          return UNUSED;
+        },
+      }),
+    );
+
+    await useRoomsStore.getState().restore();
+
+    expect(useRoomsStore.getState().status.kind).toBe("idle");
+    expect(reads).toHaveLength(0);
+  });
+
+  it("says nothing when the lookup fails — it runs unasked, on mount", async () => {
+    setRoomsGateway(
+      fakeGateway({
+        findOpenRoom: async () => ({ ok: false, reason: "unreachable", message: "offline" }),
+      }),
+    );
+
+    await useRoomsStore.getState().restore();
+
+    expect(useRoomsStore.getState().status.kind).toBe("idle");
+    // An error about a lookup the player never made is worse than no answer.
+    expect(useRoomsStore.getState().notice).toBeNull();
+  });
+
+  it("does not overwrite a room already in hand", async () => {
+    const lookups: number[] = [];
+    useRoomsStore.setState({ status: { kind: "seated", state: roomState() } });
+    setRoomsGateway(
+      fakeGateway({
+        findOpenRoom: async () => {
+          lookups.push(1);
+          return { ok: true, room: null };
+        },
+      }),
+    );
+
+    await useRoomsStore.getState().restore();
+
+    expect(lookups).toHaveLength(0);
+  });
+});
+
+/**
+ * Ready states, and the host's power to remove somebody.
+ *
+ * Both round-trip through the server rather than being patched locally: every
+ * other client renders the row the database holds, and a local flag that
+ * disagreed with it would be the one thing on this screen that was not the
+ * server's answer.
+ */
+describe("the lobby's two remaining controls", () => {
+  const ROOM_ID = "66666666-6666-4666-8666-666666666666";
+  const HOST = "22222222-2222-4222-8222-222222222222";
+  const GUEST = "77777777-7777-4777-8777-777777777777";
+
+  function state(guestReady: boolean): RoomState {
+    return {
+      room: {
+        id: ROOM_ID,
+        code: "WXYZ23",
+        hostUserId: HOST,
+        maxSeats: 4,
+        status: "lobby",
+        gameSessionId: null,
+      },
+      members: [
+        {
+          userId: HOST,
+          username: "host",
+          displayName: "Host",
+          seatIndex: 0,
+          isReady: true,
+          isHost: true,
+        },
+        {
+          userId: GUEST,
+          username: "guest",
+          displayName: "Guest",
+          seatIndex: 1,
+          isReady: guestReady,
+          isHost: false,
+        },
+      ],
+    };
+  }
+
+  beforeEach(() => {
+    useRoomsStore.setState({ status: { kind: "seated", state: state(false) } });
+  });
+
+  it("sends the ready flag and renders the server's answer, not the request", async () => {
+    const sent: boolean[] = [];
+    setRoomsGateway(
+      fakeGateway({
+        setReady: async (_room, ready) => {
+          sent.push(ready);
+          return { ok: true };
+        },
+        read: async () => ({ ok: true, state: state(true) }),
+      }),
+    );
+
+    await useRoomsStore.getState().setReady(true);
+
+    expect(sent).toEqual([true]);
+    const status = useRoomsStore.getState().status;
+    const guest =
+      status.kind === "seated"
+        ? status.state.members.find((member) => member.userId === GUEST)
+        : undefined;
+    expect(guest?.isReady).toBe(true);
+  });
+
+  it("drops to the entry screen when readiness is refused — that is the removal arriving", async () => {
+    setRoomsGateway(
+      fakeGateway({
+        setReady: async () => ({
+          ok: false,
+          reason: "refused",
+          message: "You are no longer at that table.",
+        }),
+      }),
+    );
+
+    await useRoomsStore.getState().setReady(true);
+
+    expect(useRoomsStore.getState().status.kind).toBe("idle");
+    expect(useRoomsStore.getState().notice).toMatch(/no longer at that table/i);
+  });
+
+  it("removes a member and re-reads the room", async () => {
+    const removed: string[] = [];
+    setRoomsGateway(
+      fakeGateway({
+        removeMember: async (_room, userId) => {
+          removed.push(userId);
+          return { ok: true, removed: true };
+        },
+        read: async () => ({
+          ok: true,
+          state: { ...state(false), members: [state(false).members[0]!] },
+        }),
+      }),
+    );
+
+    await useRoomsStore.getState().removeMember(GUEST);
+
+    expect(removed).toEqual([GUEST]);
+    const status = useRoomsStore.getState().status;
+    expect(status.kind === "seated" ? status.state.members.map((m) => m.userId) : []).toEqual([
+      HOST,
+    ]);
+    expect(useRoomsStore.getState().notice).toBeNull();
+  });
+
+  it("explains a refusal the server will not explain", async () => {
+    setRoomsGateway(
+      fakeGateway({
+        // `remove_room_member` returns false for every refusal it declines to
+        // distinguish: not the host, the table has started, no such room.
+        removeMember: async () => ({ ok: true, removed: false }),
+        read: async () => ({ ok: true, state: state(false) }),
+      }),
+    );
+
+    await useRoomsStore.getState().removeMember(GUEST);
+
+    expect(useRoomsStore.getState().notice).toMatch(/could not be removed/i);
+    // Still seated, and still showing both players: nothing happened.
+    const status = useRoomsStore.getState().status;
+    expect(status.kind === "seated" ? status.state.members.length : 0).toBe(2);
   });
 });
