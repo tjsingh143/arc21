@@ -1543,10 +1543,15 @@ project already caught itself making once, when the first fix for
 Ruled out along the way, each by measurement rather than by reasoning: stale
 Deno DNS caching (survives a container restart, a container REBUILD, a Docker
 Desktop restart and a `docker network rm`), the Docker network itself (Node
-resolves the same name on it), `/etc/hosts` (Deno does not consult it),
-`[edge_runtime.secrets]` in `config.toml` and `supabase/functions/.env` (the CLI
-overwrites `SUPABASE_DB_URL` in both cases), and an extra network alias (a
-connected endpoint cannot gain one, and the URL would still name the container).
+resolves the same name on it), `/etc/hosts` (Deno does not consult it), the DNS
+search domain (`--dns-search` changes nothing, so the refusal is
+unconditional), `[edge_runtime.secrets]` in `config.toml` and
+`supabase/functions/.env` (the CLI overwrites `SUPABASE_DB_URL` in both cases),
+an extra network alias (a connected endpoint cannot gain one, and the URL would
+still name the container), `[db.pooler] enabled = true` (the CLI injects the same
+URL), `[edge_runtime] deno_version` (already `2`, the current major), and
+upgrading the CLI 2.114.0 → 2.115.0, which pulled twenty-seven images and left
+the runtime at the same `1.74.3 / Deno v2.1.4`.
 
 ### What this leaves outstanding
 
