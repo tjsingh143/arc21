@@ -68,7 +68,15 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       ...(process.env.COVERAGE === "1"
-        ? ["tests/strategy/solver.test.ts", "tests/server/**"]
+        ? [
+            "tests/strategy/solver.test.ts",
+            // Same reason and the same cost: it solves the whole six-deck chart
+            // exactly, to prove the committed table is byte-for-byte what the
+            // solver emits. Thirty seconds under instrumentation buys nothing —
+            // the module it exercises is `scripts/`, which no gate measures.
+            "tests/strategy/generated-table.test.ts",
+            "tests/server/**",
+          ]
         : []),
     ],
     environment: "node",
