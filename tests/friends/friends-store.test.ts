@@ -93,6 +93,11 @@ function fakeServer(world: {
   const gateway: FriendsGateway = {
     kind: "fake",
 
+    // Not exercised by these tests, which are about the LIST. Present because
+    // the interface requires it: a fake that silently omits a method would let
+    // the store call something that does not exist.
+    profile: async () => ({ ok: true as const, profile: null }),
+
     load: async () => {
       loads.count += 1;
       return {
@@ -198,6 +203,7 @@ function refusing(
     declineRequest: failure,
     removeFriend: failure,
     blockPlayer: failure,
+    profile: failure,
     unblockPlayer: failure,
   };
 }

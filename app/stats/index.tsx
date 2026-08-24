@@ -51,6 +51,14 @@ import {
 } from "../../src/features/stats/competition";
 import { hasLocalData, STATS_MODES, statsMode, type StatsMode } from "../../src/features/stats/modes";
 import {
+  describeOwedRewards,
+  hasCareerRecord,
+  presentCareerRecord,
+  summariseCareerRecord,
+} from "../../src/features/stats/career-record";
+import { useCareerProgress } from "../../src/features/career/use-career-progress";
+import type { CareerProgress } from "../../shared/career/index.js";
+import {
   describeSample,
   formatDecimal,
   formatPercent,
@@ -110,6 +118,9 @@ export default function StatsScreen() {
     void loadCompetition();
   }, [authHydrated, session?.account.userId, loadCompetition]);
 
+  // Loaded on first use by the hook itself, exactly as Career's own screens do.
+  const { progress: careerProgress, ready: careerReady } = useCareerProgress();
+
   const [mode, setMode] = useState<StatsMode>("all");
   const selected = statsMode(mode);
 
@@ -149,7 +160,16 @@ export default function StatsScreen() {
 
         <ModeFilter selected={mode} onSelect={setMode} />
 
-        {!hasLocalData(mode) ? (
+        {mode === "career" ? (
+          /*
+           * Career has its own record and always did. This branch was an
+           * `UnavailableNote` reading "recorded on the server and needs an
+           * account", which was false twice over: the stars are on this device,
+           * and only the REWARD needs a server. Showing nothing turned a
+           * shipped feature into an apparently missing one.
+           */
+          <CareerSection progress={careerProgress} ready={careerReady} hasAccount={session !== null} />
+        ) : !hasLocalData(mode) ? (
           <SurfaceCard>
             <AppText variant="sectionTitle">{selected.label}</AppText>
             <UnavailableNote>{selected.description}</UnavailableNote>
@@ -414,6 +434,77 @@ export default function StatsScreen() {
         </AppText>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * The Career record, from this device.
+ *
+ * Every figure here was written locally by `career-persistence.ts`. The one
+ * sentence about an account appears only when something is actually owed —
+ * "you have three rewards waiting" is actionable, "sign in for rewards" is an
+ * advert, and this screen does not carry adverts.
+ */
+function CareerSection({
+  progress,
+  ready,
+  hasAccount,
+}: {
+  progress: CareerProgress;
+  ready: boolean;
+  hasAccount: boolean;
+}) {
+  const record = summariseCareerRecord(progress);
+  const owed = describeOwedRewards(record, hasAccount);
+
+  if (!ready) {
+    return (
+      <SurfaceCard>
+        <AppText variant="sectionTitle">Career</AppText>
+        <AppText variant="body" color="textSecondary">
+          Reading your career record…
+        </AppText>
+      </SurfaceCard>
+    );
+  }
+
+  if (!hasCareerRecord(record)) {
+    return (
+      <SurfaceCard>
+        <AppText variant="sectionTitle">No career record yet</AppText>
+        <AppText variant="body" color="textSecondary">
+          Nothing here is pre-filled. Play a node and this fills with your own
+          stars — offline is fine, and every node keeps what it earns.
+        </AppText>
+        <Button
+          label="Open Career"
+          onPress={() => router.push("/career")}
+          style={styles.cta}
+        />
+      </SurfaceCard>
+    );
+  }
+
+  return (
+    <View style={styles.section}>
+      <AppText variant="sectionTitle">Career</AppText>
+      <SurfaceCard>
+        {presentCareerRecord(record).map((row) => (
+          <StatRow key={row.key} label={row.label} value={row.value} detail={row.detail} />
+        ))}
+        {owed !== null ? (
+          <AppText variant="caption" color="textSecondary">
+            {owed}
+          </AppText>
+        ) : null}
+      </SurfaceCard>
+      <Button
+        label="Open Career"
+        variant="secondary"
+        onPress={() => router.push("/career")}
+        style={styles.cta}
+      />
+    </View>
   );
 }
 

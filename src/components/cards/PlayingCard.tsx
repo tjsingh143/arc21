@@ -8,6 +8,12 @@
  * suit *glyph* (shape) and an accessible label ("Ace of Spades"), so red/black
  * is decoration rather than information. Diamonds and hearts are additionally
  * distinguishable by outline weight for users who cannot separate the hues.
+ *
+ * The face does not follow Dynamic Type — `allowFontScaling` is false on all
+ * three labels — because a card is fixed geometry and text that outgrows it
+ * truncates a rank rather than reflowing. "Large card labels" in Settings is
+ * the answer instead: a bounded step, computed in `design/card-label-metrics.ts`
+ * and asserted there, rather than an unbounded scale that would clip.
  */
 
 import { memo, useMemo } from "react";
@@ -17,7 +23,8 @@ import { cardAccessibilityLabel } from "../../../shared/blackjack/cards.js";
 import type { Card, Suit } from "../../../shared/blackjack/types.js";
 import { cardBackArt } from "../../features/cosmetics/art/registry.js";
 import { useLoadoutStore } from "../../features/cosmetics/loadout-store.js";
-import { useBorderColor } from "../../design/accessibility";
+import { cardLabelSizes } from "../../design/card-label-metrics.js";
+import { useAccessibilityPrefs, useBorderColor } from "../../design/accessibility";
 import { cardSizes, colors, radius, type CardSize } from "../../design/tokens";
 
 const SUIT_GLYPH: Record<Suit, string> = {
@@ -50,10 +57,20 @@ export const PlayingCard = memo(function PlayingCard({
   const ink = suitColor(card.suit);
   const glyph = SUIT_GLYPH[card.suit];
 
+  /*
+   * Read from the accessibility context rather than from `useSettings()`, so a
+   * table full of cards does not re-render when the sound preference changes.
+   * Until this line the setting was stored and read by NOTHING, and the Settings
+   * screen said so in an `UnavailableNote` — one more instance of the
+   * built-but-never-connected pattern this project keeps finding.
+   */
+  const { largeCardLabels } = useAccessibilityPrefs();
+
   // Rank text scales with the card so "10" stays legible at compact sizes.
-  const rankFontSize = dimensions.width * (card.rank === "10" ? 0.3 : 0.36);
-  const cornerGlyphSize = dimensions.width * 0.2;
-  const centerGlyphSize = dimensions.width * 0.46;
+  const label = cardLabelSizes(dimensions.width, card.rank, largeCardLabels);
+  const rankFontSize = label.rank;
+  const cornerGlyphSize = label.cornerGlyph;
+  const centerGlyphSize = label.centreGlyph;
 
   return (
     <View

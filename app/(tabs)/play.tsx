@@ -17,6 +17,7 @@ import { SurfaceCard } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { AppText } from "../../src/components/ui/AppText";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { modeBadge, modeNotice } from "../../src/features/home/play-mode-presentation";
 
 interface Mode {
   title: string;
@@ -115,11 +116,30 @@ export default function PlayScreen() {
                 >
                   {mode.title}
                 </AppText>
-                <View style={[styles.badge, playable ? styles.badgeOffline : styles.badgeOnline]}>
-                  <AppText variant="caption" color={playable ? "success" : "textSecondary"}>
-                    {mode.availability === "offline" ? "Offline" : "Online"}
-                  </AppText>
-                </View>
+                {/*
+                  * Word and colour from the SAME field. They used to come from
+                  * different ones — the word from `availability`, the colour
+                  * from whether a route existed — and the two disagreed for
+                  * every online mode the moment those modes shipped.
+                  */}
+                {(() => {
+                  const badge = modeBadge(mode.availability);
+                  return (
+                    <View
+                      style={[
+                        styles.badge,
+                        badge.tone === "success" ? styles.badgeOffline : styles.badgeOnline,
+                      ]}
+                    >
+                      <AppText
+                        variant="caption"
+                        color={badge.tone === "success" ? "success" : "textSecondary"}
+                      >
+                        {badge.label}
+                      </AppText>
+                    </View>
+                  );
+                })()}
               </View>
 
               <AppText variant="body" color="textSecondary">
@@ -132,11 +152,25 @@ export default function PlayScreen() {
                 {mode.structure}
               </AppText>
 
-              {!playable && mode.reason ? (
-                <AppText variant="caption" color="warning">
-                  {mode.reason}
-                </AppText>
-              ) : null}
+              {/*
+                * Shown whether or not the mode is playable. It used to render
+                * only when it was NOT, so the moment every mode became
+                * reachable six sentences about what each one needs were shown
+                * to nobody — and a guest learned an account was wanted only
+                * after tapping.
+                */}
+              {(() => {
+                const notice = modeNotice({ playable, reason: mode.reason });
+                if (notice === null) return null;
+                return (
+                  <AppText
+                    variant="caption"
+                    color={notice.tone === "warning" ? "warning" : "textSecondary"}
+                  >
+                    {notice.text}
+                  </AppText>
+                );
+              })()}
             </SurfaceCard>
           );
         })}

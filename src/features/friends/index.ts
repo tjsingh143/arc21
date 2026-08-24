@@ -39,6 +39,21 @@ export {
 } from "./friends.js";
 
 export {
+  describeHiddenRecord,
+  hasRecord,
+  playerProfileRowSchema,
+  presentPresence,
+  presentRecord,
+  toPlayerProfile,
+  type PlayerProfile,
+  type PlayerRecord,
+  type PresencePresentation,
+  type ProfilePresence,
+  type ProfilePrivacy,
+  type StatRow,
+} from "./player-profile.js";
+
+export {
   createSupabaseFriendsGateway,
   createUnconfiguredFriendsGateway,
   type BlockedLoadOutcome,
@@ -47,6 +62,7 @@ export {
   type FriendsGateway,
   type FriendsLoadOutcome,
   type FriendsSearchOutcome,
+  type PlayerProfileOutcome,
   type RelationshipOutcome,
 } from "./friends-gateway.js";
 

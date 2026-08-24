@@ -805,3 +805,111 @@ tsc --noEmit / lint     exit 0 / 0 errors
 npm run check:functions clean
 ```
 
+---
+
+## R12 — the friend profile showed four of nine things, and three screens said something untrue
+
+### The friend profile
+
+The specification's FRIEND PROFILE list is nine items — avatar, display name,
+username, level, presence, public stats according to privacy setting, career
+stars, tournament wins, Invite to Table — plus Remove Friend and Block. The
+screen rendered the first four and a last-seen line, and its closing paragraph
+still said friends could be invited to a private table "when private tables are
+built", which had been false for two phases.
+
+**There was no source for the rest, and that is why it stayed unfinished.**
+`my_competition_record` and `my_career_progress` both derive from `auth.uid()`
+and correctly answer only about the caller. `player_public_profile(uuid)` is the
+read that was missing; the migration for it existed and **had no client caller
+at all** — the twelfth instance of the built-but-never-connected pattern.
+
+**What decides what is shown.** Settings says the privacy choice "controls who
+can see your profile and standings", so standings — hands, accuracy, career
+stars, tournament wins — are ALL governed by `profiles.privacy`, not only the
+ones the word "stats" obviously covers. There is one visibility answer, and the
+SERVER gives it: `stats_visible` arrives already decided and the client never
+recomputes it from `privacy` and `is_friend`. A second implementation of a
+privacy rule is a rule that will eventually disagree with the first, and the
+client's copy is the one a player sees.
+
+**NULL, not zero.** Every number is NULL when the record is not visible, and
+`null` survives into `PlayerProfile`, so the screen can tell three different
+things apart: a hidden record, a record that is genuinely empty, and a read that
+did not happen. Each gets its own sentence. A `coalesce` written one line too
+early would have turned the first into the second.
+
+**A block returns no row at all** — in either direction, identical to a user id
+that never existed. Not an empty profile: a block must not be discoverable by
+the person blocked.
+
+**Presence** comes from the Realtime channel and nothing else, per the
+specification's "presence is ephemeral Realtime state where possible; persist
+only `last_seen_at` for fallback". Absence from the channel is NOT proof of
+being offline — a backgrounded app looks the same — so `offline` is reported
+with the last-seen line and a sentence saying the app cannot tell a signed-out
+player from one on a bad connection. The profile joins the channel itself only
+when nobody else holds it, which is the deep-link case (`arc21://friends/<id>`
+arrives with Social never mounted).
+
+**Invite to Table** is offered only when it could be accepted. Every branch of
+`inviteAffordance` mirrors a check inside `public.invite_friend_to_room`, except
+two that do not — inviting somebody to a table they are sitting at, and inviting
+them into a table with no free seat. The server accepts both; a player can use
+neither. When there is no table at all the button becomes the way to open one,
+rather than a dead control with an explanation.
+
+### Three screens that said something untrue
+
+- **`largeCardLabels` governed nothing.** Stored since phase 8, read by no
+  screen, with an `UnavailableNote` under it admitting so. It now scales the
+  rank and the corner glyph — and the centre glyph SHRINKS to make room, because
+  growing all three collides at the compact card size, where the default layout
+  has only ~3pt between the corner block and the centre glyph. The two constants
+  were chosen together so the enlarged layout has EXACTLY the clearance the
+  default one has, at every card size, and `tests/design/card-label-metrics.test.ts`
+  asserts that equality rather than a number somebody typed. It also asserts
+  that raising the scale alone would collide — so the trade is proved, not
+  described. The card face does not follow Dynamic Type on purpose: it is fixed
+  geometry, and text that outgrows it truncates a rank rather than reflowing.
+- **The Statistics Career filter claimed server-only for local data.** It read
+  "Career progress is recorded on the server and needs an account" and showed
+  nothing — false twice over. Career stars are written to THIS DEVICE by
+  `career-persistence.ts`, and the map, the node detail and Home have always
+  read them with no account. What needs a server is the REWARD:
+  `rewardClaimed` can only be set by one. The filter now shows the local record
+  — stars, nodes completed, attempts, best accuracy — and says what an account
+  changes only when something is actually owed, as a COUNT of nodes. "You have
+  three rewards waiting" is actionable; "sign in for rewards" is an advert.
+  A screen that says a shipped feature is absent is the same class of defect as
+  one that says an absent feature has shipped.
+- **The Play tab's availability badge was inverted.** The word came from
+  `mode.availability` and the colour from `playable` — "is there a route yet".
+  Those agreed only while the online modes were unbuilt. Every mode is reachable
+  now, so all four ONLINE cards rendered their badge in the green this app
+  reserves for "needs no server at all", on the screen whose entire job is
+  saying which modes need one. Word and colour come from the same field now.
+  The same change revived six sentences of dead copy: `reason` rendered only
+  when a mode was NOT playable, so the moment every mode became reachable, what
+  each online mode needs was shown to nobody — and a guest learned an account
+  was wanted only after tapping.
+
+**Evidence.**
+
+```
+tests/friends/player-profile.test.ts          15 tests
+tests/server/profile-privacy.integration     10 tests (was 4) — the privacy
+                                              rules proved with two real JWTs
+tests/rooms/lobby-affordance.test.ts          21 tests (was 15)
+tests/design/card-label-metrics.test.ts        8 tests
+tests/stats/career-record.test.ts              9 tests
+tests/home/play-mode-presentation.test.ts      9 tests
+npm run test:unit                             83 files / 1,608 tests PASS
+tsc --noEmit / lint                           exit 0 / 0 errors
+```
+
+The server suite is the part that matters most here, because
+`player_public_profile` returns one player's record TO ANOTHER PLAYER — the most
+disclosure-shaped read in this schema. Public, friends-only-with-a-friendship,
+friends-only-without, private, a block in both directions, a nonexistent id, and
+an unauthenticated caller are each asserted against the running database.

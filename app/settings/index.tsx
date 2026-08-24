@@ -145,10 +145,6 @@ export default function SettingsScreen() {
               disabled={!ready}
               onChange={(next) => void update({ largeCardLabels: next })}
             />
-            <UnavailableNote>
-              Saved on this device. No screen in this build reads it yet, so
-              nothing changes on the table until one does.
-            </UnavailableNote>
           </SurfaceCard>
         </Section>
 

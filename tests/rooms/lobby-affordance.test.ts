@@ -19,7 +19,9 @@ import {
   canRemoveMember,
   canSetReady,
   canStartTable,
+  describeInviteUnavailable,
   describeReadiness,
+  inviteAffordance,
   isHost,
   isReady,
   shareMessage,
@@ -154,5 +156,69 @@ describe("the shared invite", () => {
     // The deep link is a convenience for people who have the app; the six
     // characters are what anybody can type into the Join field.
     expect(message).toContain("arc21://room/ABCDEF");
+  });
+});
+
+/**
+ * Invite to Table, from the FRIEND PROFILE.
+ *
+ * The specification lists it among the nine things a friend's profile shows,
+ * and it sat in the closing paragraph as "when private tables are built" long
+ * after they were. Every branch below mirrors a check inside
+ * `public.invite_friend_to_room`, except the two that do not — and those two
+ * are the point: the server would happily accept both, and a player could use
+ * neither.
+ */
+describe("inviting a friend from their profile", () => {
+  it("offers the invite against a real room id", () => {
+    const affordance = inviteAffordance(room(), HOST, STRANGER);
+    expect(affordance).toEqual({ kind: "invite", roomId: "99999999-9999-4999-8999-999999999999" });
+    expect(describeInviteUnavailable(affordance, "Anyone")).toBeNull();
+  });
+
+  it("offers it at a table that has already started, exactly as the server does", () => {
+    // `invite_friend_to_room` accepts 'lobby' and 'active'. A five-seat table
+    // mid-game with a free seat is a table somebody can still be asked to.
+    expect(inviteAffordance(room({ status: "active" }), HOST, STRANGER).kind).toBe("invite");
+  });
+
+  it("has nothing to offer when the viewer is at no table", () => {
+    expect(inviteAffordance(null, HOST, STRANGER)).toEqual({ kind: "no-table" });
+    // Holding a room the viewer is not a member of is the same answer.
+    expect(inviteAffordance(room(), STRANGER, THIRD)).toEqual({ kind: "no-table" });
+    expect(inviteAffordance(room(), null, THIRD)).toEqual({ kind: "no-table" });
+    expect(describeInviteUnavailable({ kind: "no-table" }, "Ada")).toContain(
+      "need a private table open",
+    );
+  });
+
+  /**
+   * The server would send this one. It would be a notification telling somebody
+   * about the table they are sitting at.
+   */
+  it("does not offer to invite someone who is already here", () => {
+    expect(inviteAffordance(room(), HOST, GUEST)).toEqual({ kind: "already-here" });
+    expect(inviteAffordance(room(), HOST, HOST)).toEqual({ kind: "already-here" });
+    expect(describeInviteUnavailable({ kind: "already-here" }, "Ada")).toBe(
+      "Ada is already at your table.",
+    );
+  });
+
+  /**
+   * And this one. `invite_friend_to_room` does not check capacity — the refusal
+   * comes later, from `join_private_room`, by which point the invite has been
+   * sent and cannot be honoured.
+   */
+  it("does not offer an invite into a table with no free seat", () => {
+    const full = room({ maxSeats: 2 }, [{ userId: HOST }, { userId: GUEST }]);
+    expect(inviteAffordance(full, HOST, STRANGER)).toEqual({ kind: "full" });
+    expect(describeInviteUnavailable({ kind: "full" }, "Ada")).toContain("no free seat");
+  });
+
+  it("stops offering it once the table is closing", () => {
+    for (const status of ["finishing", "closed", "expired"] as const) {
+      expect(inviteAffordance(room({ status }), HOST, STRANGER)).toEqual({ kind: "closed" });
+    }
+    expect(describeInviteUnavailable({ kind: "closed" }, "Ada")).toContain("no longer taking");
   });
 });

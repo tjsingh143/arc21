@@ -46,9 +46,12 @@ export {
   canRemoveMember,
   canSetReady,
   canStartTable,
+  describeInviteUnavailable,
   describeReadiness,
+  inviteAffordance,
   isHost,
   isReady,
   shareMessage,
+  type InviteAffordance,
 } from "./lobby-affordance.js";
 export { useRoomInvites, type RoomInvitesState } from "./use-room-invites.js";

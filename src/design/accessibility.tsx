@@ -1,11 +1,13 @@
 /**
  * Arc 21 — accessibility preference wiring.
  *
- * Three settings live in `AppSettings` (`reducedMotion`, `increasedContrast`,
- * `largerTableText`) and this module is what makes each of them do something
- * observable, per the specification's accessibility acceptance criteria. Before
- * this file, all three were stored and read by nothing — see `settings.ts` and
- * the `UnavailableNote` that used to sit under them on the Settings screen.
+ * Four settings live in `AppSettings` (`reducedMotion`, `increasedContrast`,
+ * `largerTableText`, `largeCardLabels`) and this module is what makes each of
+ * them do something observable, per the specification's accessibility
+ * acceptance criteria. Before this file, all of them were stored and read by
+ * nothing — see `settings.ts` and the `UnavailableNote` that used to sit under
+ * them on the Settings screen. `largeCardLabels` was the last one left in that
+ * state, and it kept its note for a whole phase after the others lost theirs.
  *
  * `reducedMotion` is wired directly into `useMotion()` in `motion.ts`: the app
  * setting can only ADD reduction on top of the OS setting, never remove it, so
@@ -29,11 +31,22 @@ import type { TypographyToken } from "./typography";
 export interface AccessibilityPrefs {
   increasedContrast: boolean;
   largerTableText: boolean;
+  /**
+   * Bigger ranks and suit glyphs on the card faces.
+   *
+   * It belongs here rather than being read from `useSettings()` at the card,
+   * for the reason in the header: a hero hand plus a dealer hand plus four
+   * other seats is a dozen `PlayingCard`s, and subscribing each of them to the
+   * whole settings record would re-render every card whenever the sound
+   * preference changed.
+   */
+  largeCardLabels: boolean;
 }
 
 const DEFAULT_PREFS: AccessibilityPrefs = {
   increasedContrast: false,
   largerTableText: false,
+  largeCardLabels: false,
 };
 
 const AccessibilityPrefsContext = createContext<AccessibilityPrefs>(DEFAULT_PREFS);
@@ -50,8 +63,9 @@ export function AccessibilityPrefsProvider({ children }: { children: ReactNode }
     () => ({
       increasedContrast: settings.increasedContrast,
       largerTableText: settings.largerTableText,
+      largeCardLabels: settings.largeCardLabels,
     }),
-    [settings.increasedContrast, settings.largerTableText],
+    [settings.increasedContrast, settings.largerTableText, settings.largeCardLabels],
   );
 
   return (

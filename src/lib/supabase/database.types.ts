@@ -243,6 +243,21 @@ export interface Database {
        * The caller's own tournament and daily-challenge totals. Derived from
        * `auth.uid()`; returns no identifier and nothing about any other player.
        */
+      /**
+       * One OTHER player's profile, as this caller may see it.
+       *
+       * The only read in this file that names somebody else and returns their
+       * numbers, so the rule it follows is worth stating here as well as in the
+       * migration: identity comes back for anybody not blocked — `search_players`
+       * already discloses username, display name and level, so withholding them
+       * here would conceal nothing — while every NUMBER is governed by
+       * `profiles.privacy`, and a block in either direction returns no row at
+       * all rather than an empty one.
+       */
+      player_public_profile: {
+        Args: { p_user_id: string };
+        Returns: unknown;
+      };
       my_competition_record: {
         Args: Record<string, never>;
         Returns: unknown;

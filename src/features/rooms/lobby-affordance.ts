@@ -98,3 +98,68 @@ export function describeReadiness(state: RoomState): string {
 export function shareMessage(code: string): string {
   return `Join my Arc 21 table with code ${code}\n\narc21://room/${code}`;
 }
+
+// ---------------------------------------------------------------------------
+// Inviting a friend
+// ---------------------------------------------------------------------------
+
+/**
+ * What the friend profile may offer for "Invite to Table".
+ *
+ * Every branch mirrors a check inside `public.invite_friend_to_room`, and the
+ * two that do not — `already-here` and `full` — exist because the server would
+ * ACCEPT those invites and they would still be useless. Inviting somebody to a
+ * table they are sitting at sends them a notification about where they already
+ * are; inviting them to a table with no free seat sends them to
+ * `join_private_room`, which refuses on capacity. An honest client does not
+ * offer either.
+ *
+ * A discriminated result rather than a boolean, because the screen has to say
+ * WHY — "you need a table first" and "that table is full" lead to different
+ * next actions, and collapsing them into a disabled button is how a player is
+ * left guessing.
+ */
+export type InviteAffordance =
+  /** Offer it. `roomId` is what `invite_friend_to_room` is called with. */
+  | { readonly kind: "invite"; readonly roomId: string }
+  /** The viewer is not at a table. The screen offers to open one. */
+  | { readonly kind: "no-table" }
+  | { readonly kind: "already-here" }
+  | { readonly kind: "full" }
+  /** In a room, but not one anybody can be invited to. */
+  | { readonly kind: "closed" };
+
+export function inviteAffordance(
+  state: RoomState | null,
+  viewerId: string | null,
+  friendId: string,
+): InviteAffordance {
+  if (state === null || viewerId === null) return { kind: "no-table" };
+  // Not a member of the room the store is holding: the same answer as having no
+  // table, because there is nothing to invite anybody to.
+  if (!state.members.some((member) => member.userId === viewerId)) return { kind: "no-table" };
+  if (friendId === viewerId) return { kind: "already-here" };
+  if (state.members.some((member) => member.userId === friendId)) return { kind: "already-here" };
+  if (state.room.status !== "lobby" && state.room.status !== "active") return { kind: "closed" };
+  if (state.members.length >= state.room.maxSeats) return { kind: "full" };
+  return { kind: "invite", roomId: state.room.id };
+}
+
+/** The sentence beside a disabled invite. Never shown for `invite`. */
+export function describeInviteUnavailable(
+  affordance: InviteAffordance,
+  displayName: string,
+): string | null {
+  switch (affordance.kind) {
+    case "invite":
+      return null;
+    case "no-table":
+      return "You need a private table open before you can invite anyone to it.";
+    case "already-here":
+      return `${displayName} is already at your table.`;
+    case "full":
+      return "Your table has no free seat, so an invite could not be accepted.";
+    case "closed":
+      return "Your table is no longer taking anyone new.";
+  }
+}
