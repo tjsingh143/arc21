@@ -217,6 +217,20 @@ export default function ProfileScreen() {
           about you.
         </AppText>
 
+        {/*
+          TWO ROWS OF TWO, not four across.
+
+          `Button` carries `flex: 1`, so four in one row each got a quarter of a
+          393pt screen — about 74pt before padding — and `numberOfLines={2}`
+          then split the labels mid-word: "Statist / ics", "Invent / ory",
+          "Friend / s", "Settin / gs". At the DEFAULT text size, which is worse
+          than the Dynamic Type case CLAUDE.md already records for the action
+          dock: that one only breaks at the largest setting.
+
+          `flexWrap` would not have fixed it. A `flex: 1` child has a flex-basis
+          of 0, so it never overflows its line and never wraps — it just shrinks
+          further. The row count is the thing that had to change.
+        */}
         <View style={styles.actions}>
           <Button label="Statistics" onPress={() => router.push("/stats")} />
           <Button
@@ -226,6 +240,8 @@ export default function ProfileScreen() {
             accessibilityHint="Avatars, card backs and table themes you have earned"
             onPress={() => router.push("/profile/inventory")}
           />
+        </View>
+        <View style={styles.actions}>
           {/*
             The Social TAB, not a `/friends` route — there is not one. Friends,
             requests and blocks all live on `app/(tabs)/social.tsx`, and the

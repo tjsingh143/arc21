@@ -62,3 +62,56 @@ export function modeNotice(mode: {
   if (mode.reason === undefined || mode.reason === "") return null;
   return { text: mode.reason, tone: mode.playable ? "secondary" : "warning" };
 }
+
+/**
+ * What a screen reader is told about a mode card.
+ *
+ * THE DEFECT, and it was found by an E2E assertion that stopped matching.
+ *
+ * `SurfaceCard` is a plain `View` when it has no `onPress` and a `Pressable`
+ * with an `accessibilityLabel` when it does. On iOS **a labelled accessibility
+ * element REPLACES its children in the tree** — CLAUDE.md records the same fact
+ * about `testID` vs `accessibilityLabel`. So the moment every mode on the Play
+ * tab became reachable, every card became pressable and labelled, and the whole
+ * body of each card — the purpose, the structure line, and the note saying an
+ * account is needed — **stopped existing for a screen reader**. A sighted player
+ * reads four lines per card; a VoiceOver user heard one word: the title.
+ *
+ * It cannot be fixed with the HINT. A hint is supplementary, is spoken last and
+ * only after a pause, is suppressed entirely when the user has hints turned
+ * off — and it is not part of an element's matchable text, which is why the
+ * audit flow could not see it either. The LABEL is what carries content.
+ *
+ * So the label is composed from exactly what the card renders, in the order it
+ * renders it, and the hint goes back to describing the ACTION — which is what a
+ * hint is for.
+ *
+ * The specification's acceptance criterion is "Screen readers can identify
+ * cards/actions". A card that announces its name and withholds its stakes, its
+ * seat count and the fact that it needs an account does not meet it.
+ */
+export function modeAccessibilityLabel(mode: {
+  readonly title: string;
+  readonly purpose: string;
+  readonly structure: string;
+  readonly playable: boolean;
+  readonly reason?: string;
+}): string {
+  const notice = modeNotice(mode);
+  const parts = [mode.title, mode.purpose, mode.structure];
+  if (notice !== null) parts.push(notice.text);
+  // Full stops between the parts, so a screen reader pauses rather than running
+  // "High stakesNeeds an account" together.
+  return parts.map((part) => (part.endsWith(".") ? part : `${part}.`)).join(" ");
+}
+
+/**
+ * The hint, which describes what happens when the card is activated.
+ *
+ * Separate from the label on purpose: a hint answers "what will this do?", and
+ * VoiceOver speaks it after a pause and only when hints are enabled. Nothing a
+ * player needs in order to CHOOSE belongs here — that is the label's job.
+ */
+export function modeAccessibilityHint(mode: { readonly playable: boolean }): string {
+  return mode.playable ? "Opens this mode" : "Not available in this build";
+}

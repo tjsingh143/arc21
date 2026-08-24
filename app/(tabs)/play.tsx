@@ -17,7 +17,12 @@ import { SurfaceCard } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { AppText } from "../../src/components/ui/AppText";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
-import { modeBadge, modeNotice } from "../../src/features/home/play-mode-presentation";
+import {
+  modeAccessibilityHint,
+  modeAccessibilityLabel,
+  modeBadge,
+  modeNotice,
+} from "../../src/features/home/play-mode-presentation";
 
 interface Mode {
   title: string;
@@ -105,8 +110,27 @@ export default function PlayScreen() {
               key={mode.title}
               onPress={playable ? () => router.push(mode.route as never) : undefined}
               disabled={!playable}
-              accessibilityLabel={mode.title}
-              accessibilityHint={playable ? mode.purpose : mode.reason}
+              /*
+                * THE WHOLE CARD, because a labelled Pressable REPLACES its
+                * children in the iOS accessibility tree.
+                *
+                * `accessibilityLabel={mode.title}` was correct while these
+                * modes were unbuilt: an unplayable card has no `onPress`, so
+                * `SurfaceCard` renders a plain View and every line inside it
+                * kept its own node. The moment they all became reachable, every
+                * card became a labelled Pressable and a screen reader started
+                * hearing one word — the title — where a sighted player reads
+                * the stakes, the seat count and the note about needing an
+                * account.
+                */
+              accessibilityLabel={modeAccessibilityLabel({
+                title: mode.title,
+                purpose: mode.purpose,
+                structure: mode.structure,
+                playable,
+                reason: mode.reason,
+              })}
+              accessibilityHint={modeAccessibilityHint({ playable })}
             >
               <View style={styles.cardHeader}>
                 <AppText

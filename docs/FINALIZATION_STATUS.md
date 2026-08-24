@@ -1355,3 +1355,104 @@ tests/e2e/private-lobby.yaml  exit 0, 37 COMPLETED steps
 The step counts are lower than R13's 41 and 40 because the shared `sign-in.yaml`
 subflow exits its loop immediately when the app has already restored a session
 from the keychain — which is the case it was written for.
+
+---
+
+## R19 — the audit flow walked a configured build for the first time, and found two real defects
+
+### The gap
+
+`every-screen.yaml` asserts `.*no server configured.*` in six places. That copy
+appears only while `EXPO_PUBLIC_SUPABASE_URL` is unset, so the whole flow
+describes what a screen says in ONE configuration — the one nobody ships. **A
+build with a server had never been walked by it.** Half the screens change
+completely when a server exists: Leaderboards stops apologising and renders four
+boards, the Daily Challenge shows a real seed commitment, the Sprint screen shows
+the fee and format from `sprint_format()`, and Notifications becomes an inbox.
+
+`tests/e2e/every-screen-online.yaml` is the same audit from the other side.
+Every stop asserts something that cannot be true without a server AND that the
+unconfigured apology is ABSENT — the strongest statement a configured build can
+make about itself. **Exit 0, 44 COMPLETED steps, first run.**
+
+### `clearState: true` does not give a fresh install
+
+Measured, not assumed. On iOS it resets permissions and relaunches; it leaves
+the app's **Documents** directory alone:
+
+```
+$ xcrun simctl get_app_container <udid> com.arc21.app data
+…/Documents/SQLite/arc21.db          ← still there after clearState
+```
+
+That one file holds onboarding completion, the Practice session and career
+progress. And `clearState` does not touch the KEYCHAIN either, where the
+Supabase session lives. So `every-screen.yaml`, whose first assertion is that
+ONBOARDING is on screen, has never actually started from a fresh install — it
+passed because the simulator happened to be in the right state, and it failed
+the moment two flows that sign in had run on the same device.
+`scripts/e2e-fresh-app.ts` removes both. It does NOT `simctl uninstall`: that
+once ran for five minutes and left the app missing.
+
+### DEFECT 1 — every mode card announced one word to a screen reader
+
+`SurfaceCard` is a plain `View` with no `onPress` and a labelled `Pressable`
+with one. **On iOS a labelled accessibility element REPLACES its children in the
+tree.** So the moment the online modes all became reachable, every card on the
+Play tab became a labelled Pressable and its whole body — the purpose, the
+structure line, and the note saying an account is needed — **stopped existing
+for a screen reader**. A sighted player reads four lines per card; a VoiceOver
+user heard the title.
+
+It could not be fixed with the hint: a hint is supplementary, spoken last and
+only after a pause, suppressed when the user turns hints off, and is not part of
+an element's matchable text — which is why the audit flow could not see it
+either. The LABEL carries content; the hint describes the ACTION. Both are
+composed by `modeAccessibilityLabel` / `modeAccessibilityHint` and asserted in
+`tests/home/play-mode-presentation.test.ts`, stated as the four things that must
+never go missing again rather than as an exact string.
+
+The specification's criterion is "Screen readers can identify cards/actions". A
+card that announces its name and withholds its stakes, its seat count and the
+fact that it needs an account does not meet it.
+
+Home already had this exact fix, with a comment explaining it. Nobody carried it
+to the Play tab. `app/career/index.tsx` and `app/learn/drills.tsx` were checked
+and are FINE: their content is split across label and hint, and VoiceOver speaks
+hints by default — so nothing is lost, only untestable by Maestro.
+
+### DEFECT 2 — the profile's four actions split their own labels mid-word
+
+`Button` carries `flex: 1`, so four in one row each got a quarter of a 393pt
+screen — about 74pt before padding — and `numberOfLines={2}` split the labels:
+**"Statist / ics", "Invent / ory", "Friend / s", "Settin / gs"**. At the DEFAULT
+text size, which is worse than the Dynamic Type case CLAUDE.md already records
+for the action dock: that one only breaks at the largest setting. Present in
+every screenshot the project has ever taken of that screen.
+
+`flexWrap` would not have fixed it — a `flex: 1` child has a flex-basis of 0, so
+it never overflows its line and never wraps, it just shrinks. Two rows of two.
+
+### And the flow's own assumptions
+
+Three `extendedWaitUntil`s assumed a return would reset the tab's scroll.
+CLAUDE.md records that it sometimes does and sometimes does not; this file
+assumed the first, it held for a while, and then a run came back where it left
+and a header that was real, correct and above the fold read as a missing screen.
+They are `scrollUntilVisible` with an explicit direction now — true either way.
+
+**Evidence.**
+
+```
+tests/e2e/every-screen.yaml          exit 0, 86 COMPLETED steps
+tests/e2e/every-screen-online.yaml   exit 0, 44 COMPLETED steps
+tests/e2e/online-table.yaml          exit 0, 40 COMPLETED steps
+tests/e2e/private-lobby.yaml         exit 0, 37 COMPLETED steps
+npm test                             1,639 unit + 116 server = 1,755 PASS
+npm run test:coverage                exit 0
+tsc --noEmit / lint                  exit 0 / 0 errors
+```
+
+Four Maestro flows now, two configurations, and the two that need opposite
+configurations both say so in their own headers rather than in a note somebody
+has to have read.

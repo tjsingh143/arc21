@@ -1,0 +1,172 @@
+# Arc 21 — every server-backed screen, on a build that HAS a server.
+#
+# THE GAP THIS FILLS, and it is the deeper half of the one `private-lobby.yaml`
+# and `online-table.yaml` opened.
+#
+# `every-screen.yaml` is the audit flow, and it asserts `.*no server
+# configured.*` in six places. That string appears only while
+# `EXPO_PUBLIC_SUPABASE_URL` is UNSET, so the whole flow describes what a screen
+# says in ONE configuration — the one nobody ships. A build with a server has
+# never been walked by it. Half the screens in this app change completely when a
+# server exists: Leaderboards stops apologising and renders four boards, the
+# Daily Challenge shows a real seed commitment, the Sprint screen shows the fee
+# and the format from `sprint_format()`, and Notifications becomes an inbox.
+#
+# So this is the same audit, from the other side. Each stop asserts something
+# that CANNOT be true without a server, and asserts that the unconfigured
+# apology is ABSENT — which is the single strongest statement a configured build
+# can make about itself, and the one that would have caught a screen wired to
+# nothing.
+#
+# It deliberately does not PLAY anything: `online-table.yaml` plays, and this
+# would only duplicate it more slowly. What this covers is reachability and
+# content on the screens that flow does not visit.
+#
+# BEFORE RUNNING:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT — the opposite of every-screen.yaml
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/every-screen-online.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: sign-in.yaml
+
+# Signed in, so the whole app is in its configured state. Home shows a real chip
+# balance read from the wallet — a number no offline build can produce.
+- assertVisible: "Chips"
+- assertNotVisible: ".*no server configured.*"
+
+# --- Leaderboards ----------------------------------------------------------
+# Four boards, server-derived. On a build with no server this screen says so in
+# place of every one of them.
+- openLink: arc21://leaderboards
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "leaderboard-purpose"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- assertVisible: ".*Weekly XP.*"
+- assertVisible: ".*Strategy Accuracy.*"
+# A board with nobody on it says so, in its own words, rather than rendering
+# sample rows. Either that or a real row — both are honest, and only one of them
+# can be true at a time, so this asserts the SCREEN reached its data rather than
+# which answer it got.
+- assertVisible: ".*Every figure here is recorded by the server.*"
+
+# --- Daily Challenge -------------------------------------------------------
+# The seed COMMITMENT is the assertion worth making here: a 64-character hex
+# digest the server computed over a secret it never sends. Nothing offline can
+# invent one, and `every-screen.yaml` explicitly cannot check it.
+- openLink: arc21://daily
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: ".*Everyone plays the same shoe.*"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- scrollUntilVisible:
+    element:
+      id: "daily-commitment"
+    direction: DOWN
+    timeout: 20000
+- assertVisible:
+    id: "daily-commitment"
+    text: ".*[0-9a-f]{16}.*"
+
+# --- Sprint Tournament -----------------------------------------------------
+# The format and the entry fee, from `sprint_format()`, BEFORE anything is spent
+# — the specification's "user must know the format before spending". That path
+# needs a server, which is exactly why the offline audit flow can only assert
+# that its absence is stated.
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: ".*Four players, equal stacks, one elimination.*"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- assertVisible: ".*500.*"
+- scrollUntilVisible:
+    element:
+      id: "tournament-register"
+    direction: DOWN
+    timeout: 20000
+
+# --- Social ----------------------------------------------------------------
+# "Friends need a server" is what this tab says without one. Signed in, it is a
+# real friends list — empty for this account, and saying so.
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: "Social"
+    timeout: 30000
+- assertNotVisible: ".*Friends need a server.*"
+- assertNotVisible: ".*no server configured.*"
+
+# --- Notifications ---------------------------------------------------------
+# The RECORD of what the server said, not a fallback for push. An empty inbox is
+# the honest answer for a fresh account and it says so rather than showing
+# nothing at all.
+- openLink: arc21://notifications
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "notifications-empty"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+
+# --- Statistics ------------------------------------------------------------
+# Its Competition section is server-owned. Offline it states the absence; here it
+# must not.
+- openLink: arc21://stats
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: "Statistics"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+
+# --- Profile ---------------------------------------------------------------
+# The account screen. Signed in it shows the player's own identity and the two
+# routes off it; signed out it is an invitation to make an account.
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "profile-inventory"
+    timeout: 30000
+- assertVisible:
+    id: "profile-friends"
+- assertNotVisible: ".*no server configured.*"

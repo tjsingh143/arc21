@@ -11,7 +11,12 @@
 
 import { describe, expect, it } from "vitest";
 
-import { modeBadge, modeNotice } from "../../src/features/home/play-mode-presentation.js";
+import {
+  modeAccessibilityHint,
+  modeAccessibilityLabel,
+  modeBadge,
+  modeNotice,
+} from "../../src/features/home/play-mode-presentation.js";
 
 describe("the availability badge", () => {
   it("takes its word and its colour from the same field", () => {
@@ -59,5 +64,77 @@ describe("the notice under a mode card", () => {
     expect(modeNotice({ playable: true })).toBeNull();
     expect(modeNotice({ playable: false })).toBeNull();
     expect(modeNotice({ playable: true, reason: "" })).toBeNull();
+  });
+});
+
+/**
+ * What a screen reader is told.
+ *
+ * `SurfaceCard` is a plain View without `onPress` and a labelled `Pressable`
+ * with one, and on iOS a labelled element REPLACES its children in the tree. So
+ * the moment every mode on the Play tab became reachable, every card became a
+ * labelled Pressable and a screen reader started hearing ONE WORD — the title —
+ * where a sighted player reads four lines. Found because an audit-flow assertion
+ * on ".*Needs an account.*" stopped matching, which is the only reason anybody
+ * looked.
+ *
+ * A hint cannot fix it: hints are supplementary, spoken last, suppressed when
+ * the user turns them off, and are not part of an element's matchable text.
+ */
+describe("what a screen reader hears", () => {
+  const QUICK = {
+    title: "Quick Play",
+    purpose: "A standard table using your global chip balance.",
+    structure: "Casual, Standard or High stakes",
+    playable: true,
+    reason: "Needs an account so chips are server-authoritative.",
+  };
+
+  it("announces everything the card renders, in the order it renders it", () => {
+    expect(modeAccessibilityLabel(QUICK)).toBe(
+      "Quick Play. A standard table using your global chip balance. " +
+        "Casual, Standard or High stakes. Needs an account so chips are server-authoritative.",
+    );
+  });
+
+  /**
+   * THE REGRESSION, stated as the four things that must never go missing again
+   * rather than as the exact string, so a reworded card still fails only if it
+   * actually drops something.
+   */
+  it("never drops the stakes, the structure or the requirement", () => {
+    const spoken = modeAccessibilityLabel(QUICK);
+    expect(spoken).toContain("Quick Play");
+    expect(spoken).toContain("global chip balance");
+    expect(spoken).toContain("Casual, Standard or High stakes");
+    expect(spoken).toContain("Needs an account");
+  });
+
+  it("does not invent a requirement where there is none", () => {
+    const offline = modeAccessibilityLabel({
+      title: "Practice",
+      purpose: "Play as long as you like with disposable chips.",
+      structure: "Unlimited hands · resettable bankroll",
+      playable: true,
+    });
+    expect(offline).toBe(
+      "Practice. Play as long as you like with disposable chips. " +
+        "Unlimited hands · resettable bankroll.",
+    );
+  });
+
+  /** A screen reader pauses on a full stop; without one the parts run together. */
+  it("separates the parts so they are not spoken as one word", () => {
+    expect(modeAccessibilityLabel(QUICK)).not.toMatch(/[a-z][A-Z]/);
+  });
+
+  /**
+   * The hint answers "what will this do?" and nothing a player needs in order to
+   * CHOOSE belongs in it — that is the label's job, and putting it in the hint
+   * is what hid it.
+   */
+  it("keeps the hint about the action", () => {
+    expect(modeAccessibilityHint({ playable: true })).toBe("Opens this mode");
+    expect(modeAccessibilityHint({ playable: false })).toBe("Not available in this build");
   });
 });
