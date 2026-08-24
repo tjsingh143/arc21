@@ -82,13 +82,30 @@ export const publicShoeSchema = z.strictObject({
  * Validated like everything else that crosses the wire: a malformed set would
  * otherwise render buttons that the server is about to refuse.
  */
-const legalActionSetSchema = z.object({
+/*
+ * STRICT, like every other schema in this directory — and it was the ONE that
+ * was not.
+ *
+ * Sixty-one schemas across `shared/contracts` use `z.strictObject`, which
+ * REJECTS a key it does not know. This one used `z.object`, which silently
+ * deletes it, and that is how `canStartNextHand` reached the client as
+ * `undefined` for a whole phase with no error anywhere (see the field's own
+ * note below). Nothing chose the exception; it was a `strict` somebody did not
+ * type, and the cost was the only way to play a second hand at a server table.
+ *
+ * The trade is deliberate and is the one the rest of this directory already
+ * made: a client older than its server FAILS LOUDLY rather than rendering a
+ * table with a control quietly missing. This app ships its Edge Functions and
+ * its bundle together, so the two are never far apart — and of the two failure
+ * modes, the loud one is the only one anybody would notice.
+ */
+const legalActionSetSchema = z.strictObject({
   actions: z.array(playerActionTypeSchema),
   chipCost: z.record(z.string(), z.number().int().nonnegative()),
   canPlaceBet: z.boolean(),
   canLockBet: z.boolean(),
   betBounds: z
-    .object({
+    .strictObject({
       min: z.number().int().nonnegative(),
       max: z.number().int().nonnegative(),
       increment: z.number().int().positive(),

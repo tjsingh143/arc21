@@ -162,6 +162,40 @@ describe("the sanitised snapshot contract", () => {
   });
 
   /**
+   * EVERY object in this contract is strict, and this is the structural half of
+   * the fix.
+   *
+   * Sixty-one schemas across `shared/contracts` use `z.strictObject`. Exactly
+   * one used `z.object` — `legalActionSetSchema` — and that is the one that
+   * deleted a field. Nothing chose the exception; it was a `strict` somebody
+   * did not type.
+   *
+   * Asserted as BEHAVIOUR rather than by reading `_def.catchall`: an unknown key
+   * must be REFUSED, not quietly dropped. A client older than its server now
+   * fails loudly instead of rendering a table with a control silently missing,
+   * which is the trade the rest of this directory already made and the only one
+   * of the two failure modes anybody would notice.
+   */
+  it("refuses an unknown field rather than deleting it", () => {
+    const settled = betAndDeal(harness({ shoe: "10S 10D 6H 9C 5H" }), 100).send({
+      type: "STAND",
+      seatId: "s1",
+    });
+    const payload = toPublicState(settled.state) as unknown as Record<string, unknown>;
+
+    // One level down, where the drift happened.
+    const legal = payload.legalActions as Record<string, Record<string, unknown>>;
+    const widened = {
+      ...payload,
+      legalActions: { s1: { ...legal.s1, canDoSomethingNew: true } },
+    };
+    expect(publicGameStateSchema.safeParse(widened).success).toBe(false);
+
+    // And at the top level.
+    expect(publicGameStateSchema.safeParse({ ...payload, somethingNew: 1 }).success).toBe(false);
+  });
+
+  /**
    * The guard proves it discriminates rather than being assumed to work: a
    * schema that omits one field must FAIL the round-trip check above.
    */
