@@ -1308,3 +1308,50 @@ npm run test:coverage       exit 0
 `solver.test.ts` is: thirty seconds of exact recursion under instrumentation buys
 nothing, since the module it exercises lives in `scripts/` and no gate measures
 it.
+
+---
+
+## R18 — `npx expo-doctor` exited 1, and it is a CI step
+
+The release gate CI actually runs, failing. Eight packages sat one PATCH version
+behind what the installed Expo SDK expects — `expo`, `expo-router`,
+`expo-crypto`, `expo-notifications`, `expo-splash-screen`, `expo-asset`,
+`expo-constants` and `@expo/metro-runtime`. `expo-doctor` reports that as
+`1 check failed`, and `.github/workflows/ci.yml` runs it in the `test` job, so
+the first CI run on a runner would have gone red on a dependency drift rather
+than on anything anybody wrote.
+
+Fixed with `npx expo install --fix`, which is the command the doctor names.
+Patch-level within SDK 57, no majors, no minors.
+
+**Four of the eight carry NATIVE code** — `expo`, `expo-crypto`,
+`expo-notifications`, `expo-splash-screen` — so a green JavaScript suite proves
+nothing about them. `pod install` then refused outright:
+
+```
+[!] CocoaPods could not find compatible versions for pod "ExpoModulesCore":
+    It seems like you've changed the version of the dependency and it differs
+    from the version stored in `Pods/Local Podspecs`.
+```
+
+`ExpoModulesCore` and `ExpoModulesWorklets` both had to be updated, and TOGETHER
+— updating the first alone fails on the second, because they ship from the same
+package and CocoaPods resolves them as one snapshot.
+
+**Verified against the real thing rather than by the suite alone:** the debug
+build was recompiled and reinstalled, and both server-configured Maestro flows
+re-run against it.
+
+```
+npx expo-doctor@latest        21/21 checks passed (was 1 check failed)
+npx tsc --noEmit / lint       exit 0 / 0 errors
+npm test                      1,634 unit + 116 server = 1,750 PASS
+npx expo export --clear       exit 0
+pod update ExpoModulesCore ExpoModulesWorklets   then a clean rebuild
+tests/e2e/online-table.yaml   exit 0, 38 COMPLETED steps
+tests/e2e/private-lobby.yaml  exit 0, 37 COMPLETED steps
+```
+
+The step counts are lower than R13's 41 and 40 because the shared `sign-in.yaml`
+subflow exits its loop immediately when the app has already restored a session
+from the keychain — which is the case it was written for.
