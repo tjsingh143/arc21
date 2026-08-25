@@ -107,6 +107,26 @@ appId: com.arc21.app
 # The hand is now live: cards are dealt and the wager is committed.
 - assertVisible: ".*Bet 100.*"
 
+# --- Record what is actually on the felt -----------------------------------
+#
+# Bankroll and wager surviving a kill proves the SAVE happened. It does not
+# prove the same hand came back: a fresh shoe dealt behind a restored bankroll
+# would satisfy both. So the player's and the dealer's totals are copied into
+# `${maestro.copiedText}` here and compared after the relaunch.
+#
+# The totals are the strongest thing the tree can be asked for. They are derived
+# from the actual cards by `evaluateHand`, so a different hand of the same total
+# is the only way to fool this — one chance in a handful per run, and it would
+# have to happen with the wager and the bankroll also intact. A phantom card or
+# a duplicated deal moves the total and fails here.
+- copyTextFrom:
+    id: "player-hand-value"
+- evalScript: ${output.playerTotal = maestro.copiedText}
+
+- copyTextFrom:
+    id: "dealer-hand-value"
+- evalScript: ${output.dealerTotal = maestro.copiedText}
+
 # --- Kill and reopen -------------------------------------------------------
 # A real player does not kill the app in the same millisecond as their last tap.
 # The pause keeps this flow testing persistence rather than racing the write —
@@ -135,8 +155,37 @@ appId: com.arc21.app
 # proves it works.
 - assertVisible: ".*Resume your session.*"
 
-- tapOn:
-    id: "home-practice"
+# --- Back into the table, by deep link -------------------------------------
+#
+# NOT `tapOn: home-practice`, and the reason is worth writing down because the
+# symptom is a convincing impostor.
+#
+# After `stopApp` + `launchApp` inside one Maestro session, the tap on this card
+# reports COMPLETED and the app stays on Home. The failure screenshot shows a
+# perfect Home screen — "Resume your session · Bankroll 4,900 · hand 1" — while
+# the hierarchy dump beside it contains EIGHT nodes: the three with an
+# accessibility identifier, two battery readings and the status bar. Every piece
+# of text on the screen is missing from the tree, and the device log for the
+# same second carries `XCTAS Error: Error getting main window Unknown kAXError
+# value -25218`. The driver is tapping at coordinates from a snapshot it could
+# not actually read.
+#
+# It was not the app. Deep-linking to `arc21://game/practice` from a shell — no
+# Maestro involved — brought back the exact hand every time: dealer 8, player
+# 6♥ A♣ "Soft 17 · Bet 100", Hand 1 · Shoe 1. The assertion below is that same
+# check, made by the flow.
+#
+# So this uses the mechanism CLAUDE.md already names as the reliable one. The
+# Home card is still ASSERTED above — that assertion is what caught a real
+# VoiceOver defect once — it is simply no longer the thing navigation depends on.
+- openLink: arc21://game/practice
+
+# iOS asks for confirmation when the app is already in the foreground.
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
 
 # The committed wager and the dealt hand are still there — not a fresh shoe
 # wearing the same bankroll.
@@ -144,3 +193,24 @@ appId: com.arc21.app
     visible: ".*Bet 100.*"
     timeout: 20000
 - assertNotVisible: "Place a bet to be dealt in."
+
+# --- The same hand, not merely a hand --------------------------------------
+# Same cards for the player, same upcard for the dealer, same phase, same
+# active hand. A restored bankroll wearing a freshly dealt hand fails here.
+- assertVisible:
+    id: "player-hand-value"
+    text: ${output.playerTotal}
+- assertVisible:
+    id: "dealer-hand-value"
+    text: ${output.dealerTotal}
+
+# No duplicate settlement: the hand is still IN PROGRESS, so nothing was
+# settled by the relaunch. An outcome badge or the next-hand control appearing
+# here would mean the restored state resolved a hand that was never finished.
+- assertNotVisible:
+    id: "next-hand"
+
+# The shoe carried on rather than starting over: the review surface opens only
+# when there is a settled hand or a bet to place, and neither is true mid-hand.
+- assertNotVisible:
+    id: "open-review"

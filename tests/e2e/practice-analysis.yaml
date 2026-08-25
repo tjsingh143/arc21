@@ -1,0 +1,137 @@
+# Arc 21 — the Analysis surface and the review sheet actually SAY what they show.
+#
+# WHY THIS FLOW EXISTS.
+#
+# Both sheets on the Practice table were built as a labelled `Pressable` scrim
+# wrapping the sheet — the obvious way to get tap-outside-to-dismiss. On iOS an
+# `accessibilityLabel` on a pressable REPLACES the text of everything inside it,
+# so the entire analysis (four expected values, both probabilities, the ruleset
+# caption) collapsed into the two words "Close analysis" in the accessibility
+# tree, and the whole review collapsed into "Close review".
+#
+# The screen looked perfect. A screenshot of the failure shows every number
+# rendered and correct. It was found only by asserting on the RESULT — a probe
+# that could not see "Bust if you hit" on a screenshot that plainly showed it —
+# which is the rule this repository already learned twice, from the Home card
+# and from the accessibility switches.
+#
+# So the assertions below are deliberately made against the sheets' CONTENT.
+# Nothing here taps something and calls it proven.
+#
+# It also covers what Analysis is required to show at all: the recommendation,
+# the per-action expected values, and the two solver probabilities. Those
+# probabilities are validated arithmetic — `tests/strategy/probabilities.test.ts`
+# re-derives each by a method sharing no code with the solver — so this flow is
+# checking they REACH the player, not that they are right.
+#
+# Like practice-resume.yaml this sits outside the three-flow standard gate.
+#
+# Run with:
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/practice-analysis.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 30000
+    optional: true
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 30000
+- tapOn:
+    id: "home-practice"
+
+- extendedWaitUntil:
+    visible: "Place a bet to be dealt in."
+    timeout: 25000
+
+# --- Analysis mode ----------------------------------------------------------
+- tapOn: "Analysis"
+- tapOn:
+    id: "chip-100"
+- tapOn:
+    id: "bet-deal"
+
+- runFlow:
+    when:
+      visible:
+        id: "insurance-decline"
+    commands:
+      - tapOn:
+          id: "insurance-decline"
+
+# The chip's own accessibilityLabel replaces its child text, so the label is
+# what is matchable here — "View analysis" is on screen and not in the tree.
+# That one is deliberate: the chip is a single control and its label describes
+# the whole of it.
+- extendedWaitUntil:
+    visible: ".*Show analysis.*"
+    timeout: 15000
+- tapOn: ".*Show analysis.*"
+
+# The sheet's CONTENT, which is the thing that was invisible.
+- extendedWaitUntil:
+    visible: "Expected value per bet"
+    timeout: 10000
+- assertVisible: "This position"
+- assertVisible: "Bust if you hit"
+- assertVisible: "Dealer busts"
+# Named rules rather than an unattributed number: basic strategy is
+# rule-specific and a figure without its ruleset is misinformation.
+- assertVisible: ".*6 decks, dealer stands soft 17.*"
+
+- tapOn: "Close analysis"
+
+# --- The review sheet -------------------------------------------------------
+# Play the hand out so there is something to review.
+- repeat:
+    times: 6
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                id: "action-stand"
+
+- extendedWaitUntil:
+    visible:
+      id: "next-hand"
+    timeout: 20000
+
+- tapOn:
+    id: "open-review"
+
+# Analysis offers the decision log first. Its content must be readable, not
+# swallowed by the scrim's label.
+- extendedWaitUntil:
+    visible: "Decisions"
+    timeout: 10000
+- assertVisible: ".*graded decisions recorded on this device.*"
+- tapOn: "Hands"
+- assertVisible: ".*hands recorded on this device.*"
+- tapOn: "Close review"

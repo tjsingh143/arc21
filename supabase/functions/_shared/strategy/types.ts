@@ -100,6 +100,38 @@ export interface StrategyDecision {
    * rendering.
    */
   evs?: Readonly<Partial<Record<StrategyAction, number>>>;
+  /**
+   * The two probabilities the Analysis surface may show, from the same solve as
+   * `evs`.
+   *
+   * Optional because a table generated before they existed is still a valid
+   * table: a consumer that finds them absent must show nothing rather than
+   * compute a substitute. That is the same fail-safe rule the recommendation
+   * itself follows, applied one level down — an estimated probability presented
+   * beside solver-exact EVs would be indistinguishable from one of them.
+   */
+  probabilities?: Readonly<StrategyProbabilities>;
+}
+
+/**
+ * Probabilities attached to a cell.
+ *
+ * Per DECISION, not per action: both are properties of the position the player
+ * is looking at — what one more card does to their hand, and how often the
+ * dealer breaks from that upcard — and neither depends on which action is
+ * eventually chosen.
+ */
+export interface StrategyProbabilities {
+  /**
+   * P(one more card busts this hand). Always 0 for a soft hand, which is a real
+   * answer rather than a missing one.
+   */
+  bustIfHit: number;
+  /**
+   * P(the dealer busts), conditioned on the peek having found no natural —
+   * the only state in which the player is ever asked to decide.
+   */
+  dealerBust: number;
 }
 
 // ---------------------------------------------------------------------------

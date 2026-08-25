@@ -473,6 +473,60 @@ export interface ActionEVs {
   SURRENDER: number | null;
 }
 
+/**
+ * The two probabilities the Analysis surface is allowed to show.
+ *
+ * Both come out of the SAME solve that produces the EVs above — the same
+ * depleted shoe, the same peek-conditioned dealer distribution — rather than
+ * from a second model that could drift from the first. That is the whole reason
+ * they are computed here instead of being estimated at render time: a number a
+ * player is shown next to an EV must have been produced by the same arithmetic
+ * as the EV, or the two can disagree and nothing will notice.
+ *
+ * They carry the solver's documented approximations and no others.
+ */
+export interface CompositionProbabilities {
+  /**
+   * P(the next single card takes this hand over 21).
+   *
+   * Zero for every soft hand — a hand whose ace can drop from 11 to 1 cannot
+   * bust on one card — and that zero is a real answer, not a missing one.
+   */
+  bustIfHit: number;
+  /**
+   * P(dealer's final total is a bust), conditioned exactly as every EV here is:
+   * the dealer has already peeked and does not hold a natural, and the player's
+   * own cards are out of the shoe.
+   */
+  dealerBust: number;
+}
+
+export type CompositionSolution = ActionEVs & CompositionProbabilities;
+
+/**
+ * P(the next single card busts a hand of this hard total), from the shoe as it
+ * actually stands after removal.
+ *
+ * Exported so `tests/strategy/solver.test.ts` can check it against a hand
+ * counted by hand rather than against another run of this function.
+ */
+export function bustIfHitProbability(
+  counts: Counts,
+  hardTotal: number,
+  hasAce: boolean,
+): number {
+  const remaining = totalCards(counts);
+  if (remaining === 0) return 0;
+
+  let busts = 0;
+  for (const value of VALUES) {
+    const available = at(counts, value);
+    if (available === 0) continue;
+    if (bestTotalOf(hardTotal + value, hasAce || value === 1) > 21) busts += available;
+  }
+  return busts / remaining;
+}
+
 export interface CompositionOptions {
   allowDouble: boolean;
   allowSplit: boolean;
@@ -488,7 +542,7 @@ export function solveComposition(
   upcard: number,
   rules: BlackjackRules,
   options: CompositionOptions,
-): ActionEVs {
+): CompositionSolution {
   const counts = fullShoe(rules.deckCount);
   counts[upcard] = at(counts, upcard) - 1;
   for (const card of cards) {
@@ -525,7 +579,15 @@ export function solveComposition(
     }
   }
 
-  return { STAND: stand, HIT: hit, DOUBLE: double, SPLIT: split, SURRENDER: surrender };
+  return {
+    STAND: stand,
+    HIT: hit,
+    DOUBLE: double,
+    SPLIT: split,
+    SURRENDER: surrender,
+    bustIfHit: bustIfHitProbability(counts, hardTotal, hasAce),
+    dealerBust: dist[DEALER_BUST_INDEX] ?? 0,
+  };
 }
 
 // ===========================================================================
@@ -625,7 +687,12 @@ export interface RowResult {
   fallbackAction?: StrategyAction;
   /** Sorted best-to-worst; used for margin reporting. */
   ranked: Array<{ action: StrategyAction; ev: number }>;
-  compositions: Array<{ cards: number[]; weight: number; evs: ActionEVs }>;
+  /**
+   * Averaged over the same compositions and the same weights as the EVs, so a
+   * cell's probability and its EV always describe the same population of hands.
+   */
+  probabilities: CompositionProbabilities;
+  compositions: Array<{ cards: number[]; weight: number; evs: CompositionSolution }>;
 }
 
 /**
@@ -695,6 +762,8 @@ export function solveRow(
   let doubleDefined = false;
   let splitDefined = false;
   let surrenderDefined = false;
+  let bustIfHit = 0;
+  let dealerBust = 0;
 
   const perComposition: RowResult["compositions"] = [];
 
@@ -717,6 +786,9 @@ export function solveRow(
       surrenderEv += weight * evs.SURRENDER;
       surrenderDefined = true;
     }
+
+    bustIfHit += weight * evs.bustIfHit;
+    dealerBust += weight * evs.dealerBust;
 
     perComposition.push({ cards: entry.cards, weight, evs });
   }
@@ -759,6 +831,7 @@ export function solveRow(
     evs,
     recommendedAction: best.action,
     ranked,
+    probabilities: { bustIfHit, dealerBust },
     compositions: perComposition,
   };
   if (fallbackAction !== undefined) result.fallbackAction = fallbackAction;

@@ -245,3 +245,53 @@ describe("the chart states the rules it belongs to", () => {
     expect(rulesetDisplayName("vegas_downtown")).toBe("Vegas Downtown");
   });
 });
+
+// ---------------------------------------------------------------------------
+
+describe("cells carry the solver's probabilities through to the guide", () => {
+  it("projects them for every cell the table prices", () => {
+    const chart = buildStrategyChart(ARC_STANDARD_STRATEGY_TABLE, "hard");
+    const cells = chart.rows.flatMap((row) => row.cells).filter((cell) => cell !== null);
+    expect(cells.length).toBeGreaterThan(100);
+    for (const cell of cells) {
+      expect(cell!.probabilities, cell!.key).not.toBeNull();
+      expect(cell!.probabilities!.dealerBust, cell!.key).toBeGreaterThan(0);
+    }
+  });
+
+  it("reads them from the entry rather than recomputing them", () => {
+    // The guide must show the same number the table does; a projection that
+    // worked one out for itself could drift from the cell it is describing.
+    const chart = buildStrategyChart(ARC_STANDARD_STRATEGY_TABLE, "hard");
+    const cell = chart.rows
+      .flatMap((row) => row.cells)
+      .find((candidate) => candidate?.key === "hard:16:10");
+    expect(cell).toBeDefined();
+    expect(cell!.probabilities).toEqual(
+      ARC_STANDARD_STRATEGY_TABLE.entries["hard:16:10"]!.probabilities,
+    );
+  });
+
+  it("carries null through when the table has none", () => {
+    // The fail-safe: a table generated before probabilities existed still
+    // renders a complete chart, one block shorter.
+    const stripped = {
+      ...ARC_STANDARD_STRATEGY_TABLE,
+      entries: Object.fromEntries(
+        Object.entries(ARC_STANDARD_STRATEGY_TABLE.entries).map(([key, decision]) => {
+          const { probabilities, ...rest } = decision;
+          void probabilities;
+          return [key, rest];
+        }),
+      ),
+    };
+    const chart = buildStrategyChart(stripped, "hard");
+    const cells = chart.rows.flatMap((row) => row.cells).filter((cell) => cell !== null);
+    expect(cells.length).toBeGreaterThan(100);
+    for (const cell of cells) {
+      expect(cell!.probabilities, cell!.key).toBeNull();
+      // ...and everything else about the cell is unchanged.
+      expect(cell!.action).toBe(ARC_STANDARD_STRATEGY_TABLE.entries[cell!.key]!.recommendedAction);
+    }
+  });
+});

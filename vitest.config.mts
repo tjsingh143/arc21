@@ -112,10 +112,38 @@ export default defineConfig({
        * and the decision grader, all of which decide a placement, a prize or a
        * leaderboard standing.
        */
-      include: ["shared/**/*.ts", "supabase/functions/_shared/**/*.ts"],
+      /*
+       * `src/features/practice` is measured because the Practice logic is a
+       * product surface in its own right, not a thin client over the engine. It
+       * decides what a player is told their accuracy is, what survives being
+       * killed mid-hand, and whether a hole in the strategy tables leaves any
+       * evidence at all — and none of those has a server to check it.
+       *
+       * Adding it paid for itself immediately: `strategy-diagnostics.ts`, the
+       * module whose entire job is to make a silent failure visible, measured
+       * 9.09% statements and 0% functions. Its cap, its de-duplication and its
+       * eviction order were all unexercised, and it is the last place a fault
+       * would announce itself from.
+       */
+      include: [
+        "shared/**/*.ts",
+        "supabase/functions/_shared/**/*.ts",
+        "src/features/practice/*.ts",
+      ],
       exclude: [
         "shared/**/index.ts",
         "supabase/functions/_shared/**/index.ts",
+        /*
+         * The two React hooks in that directory, and only those two. They import
+         * React Native, which cannot be parsed under Node — `typography.ts`
+         * calling `Platform.select` at module load is the wall this repository
+         * already has four modules working around — so they score zero and would
+         * drag an otherwise honest bar down to meaninglessness. Everything else
+         * under `features/practice` is deliberately runtime-neutral and is
+         * measured.
+         */
+        "src/features/practice/use-persist-on-background.ts",
+        "src/features/practice/use-table-feedback.ts",
         // Generated data, not logic: a 453-line lookup table emitted by the EV
         // solver. `tests/strategy/` asserts its CONTENTS cell by cell, which is
         // the thing worth checking about it.
@@ -235,6 +263,26 @@ export default defineConfig({
           branches: 60,
           functions: 75,
           lines: 75,
+        },
+        /*
+         * THE PRACTICE LOGIC.
+         *
+         * Not at the 90/90 engine bar, because it is not the engine: it cannot
+         * mis-settle a wager, and Practice chips have no value. But it decides
+         * every number on the Statistics screen and everything that survives a
+         * kill, so it sits well above the career bar.
+         *
+         * The figures are the measured ones rounded down (94.01 / 82.56 / 95.91
+         * / 97.80), so this ratchets rather than aspires — it fails when
+         * coverage drops, not before somebody has earned it. Proved to fail by
+         * breaching it deliberately, rather than assumed to work: see the phase
+         * 2 report.
+         */
+        "src/features/practice/**": {
+          statements: 92,
+          branches: 80,
+          functions: 94,
+          lines: 96,
         },
         /*
          * Progression sits at the engine bar rather than the career one. XP is

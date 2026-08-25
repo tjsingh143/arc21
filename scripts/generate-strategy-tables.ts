@@ -91,6 +91,10 @@ function toDecision(row: RowResult, rules: BlackjackRules): StrategyDecision {
     dealerUpcardValue: row.state.dealerUpcardValue,
     recommendedAction: row.recommendedAction,
     evs,
+    probabilities: {
+      bustIfHit: round(row.probabilities.bustIfHit),
+      dealerBust: round(row.probabilities.dealerBust),
+    },
   };
   if (row.state.pairValue !== undefined) decision.pairValue = row.state.pairValue;
   if (row.fallbackAction !== undefined) decision.fallbackAction = row.fallbackAction;
@@ -202,6 +206,12 @@ export function emitTableSource(
       ([action, value]) => `${action}: ${value}`,
     );
     parts.push(`evs: { ${evEntries.join(", ")} }`);
+    if (decision.probabilities !== undefined) {
+      parts.push(
+        `probabilities: { bustIfHit: ${decision.probabilities.bustIfHit}, ` +
+          `dealerBust: ${decision.probabilities.dealerBust} }`,
+      );
+    }
     lines.push(`    ${JSON.stringify(decision.key)}: { ${parts.join(", ")} },`);
   }
 

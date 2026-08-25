@@ -549,6 +549,35 @@ reproduced it on the second attempt, with the offending rows printed — and it
 turned out to be the RLS-scoping bug above rather than timing at all. Load was
 the trigger, not the cause: it made a second account exist at the same table.
 
+**An `accessibilityLabel` on a `Pressable` silences everything INSIDE it, so a
+scrim must never wrap its sheet.** Both Practice sheets were a labelled
+`Pressable` scrim containing the sheet: the whole Analysis surface — four
+expected values, two probabilities, the ruleset caption — collapsed into the two
+words "Close analysis" in the tree, and the review collapsed into "Close review".
+Nothing looked wrong; the failure screenshot shows every number rendered
+correctly. Found only by asserting on the RESULT — a probe could not see "Bust if
+you hit" on a screenshot that plainly showed it. Make the dismiss target a
+SIBLING occupying the visible scrim above the sheet; an `absoluteFill` sibling
+fixes the tree but puts the hit area's centre under the sheet, so a
+coordinate-driven tap hits the sheet instead. This is the third instance (Home
+card, accessibility switches, these two sheets).
+
+**A degraded Maestro hierarchy has a signature: identifier-bearing nodes only.**
+Three consecutive runs had `tapOn` report COMPLETED and do nothing, with a dump
+of EIGHT nodes — the three carrying an `accessibilityIdentifier` plus the status
+bar — while the screenshot showed a full screen and the device log carried
+`XCTAS Error: Error getting main window Unknown kAXError value -25218`. The
+driver taps coordinates from a snapshot it could not read. Killing stale
+`maestro-driver-ios` processes fixes it for a plain launch but NOT after an
+in-session `stopApp`/`launchApp` — use a deep link there.
+
+**A source-scan gate written as `grep … $DIRS` in zsh scans NOTHING.** zsh does
+not word-split an unquoted parameter, so grep receives one nonexistent path,
+errors, and a trailing `|| echo NONE` prints reassurance. The phase 2 anti-fake
+sweep reported clean across nine directories this way before it had scanned a
+single file. Use an array (`DIRS=(a b c)` … `"${DIRS[@]}"`) and print the file
+count before the result.
+
 **A DEEP LINK is the reliable way to reach a screen from Maestro.**
 `arc21://table/lobby` lands directly; tapping through the tab bar cost several
 runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note

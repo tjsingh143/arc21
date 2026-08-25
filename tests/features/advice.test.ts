@@ -1,200 +1,278 @@
 /**
- * Table advice — the bridge from authoritative game state to the validated
- * strategy tables.
+ * THE ADVICE BRIDGE, INCLUDING THE PARTS NOTHING WAS EXERCISING.
  *
- * The property that matters most here is the fail-safe: when the tables cannot
- * answer, the advisor must stay silent rather than guess. A confidently wrong
- * recommendation in a teaching product is worse than no recommendation at all.
+ * `computeAdvice` is well covered through the table and the store. Three things
+ * beside it were not, and each is load-bearing in a way that fails quietly:
+ *
+ *   - `adviceDiagnosticKey` is the identity the table's recording effect is
+ *     keyed on. If it were unstable across renders, every re-render would count
+ *     a fresh occurrence of the same hole and the count would measure React
+ *     rather than the tables. If it collapsed two different holes together, the
+ *     second would never be recorded at all.
+ *   - the early returns in `computeAdvice` are the fail-safe path. "No advice"
+ *     has to be reachable for a settled hand, a hand that is not the active one
+ *     and a dealer with no upcard — none of which is a bug, all of which would
+ *     be a bug if they produced a recommendation.
+ *   - the formatters decide what a player reads. `-0.00` rendering as a loss
+ *     and a probability rounding the wrong way are both wrong on screen and
+ *     invisible in a type check.
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { getLegalActions } from "../../shared/blackjack/legal-actions.js";
 import {
+  actionLabel,
+  adviceDiagnosticKey,
   computeAdvice,
   explainRecommendation,
   format,
   formatMagnitude,
+  formatProbability,
   gradeDecision,
-  actionLabel,
+  NO_ADVICE,
+  recordAdviceDiagnostic,
 } from "../../src/features/practice/advice.js";
+import {
+  resetStrategyDiagnostics,
+  strategyDiagnosticCount,
+  strategyDiagnostics,
+} from "../../src/features/practice/strategy-diagnostics.js";
+import type { StrategyDiagnostic } from "../../shared/strategy/index.js";
+import { getLegalActions } from "../../shared/blackjack/legal-actions.js";
 import { betAndDeal, harness } from "../helpers/engine-harness.js";
 
-function adviceFor(shoe: string, bet = 100) {
-  const h = betAndDeal(harness({ shoe }), bet);
-  const seat = h.seat();
-  const legal = getLegalActions(h.state, "s1");
-  return { h, advice: computeAdvice(h.state, seat, legal.actions), legal };
+beforeEach(() => {
+  resetStrategyDiagnostics();
+});
+
+/** A real, live decision: hard 16 against a dealer ten. */
+function liveTable() {
+  const table = betAndDeal(harness({ shoe: "10S 10C 6H 7D 5C 4D" }), 100);
+  return {
+    table,
+    advice: computeAdvice(table.state, table.seat("s1"), getLegalActions(table.state, "s1").actions),
+  };
 }
 
-describe("advice derivation", () => {
-  it("advises standing on hard 17 against a 9", () => {
-    // Player 10+7, dealer 9 up.
-    const { advice } = adviceFor("10S 9D 7H 5C");
-    expect(advice.handLabel).toBe("Hard 17");
-    expect(advice.upcardLabel).toBe("9");
-    expect(advice.recommendation?.action).toBe("STAND");
+// ---------------------------------------------------------------------------
+
+describe("no advice is offered where there is no decision", () => {
+  it("says nothing before the cards are out", () => {
+    const table = harness({ shoe: "10S 10C 6H 7D" });
+    const advice = computeAdvice(table.state, table.seat("s1"), []);
+    expect(advice).toBe(NO_ADVICE);
+    expect(advice.recommendation).toBeNull();
+    expect(advice.probabilities).toBeNull();
+    expect(advice.diagnostic).toBeNull();
   });
 
-  it("advises hitting hard 16 against a 7", () => {
-    const { advice } = adviceFor("10S 7D 6H 5C");
-    expect(advice.handLabel).toBe("Hard 16");
-    expect(advice.recommendation?.action).toBe("HIT");
+  it("says nothing once the hand is no longer active", () => {
+    const table = betAndDeal(harness({ shoe: "10S 10C 6H 7D 5C" }), 100).send({ type: "STAND", seatId: "s1" });
+    const advice = computeAdvice(table.state, table.seat("s1"), []);
+    expect(advice.recommendation).toBeNull();
   });
 
-  it("advises splitting eights against a 7", () => {
-    const { advice } = adviceFor("8S 7D 8H 5C");
-    expect(advice.handLabel).toBe("8,8");
-    expect(advice.recommendation?.action).toBe("SPLIT");
+  it("says nothing when the dealer has no upcard to read", () => {
+    const { table } = liveTable();
+    const noUpcard = { ...table.state, dealer: { ...table.state.dealer, cards: [] } };
+    const advice = computeAdvice(noUpcard, table.seat("s1"), ["HIT", "STAND"]);
+    expect(advice).toBe(NO_ADVICE);
   });
 
-  it("advises standing on a pair of tens rather than splitting", () => {
-    // Legal to split under the equal-value policy; strategy still says stand.
-    const { advice, legal } = adviceFor("KS 6D QH 5C");
-    expect(legal.actions).toContain("SPLIT");
-    expect(advice.recommendation?.action).toBe("STAND");
-  });
-
-  it("advises doubling eleven against a 6", () => {
-    const { advice } = adviceFor("6S 6D 5H 5C");
-    expect(advice.handLabel).toBe("Hard 11");
-    expect(advice.recommendation?.action).toBe("DOUBLE");
-  });
-
-  it("advises surrendering 16 against a 10", () => {
-    const { advice } = adviceFor("10S 10D 6H 5C");
-    expect(advice.handLabel).toBe("Hard 16");
-    expect(advice.recommendation?.action).toBe("SURRENDER");
-  });
-
-  it("classifies soft hands correctly", () => {
-    // A,7 is soft 18 — a classic off-by-one if the classifier is wrong.
-    const { advice } = adviceFor("AS 3D 7H 5C");
-    expect(advice.handLabel).toBe("Soft 18");
+  it("is a shared frozen value, so a caller cannot corrupt the next silence", () => {
+    expect(NO_ADVICE.evs).toEqual([]);
+    const table = harness({ shoe: "10S 10C 6H 7D" });
+    expect(computeAdvice(table.state, table.seat("s1"), [])).toBe(NO_ADVICE);
   });
 });
 
-describe("legality is respected", () => {
-  it("never recommends an action the engine would reject", () => {
-    // After hitting, DOUBLE and SURRENDER are gone; advice must adapt.
-    const h = betAndDeal(harness({ shoe: "6S 6D 5H 5C 2D 9H 4S" }), 100).send({
-      type: "HIT",
-      seatId: "s1",
+// ---------------------------------------------------------------------------
+
+describe("the diagnostic key", () => {
+  it("is null when there is nothing wrong", () => {
+    const { advice } = liveTable();
+    expect(advice.diagnostic).toBeNull();
+    expect(adviceDiagnosticKey(advice)).toBeNull();
+  });
+
+  it("is stable for the same hole, so a re-render is not a second sighting", () => {
+    const withHole = {
+      ...NO_ADVICE,
+      diagnostic: {
+        code: "NO_ENTRY" as const,
+        message: "no entry",
+        key: "hard:16:10",
+        rulesetId: "arc-standard",
+        rulesetVersion: 1,
+      },
+    };
+    // Two independently constructed advice objects describing one hole.
+    const again = { ...withHole, diagnostic: { ...withHole.diagnostic } };
+    expect(adviceDiagnosticKey(withHole)).toBe(adviceDiagnosticKey(again));
+    expect(adviceDiagnosticKey(withHole)).toBe("arc-standard@1|NO_ENTRY|hard:16:10");
+  });
+
+  it("separates holes that differ in code, coordinate or ruleset", () => {
+    const base: StrategyDiagnostic = {
+      code: "NO_ENTRY",
+      message: "",
+      key: "hard:16:10",
+      rulesetId: "arc-standard",
+      rulesetVersion: 1,
+    };
+    const keyOf = (patch: Partial<typeof base>) =>
+      adviceDiagnosticKey({ ...NO_ADVICE, diagnostic: { ...base, ...patch } });
+
+    const keys = new Set([
+      keyOf({}),
+      keyOf({ code: "NO_TABLE" }),
+      keyOf({ key: "soft:18:9" }),
+      keyOf({ rulesetId: "vegas" }),
+      keyOf({ rulesetVersion: 2 }),
+    ]);
+    expect(keys.size).toBe(5);
+  });
+
+  it("renders a missing coordinate as a placeholder rather than as undefined", () => {
+    const key = adviceDiagnosticKey({
+      ...NO_ADVICE,
+      diagnostic: {
+        code: "INVALID_STATE",
+        message: "",
+        key: null,
+        rulesetId: "arc-standard",
+        rulesetVersion: 1,
+      },
     });
-    const legal = getLegalActions(h.state, "s1");
-    const advice = computeAdvice(h.state, h.seat(), legal.actions);
-
-    expect(legal.actions).not.toContain("DOUBLE");
-    if (advice.recommendation) {
-      expect(legal.actions).toContain(advice.recommendation.action);
-    }
-  });
-
-  it("falls back to a legal action when doubling is unaffordable", () => {
-    // Eleven vs 6 wants DOUBLE, but the stack cannot cover a second wager.
-    const h = betAndDeal(
-      harness({
-        shoe: "6S 6D 5H 5C 9D",
-        seats: [{ seatId: "s1", displayName: "T", stack: 150 }],
-      }),
-      100,
-    );
-    const legal = getLegalActions(h.state, "s1");
-    const advice = computeAdvice(h.state, h.seat(), legal.actions);
-
-    expect(legal.actions).not.toContain("DOUBLE");
-    expect(advice.recommendation?.action).toBe("HIT");
-    expect(advice.recommendation?.usedFallback).toBe(true);
-  });
-
-  it("prices only the legal actions", () => {
-    const { advice, legal } = adviceFor("6S 6D 5H 5C");
-    for (const entry of advice.evs) {
-      expect(legal.actions).toContain(entry.action);
-    }
-  });
-
-  it("orders EVs best first", () => {
-    const { advice } = adviceFor("10S 9D 7H 5C");
-    const evs = advice.evs.map((entry) => entry.ev);
-    expect([...evs].sort((a, b) => b - a)).toEqual(evs);
+    expect(key).toBe("arc-standard@1|INVALID_STATE|-");
+    expect(key).not.toContain("undefined");
+    expect(key).not.toContain("null");
   });
 });
 
-describe("fail-safe silence", () => {
-  it("says nothing during betting", () => {
-    const h = harness({ shoe: "10S 9D 7H 5C" });
-    const advice = computeAdvice(h.state, h.seat(), []);
-    expect(advice.recommendation).toBeNull();
-    expect(advice.handLabel).toBeNull();
+describe("recording a diagnostic", () => {
+  it("does nothing at all for advice that succeeded", () => {
+    const { advice } = liveTable();
+    recordAdviceDiagnostic(advice);
+    expect(strategyDiagnosticCount()).toBe(0);
   });
 
-  it("says nothing once the hand is settled", () => {
-    // Player natural: resolved during the deal, no decision to advise.
-    const h = betAndDeal(harness({ shoe: "AS 7D KH 9C" }), 100);
-    expect(h.state.phase).toBe("HAND_COMPLETE");
-    const advice = computeAdvice(h.state, h.seat(), []);
-    expect(advice.recommendation).toBeNull();
-  });
-
-  it("never reads the dealer hole card", () => {
-    // Identical upcards with wildly different hole cards must produce identical
-    // advice. If the hole card ever leaked into the model, these would differ.
-    const withLowHole = adviceFor("10S 7D 6H 2C").advice;
-    const withTenHole = adviceFor("10S 7D 6H KC").advice;
-
-    expect(withLowHole.recommendation?.action).toBe(withTenHole.recommendation?.action);
-    expect(withLowHole.evs).toEqual(withTenHole.evs);
+  it("records the reason when there is one", () => {
+    recordAdviceDiagnostic({
+      ...NO_ADVICE,
+      diagnostic: {
+        code: "RULES_MISMATCH",
+        message: "",
+        key: "hard:16:10",
+        rulesetId: "arc-standard",
+        rulesetVersion: 1,
+      },
+    });
+    const all = strategyDiagnostics();
+    expect(all).toHaveLength(1);
+    expect(all[0]!.code).toBe("RULES_MISMATCH");
+    expect(all[0]!.key).toBe("hard:16:10");
   });
 });
 
-describe("grading", () => {
-  it("marks the recommended action correct with zero EV lost", () => {
-    const { advice } = adviceFor("10S 9D 7H 5C");
-    const verdict = gradeDecision(advice, "STAND");
+// ---------------------------------------------------------------------------
+
+describe("grading a decision", () => {
+  it("returns nothing when the tables had no opinion, so accuracy cannot move", () => {
+    expect(gradeDecision(NO_ADVICE, "HIT")).toBeNull();
+  });
+
+  it("costs nothing for the recommended play", () => {
+    const { advice } = liveTable();
+    const verdict = gradeDecision(advice, advice.recommendation!.action);
     expect(verdict?.correct).toBe(true);
     expect(verdict?.evLost).toBe(0);
   });
 
-  it("prices the cost of a mistake", () => {
-    const { advice } = adviceFor("10S 9D 7H 5C");
-    const verdict = gradeDecision(advice, "HIT");
-    expect(verdict?.correct).toBe(false);
-    expect(verdict?.evLost).toBeGreaterThan(0);
-  });
-
-  it("returns null when there is nothing to grade, so accuracy cannot move", () => {
-    const h = harness({ shoe: "10S 9D 7H 5C" });
-    const advice = computeAdvice(h.state, h.seat(), []);
-    expect(gradeDecision(advice, "HIT")).toBeNull();
+  it("never reports a negative cost", () => {
+    const { advice } = liveTable();
+    for (const action of ["HIT", "STAND", "DOUBLE", "SURRENDER"] as const) {
+      const verdict = gradeDecision(advice, action);
+      if (verdict?.evLost !== null && verdict?.evLost !== undefined) {
+        expect(verdict.evLost, action).toBeGreaterThanOrEqual(0);
+      }
+    }
   });
 });
 
-describe("presentation", () => {
-  it("formats EVs to two decimals with a true minus sign", () => {
-    expect(format(-0.1449)).toBe("−0.14");
-    expect(format(0.1899)).toBe("+0.19");
+// ---------------------------------------------------------------------------
+
+describe("explaining a recommendation", () => {
+  it("says nothing when there is nothing to explain", () => {
+    expect(explainRecommendation(NO_ADVICE)).toBeNull();
+  });
+
+  it("compares the best two priced actions", () => {
+    const { advice } = liveTable();
+    const text = explainRecommendation(advice)!;
+    expect(text).toMatch(/averages/);
+    expect(text).toMatch(/against/);
+  });
+
+  it("falls back to a plain sentence when fewer than two actions are priced", () => {
+    // A cell can legitimately price only one action. The explanation must still
+    // be a sentence about this hand rather than a comparison with nothing.
+    const { advice } = liveTable();
+    const thin = { ...advice, evs: advice.evs.slice(0, 1) };
+    const text = explainRecommendation(thin)!;
+    expect(text).toContain(advice.handLabel!);
+    expect(text).toContain(advice.upcardLabel!);
+    expect(text).not.toMatch(/against .*for/);
+  });
+
+  it("has a verb for every action it can recommend", () => {
+    // `verb()` is a switch with no default; a new action would fall through it
+    // silently. Every label is exercised here so that cannot happen unnoticed.
+    const { advice } = liveTable();
+    for (const action of ["HIT", "STAND", "DOUBLE", "SPLIT", "SURRENDER"] as const) {
+      const text = explainRecommendation({
+        ...advice,
+        evs: [{ action, ev: 0.1 }],
+        recommendation: { ...advice.recommendation!, action },
+      })!;
+      expect(text, action).toMatch(/^(Hitting|Standing|Doubling|Splitting|Surrendering)/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("the formatters decide what a player reads", () => {
+  it("signs an expected value and never renders a minus zero", () => {
+    expect(format(0.1234)).toBe("+0.12");
+    expect(format(-0.5)).toBe("−0.50");
     expect(format(0)).toBe("0.00");
-    // Never render "-0.00", which reads as a real negative.
+    // -0.001 rounds to zero: it must not read as a loss.
     expect(format(-0.001)).toBe("0.00");
+    expect(format(-0.001)).not.toContain("−");
   });
 
-  it("explains a recommendation using the solver's own numbers", () => {
-    const { advice } = adviceFor("10S 9D 7H 5C");
-    const explanation = explainRecommendation(advice);
-    expect(explanation).toContain("standing");
-    expect(explanation).toMatch(/−?\d\.\d\d/);
+  it("uses a true minus sign rather than a hyphen", () => {
+    expect(format(-0.5)).toContain("−");
+    expect(format(-0.5)).not.toContain("-");
   });
 
-  it("labels actions for display", () => {
+  it("drops the sign where the surrounding words already carry it", () => {
+    expect(formatMagnitude(-0.164)).toBe("0.16");
+    expect(formatMagnitude(0.164)).toBe("0.16");
+  });
+
+  it("renders a probability as a whole percent", () => {
+    expect(formatProbability(0)).toBe("0%");
+    expect(formatProbability(1)).toBe("100%");
+    expect(formatProbability(0.61165)).toBe("61%");
+    // Rounds rather than truncates: 0.615 is nearer 62 than 61.
+    expect(formatProbability(0.615)).toBe("62%");
+    expect(formatProbability(0.2301)).toBe("23%");
+  });
+
+  it("labels an action in words", () => {
     expect(actionLabel("HIT")).toBe("Hit");
     expect(actionLabel("SURRENDER")).toBe("Surrender");
-  });
-
-  it("renders a cost without a sign, since the surrounding words carry it", () => {
-    // "Costs about +0.16 of a bet" reads as a gain. The magnitude must be bare.
-    expect(formatMagnitude(0.1638)).toBe("0.16");
-    expect(formatMagnitude(-0.1638)).toBe("0.16");
-    expect(formatMagnitude(0)).toBe("0.00");
   });
 });

@@ -38,7 +38,27 @@ import { rate, safeDivide, type Rate } from "./rate.js";
  * if the two ever drift apart.
  */
 export interface PracticeStatsSnapshot {
+  /** Rounds dealt and settled. A split round is one. */
   handsPlayed: number;
+  /** Individual hands settled. A split round contributes two or more. */
+  handsSettled: number;
+  handsWon: number;
+  handsLost: number;
+  handsPushed: number;
+  blackjacks: number;
+  busts: number;
+  handsSurrendered: number;
+  chipsWagered: number;
+  netChips: number;
+  maxBankroll: number;
+  doubles: number;
+  doubleWins: number;
+  splits: number;
+  surrenders: number;
+  insuranceTaken: number;
+  currentWinStreak: number;
+  longestWinStreak: number;
+  longestLossStreak: number;
   decisions: number;
   correct: number;
   unaidedDecisions: number;
@@ -132,22 +152,25 @@ export function summariseMastery(stats: PracticeStatsSnapshot): MasterySummary {
 // Play
 // ---------------------------------------------------------------------------
 
-/**
- * Why the Play section shows no win / loss / push or blackjack counts.
- *
- * The local Practice session records hands played, graded decisions, and the
- * bankroll. It does **not** retain the result of each settled hand, so those
- * counters cannot be derived from anything on this device. Rendering them as
- * zeros — or reconstructing them from the bankroll — would be inventing data,
- * which this product does not do.
- */
-export const HAND_RESULTS_UNAVAILABLE =
-  "Wins, losses, pushes and blackjacks are not shown because this device records " +
-  "hands played, decisions and chips — not the result of each hand. Showing them " +
-  "would mean inventing them.";
-
 export interface PlaySummary {
+  /** Rounds. One deal, however many hands a split made of it. */
   handsPlayed: number;
+  /** Settled hands. Wins, losses, pushes and surrenders sum to this. */
+  handsSettled: number;
+  handsWon: number;
+  handsLost: number;
+  handsPushed: number;
+  handsSurrendered: number;
+  blackjacks: number;
+  busts: number;
+  /**
+   * Share of settled hands won. Recorded and shown — but never the headline.
+   * See the module header: this measures the shoe, not the player.
+   */
+  winRate: Rate;
+  pushRate: Rate;
+  /** Naturals per settled hand. */
+  blackjackRate: Rate;
   decisions: number;
   /** Graded decisions per hand. Null before the first hand completes. */
   decisionsPerHand: number | null;
@@ -156,6 +179,17 @@ export interface PlaySummary {
   startingBankroll: number;
   /** Bankroll minus starting bankroll. Null when no session is loaded. */
   netChips: number | null;
+  /** Every chip ever committed to a hand here, doubles and splits included. */
+  chipsWagered: number;
+  /** Chips wagered per round. Null before the first round. */
+  averageBet: number | null;
+  /**
+   * Lifetime net across every settled hand, which is NOT the session figure:
+   * a bankroll reset starts the session over and leaves this untouched.
+   */
+  lifetimeNetChips: number;
+  /** Highest chip total ever held here, stack plus anything on the felt. */
+  maxBankroll: number;
 }
 
 export function summarisePlay(input: StatisticsInput): PlaySummary {
@@ -166,13 +200,31 @@ export function summarisePlay(input: StatisticsInput): PlaySummary {
   const committed = nonNegative(input.committedChips ?? 0);
   const total = bankroll === null ? null : nonNegative(bankroll) + committed;
 
+  const handsPlayed = nonNegative(stats.handsPlayed);
+  const handsSettled = nonNegative(stats.handsSettled);
+  const chipsWagered = nonNegative(stats.chipsWagered);
+
   return {
-    handsPlayed: nonNegative(stats.handsPlayed),
+    handsPlayed,
+    handsSettled,
+    handsWon: nonNegative(stats.handsWon),
+    handsLost: nonNegative(stats.handsLost),
+    handsPushed: nonNegative(stats.handsPushed),
+    handsSurrendered: nonNegative(stats.handsSurrendered),
+    blackjacks: nonNegative(stats.blackjacks),
+    busts: nonNegative(stats.busts),
+    winRate: rate(stats.handsWon, handsSettled),
+    pushRate: rate(stats.handsPushed, handsSettled),
+    blackjackRate: rate(stats.blackjacks, handsSettled),
     decisions: nonNegative(stats.decisions),
-    decisionsPerHand: safeDivide(nonNegative(stats.decisions), nonNegative(stats.handsPlayed)),
+    decisionsPerHand: safeDivide(nonNegative(stats.decisions), handsPlayed),
     bankroll: total,
     startingBankroll,
     netChips: total === null ? null : total - startingBankroll,
+    chipsWagered,
+    averageBet: safeDivide(chipsWagered, handsPlayed),
+    lifetimeNetChips: Number.isFinite(stats.netChips) ? Math.trunc(stats.netChips) : 0,
+    maxBankroll: nonNegative(stats.maxBankroll),
   };
 }
 
@@ -205,10 +257,29 @@ export interface MistakePattern {
   evLost: number | null;
 }
 
+/**
+ * Lifetime counts of the actions that cost or save chips.
+ *
+ * Separate from `byAction`, which is bounded by the decision log and answers
+ * "how often did you take the advice". These answer "how many did you play",
+ * over everything ever recorded on this device.
+ */
+export interface LifetimeActions {
+  doubles: number;
+  /** Doubled hands that won. A doubled hand that busts is never one. */
+  doubleWins: number;
+  doubleWinRate: Rate;
+  splits: number;
+  surrenders: number;
+  insuranceTaken: number;
+}
+
 export interface BehaviourSummary {
   /** How many logged decisions this covers. The log is capped by the store. */
   window: number;
   byAction: Record<StrategyAction, ActionTally>;
+  /** Lifetime, not windowed. */
+  lifetime: LifetimeActions;
   /** Lifetime EV given up, in units of the original wager. */
   estimatedEvLost: number;
   /** Lifetime EV lost per hundred decisions, or null with no decisions. */
@@ -244,6 +315,14 @@ export function summariseBehaviour(
   return {
     window: decisionLog.length,
     byAction,
+    lifetime: {
+      doubles: nonNegative(stats.doubles),
+      doubleWins: nonNegative(stats.doubleWins),
+      doubleWinRate: rate(stats.doubleWins, stats.doubles),
+      splits: nonNegative(stats.splits),
+      surrenders: nonNegative(stats.surrenders),
+      insuranceTaken: nonNegative(stats.insuranceTaken),
+    },
     estimatedEvLost: evLost,
     evLostPerHundredDecisions: perDecision === null ? null : perDecision * 100,
     costliest: costliestMistakes(decisionLog),
@@ -313,6 +392,19 @@ export interface StreakSummary {
   /** Mistakes running up to the most recent decision. */
   currentIncorrect: number;
   worstIncorrect: number;
+  /**
+   * Round-level runs, which ARE lifetime — the store carries them forward
+   * rather than recomputing them from a bounded log.
+   *
+   * Kept apart from the decision streaks above and never presented as an
+   * achievement: a run of winning hands says nothing about the player. It is
+   * here because the specification asks for it and because a player is entitled
+   * to see what happened, not because it measures anything.
+   */
+  currentRoundWins: number;
+  currentRoundLosses: number;
+  longestRoundWins: number;
+  longestRoundLosses: number;
 }
 
 /**
@@ -324,7 +416,10 @@ export interface StreakSummary {
  *
  * `decisionLog` arrives newest-first, matching the store.
  */
-export function summariseStreaks(decisionLog: readonly DecisionRecord[]): StreakSummary {
+export function summariseStreaks(
+  decisionLog: readonly DecisionRecord[],
+  stats?: PracticeStatsSnapshot,
+): StreakSummary {
   let bestCorrect = 0;
   let worstIncorrect = 0;
   let runCorrect = 0;
@@ -351,12 +446,20 @@ export function summariseStreaks(decisionLog: readonly DecisionRecord[]): Streak
   const currentCorrect = runCorrect;
   const currentIncorrect = runIncorrect;
 
+  // `currentWinStreak` carries both directions in one field: positive is a
+  // winning run, negative a losing one, zero a push or nothing yet.
+  const run = Number.isFinite(stats?.currentWinStreak) ? Math.trunc(stats!.currentWinStreak) : 0;
+
   return {
     window: decisionLog.length,
     currentCorrect,
     bestCorrect,
     currentIncorrect,
     worstIncorrect,
+    currentRoundWins: Math.max(0, run),
+    currentRoundLosses: Math.max(0, -run),
+    longestRoundWins: nonNegative(stats?.longestWinStreak ?? 0),
+    longestRoundLosses: nonNegative(stats?.longestLossStreak ?? 0),
   };
 }
 
@@ -421,9 +524,9 @@ export function buildPracticeStatistics(input: StatisticsInput): PracticeStatist
     mastery: summariseMastery(input.stats),
     play,
     behaviour: summariseBehaviour(input.stats, input.decisionLog),
-    streaks: summariseStreaks(input.decisionLog),
+    streaks: summariseStreaks(input.decisionLog, input.stats),
     trend: accuracyTrend(input.decisionLog),
-    hasData: play.handsPlayed > 0 || play.decisions > 0,
+    hasData: play.handsPlayed > 0 || play.decisions > 0 || play.handsSettled > 0,
   };
 }
 

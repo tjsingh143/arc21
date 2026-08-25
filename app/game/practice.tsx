@@ -10,7 +10,7 @@
  * rather than shrinking four hands into unreadability.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -38,7 +38,15 @@ import {
   StrategyPanel,
 } from "../../src/components/table/StrategyPanel";
 import { TableSurface } from "../../src/features/cosmetics/art";
-import { actionLabel, computeAdvice, NO_ADVICE } from "../../src/features/practice/advice";
+import {
+  actionLabel,
+  adviceDiagnosticKey,
+  computeAdvice,
+  NO_ADVICE,
+  recordAdviceDiagnostic,
+} from "../../src/features/practice/advice";
+import { ReviewSheet } from "../../src/components/table/ReviewSheet";
+import { reviewLabelFor, showsChallengeFeedback } from "../../src/features/practice/assistance";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
 import { usePersistOnBackground } from "../../src/features/practice/use-persist-on-background";
 import {
@@ -70,6 +78,9 @@ export default function PracticeTableScreen() {
   const feedback = usePracticeStore((state) => state.feedback);
   const dismissFeedback = usePracticeStore((state) => state.dismissFeedback);
   const stats = usePracticeStore((state) => state.stats);
+  const decisionLog = usePracticeStore((state) => state.decisionLog);
+  const handHistory = usePracticeStore((state) => state.handHistory);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   /**
    * Legality is DERIVED from the subscribed game state, never fetched by calling
@@ -97,6 +108,23 @@ export default function PracticeTableScreen() {
     if (!current) return NO_ADVICE;
     return computeAdvice(game, current, legal.actions);
   }, [game, legal]);
+
+  /*
+   * A MISSING RECOMMENDATION LEAVES EVIDENCE.
+   *
+   * `computeAdvice` stays pure so it can live in a memo; recording is an effect,
+   * keyed on the diagnostic's identity so a re-render that leaves the same hole
+   * in place — expanding the panel, placing a chip — does not record it twice,
+   * while genuinely arriving at it again does. The table records in EVERY mode:
+   * Play hides the hint, but a hole in the tables is still a hole.
+   */
+  const diagnosticKey = adviceDiagnosticKey(advice);
+  useEffect(() => {
+    if (diagnosticKey !== null) recordAdviceDiagnostic(advice);
+    // `advice` is intentionally not a dependency: the identity string is what
+    // decides whether this is the same hole, and the object is new every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagnosticKey]);
 
   // Restore the saved session before showing a table. Starting a fresh shoe and
   // swapping it out a moment later would flash a hand the player never played.
@@ -219,7 +247,7 @@ export default function PracticeTableScreen() {
             Dealer
           </AppText>
           {dealerCards.length > 0 ? (
-            <HandCards cards={[...dealerCards]} size="medium" />
+            <HandCards cards={[...dealerCards]} size="medium" testID="dealer-hand-value" />
           ) : (
             <AppText variant="caption" color="textDisabled">
               Waiting for bets
@@ -262,6 +290,13 @@ export default function PracticeTableScreen() {
                       size="hero"
                       detail={`Bet ${formatChips(hand.wager)}`}
                       focused={seat.hands.length > 1}
+                      /*
+                       * Only the ACTIVE hand is rendered at hero size, so this
+                       * id is unique at any moment and names the hand being
+                       * acted on — which is exactly the thing the kill/resume
+                       * flow needs to compare across a relaunch.
+                       */
+                      testID="player-hand-value"
                     />
                     {hand.outcome ? (
                       <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
@@ -297,11 +332,37 @@ export default function PracticeTableScreen() {
           </View>
         ) : null}
 
+        {/*
+          What each mode offers AFTER the decision. Play gets the hand history
+          and nothing else — the specification's "optional hand history only" —
+          and Analysis gets the full decision log. Between hands, never during
+          one: a log open mid-decision is a hint in Play and Challenge.
+        */}
+        {(isBetting || isComplete) && (handHistory.length > 0 || decisionLog.length > 0) ? (
+          <Pressable
+            onPress={() => setReviewOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={reviewLabelFor(mode)}
+            accessibilityHint="Review the hands you have played on this device"
+            testID="open-review"
+            style={styles.reviewButton}
+          >
+            <AppText
+              variant="caption"
+              color="textSecondary"
+              align="center"
+              maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+            >
+              {reviewLabelFor(mode)}
+            </AppText>
+          </Pressable>
+        ) : null}
+
         {/* Learn and Analysis surface the recommendation before the decision. */}
         {!isBetting && !isComplete ? <StrategyPanel mode={mode} advice={advice} /> : null}
 
         {/* Challenge grades it immediately afterwards, without blocking play. */}
-        {feedback && mode === "challenge" ? (
+        {feedback && showsChallengeFeedback(mode) ? (
           <ChallengeFeedback
             correct={feedback.correct}
             recommended={actionLabel(feedback.recommended)}
@@ -344,6 +405,15 @@ export default function PracticeTableScreen() {
         props ("Insurance costs 0 chips") because the stake is only defined
         while the offer is live. Unmounting is unambiguous on every platform.
       */}
+      {reviewOpen ? (
+        <ReviewSheet
+          mode={mode}
+          handHistory={handHistory}
+          decisionLog={decisionLog}
+          onClose={() => setReviewOpen(false)}
+        />
+      ) : null}
+
       {game.phase === "INSURANCE_OFFER" ? (
         <InsuranceSheet
           visible
@@ -495,6 +565,13 @@ const styles = StyleSheet.create({
   },
   completeDock: {
     gap: spacing.md,
+  },
+  reviewButton: {
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: "center",
+    borderRadius: radius.small,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   resultSummary: {
     alignItems: "center",

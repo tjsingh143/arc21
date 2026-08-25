@@ -24,10 +24,12 @@ import {
 } from "../../src/features/auth/conversion.js";
 import { DEFAULT_SETTINGS } from "../../src/features/settings/settings.js";
 import type { PracticeStats } from "../../src/features/practice/practice-store.js";
+import { EMPTY_PRACTICE_STATS } from "../../src/features/practice/practice-record.js";
 
 const NOW = new Date("2026-08-15T12:00:00.000Z");
 
 const STATS: PracticeStats = {
+  ...EMPTY_PRACTICE_STATS,
   handsPlayed: 420,
   decisions: 1_000,
   correct: 940,

@@ -30,7 +30,7 @@ import { SurfaceCard } from "../../src/components/ui/Card";
 import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
 import { ARC_STANDARD_STRATEGY_TABLE } from "../../shared/strategy/index.js";
 import type { ColorToken } from "../../src/design/tokens";
-import { format } from "../../src/features/practice/advice";
+import { format, formatProbability } from "../../src/features/practice/advice";
 import {
   buildStrategyChart,
   chartRowAccessibilityLabel,
@@ -401,6 +401,41 @@ function CellDetail({
           This cell carries no priced actions, so no expected values are shown.
         </AppText>
       )}
+
+      {/*
+        The same two probabilities the Analysis mode shows at the table, from
+        the same solved cell. Absent entirely when the table does not carry
+        them — a chart generated before they existed is still a valid chart, and
+        a figure computed here to fill the gap would be indistinguishable from
+        a solved one.
+      */}
+      {cell.probabilities ? (
+        <>
+          <View style={styles.evRow}>
+            <View style={styles.evChip}>
+              <AppText variant="caption" color="textSecondary">
+                Bust if you hit
+              </AppText>
+              <AppText variant="bodyStrong" numeric>
+                {formatProbability(cell.probabilities.bustIfHit)}
+              </AppText>
+            </View>
+            <View style={styles.evChip}>
+              <AppText variant="caption" color="textSecondary">
+                Dealer busts
+              </AppText>
+              <AppText variant="bodyStrong" numeric>
+                {formatProbability(cell.probabilities.dealerBust)}
+              </AppText>
+            </View>
+          </View>
+          <AppText variant="caption" color="textDisabled">
+            Both from the same solve as the values above. The dealer figure
+            assumes they have already checked for blackjack and do not have one,
+            which is the only position you are ever asked to play from.
+          </AppText>
+        </>
+      ) : null}
     </View>
   );
 }

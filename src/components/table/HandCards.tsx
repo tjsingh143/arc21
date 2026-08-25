@@ -26,6 +26,17 @@ export interface HandCardsProps {
   dimmed?: boolean;
   /** Highlights the hand currently being acted on. */
   focused?: boolean;
+  /**
+   * Applied to the VALUE text, not to the container.
+   *
+   * `tests/e2e/practice-resume.yaml` copies this text before killing the app and
+   * asserts the same string after relaunching, which is how the on-device flow
+   * proves the same CARDS came back rather than only the same bankroll. It has
+   * to sit on the text node because `copyTextFrom` reads a node's text, and on
+   * iOS a label on an ancestor would replace the child text it is trying to
+   * read — the failure this repository has already been caught by twice.
+   */
+  testID?: string;
 }
 
 export function HandCards({
@@ -35,6 +46,7 @@ export function HandCards({
   detail,
   dimmed = false,
   focused = false,
+  testID,
 }: HandCardsProps) {
   const visible = cards.filter(isVisibleCard);
   const hasHidden = cards.some(isHiddenCard);
@@ -82,6 +94,7 @@ export function HandCards({
             variant={valueVariant}
             color={dimmed ? "textSecondary" : "textPrimary"}
             numeric
+            testID={testID}
             accessibilityLabel={accessibleValue}
           >
             {derivedLabel}

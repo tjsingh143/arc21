@@ -59,21 +59,34 @@ appId: com.arc21.app
       id: "home-practice"
     timeout: 30000
 
-# Reach Career through the Play tab, exercising the tab shell on the way.
-- repeat:
-    while:
-      notVisible: ".*Career.*"
-    times: 4
-    commands:
-      - tapOn: "Play"
-- extendedWaitUntil:
-    visible: ".*Career.*"
-    timeout: 10000
-- tapOn: ".*Career.*"
+# Touch the tab shell on the way past — `every-screen.yaml` is what actually
+# walks it, this is just so the flow does not start from a deep link alone.
+- tapOn: "Play"
 
+# THEN REACH THE MAP BY DEEP LINK, NOT BY MATCHING ".*Career.*".
+#
+# That selector matched the HOME card, whose accessibility label names the
+# career too, and tapping it opens the ACTIVE NODE rather than the map. The
+# flow then sat on First Deal's detail screen and failed the next line — an
+# assertion about the map — while every screen involved rendered perfectly.
+# Diagnosed from the failure screenshot plus a deep link to `arc21://career`,
+# which showed the map correct and "Locked" plainly on every gated node.
+#
+# A regex that matches two different destinations is not a selector. CLAUDE.md
+# already records the remedy: a deep link is the reliable way to reach a screen
+# from Maestro.
+- openLink: arc21://career
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+# The MAP, named by something only the map has.
 - extendedWaitUntil:
-    visible: ".*First Deal.*"
+    visible: ".*of 54 stars.*"
     timeout: 20000
+- assertVisible: ".*First Deal.*"
 
 # Only the first node is open on a fresh profile; the rest state that plainly.
 - assertVisible: ".*Locked.*"

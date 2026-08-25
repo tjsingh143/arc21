@@ -21,6 +21,10 @@ import {
   setPracticePersistence,
   usePracticeStore,
 } from "../../src/features/practice/practice-store.js";
+import {
+  EMPTY_PRACTICE_STATS,
+  type PracticeStats,
+} from "../../src/features/practice/practice-record.js";
 import { ARC_STANDARD_RULES, rulesetKey, rulesForTier, TABLE_TIERS } from "../../shared/blackjack/rules.js";
 import { applyCommand, createGame, startSession } from "../../shared/blackjack/reducer.js";
 import { SeededTestRandomSource } from "../../shared/blackjack/rng.js";
@@ -31,7 +35,8 @@ const PRACTICE_RULES = rulesForTier(
 );
 const KEY = rulesetKey(PRACTICE_RULES);
 
-const STATS = {
+const STATS: PracticeStats = {
+  ...EMPTY_PRACTICE_STATS,
   handsPlayed: 3,
   decisions: 7,
   correct: 6,
@@ -97,9 +102,12 @@ describe("round trip", () => {
     expect(session!.engineState.version).toBe(original.version);
     expect(session!.engineState.phase).toBe(original.phase);
     expect(session!.engineState.seats[0]!.hands).toHaveLength(1);
-    expect(session!.stats).toEqual(STATS);
     expect(session!.mode).toBe("challenge");
     expect(session!.lastBet).toBe(250);
+    // Statistics are no longer part of the session envelope — they have their
+    // own record, so a corrupt session cannot take them with it. Their round
+    // trip is asserted through `PracticePersistence` below.
+    expect(session!.stats).toEqual(EMPTY_PRACTICE_STATS);
   });
 
   it("stamps the schema version and ruleset", () => {

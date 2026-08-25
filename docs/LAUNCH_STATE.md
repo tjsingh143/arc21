@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 2 — Practice / Learning / Local Persistence (not started)
-**Last Completed Phase:** 1 — Blackjack Engine (PASS, 2026-08-24)
+**Current Phase:** 3 — Database / Auth (not started)
+**Last Completed Phase:** 2 — Practice / Learning / Local Persistence (PASS, 2026-08-24)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -15,7 +15,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 |-------|--------|----------------|
 | 0 — Baseline | **PASS** | Every gate below run and green on 2026-08-24. |
 | 1 — Blackjack Engine | **PASS** | 471 engine tests; six defects fixed, each regression proved to fail without its fix. |
-| 2 — Practice / Learning / Local Persistence | IN PROGRESS | Built; RAN (`practice-hand.yaml`, device SQLite inspected). |
+| 2 — Practice / Learning / Local Persistence | **PASS** | Nine defects fixed, each regression proved to fail without its fix; kill/resume verified on device with the same CARDS, not just the same bankroll. |
 | 3 — Database / Auth | IN PROGRESS | Built; 453 pgTAP assertions pass; auth boundary RAN. |
 | 4 — Economy / Server Solo | IN PROGRESS | Built; escrow/idempotency/overflow all graded RAN. |
 | 5 — Mobile Product / Career / Stats | IN PROGRESS | Built; `career-node.yaml` and `every-screen.yaml` RAN. |
@@ -62,6 +62,20 @@ off. Treat every one as unverified until its own phase runs.
   only by `npm run check:functions`.
 - Server-needed code lives in `supabase/functions/_shared/`; `shared/` holds a
   one-line barrel re-exporting it.
+- **Practice statistics and the Practice session are SEPARATE records.**
+  `practice:stats` and `practice:session`, written statistics-first. They shared
+  one blob before phase 2, so any reason to reject a session — a truncated write,
+  a schema bump, a ruleset change — destroyed the player's entire history along
+  with it.
+- **Failing safe on strategy is THREE things, not two:** play continues, the
+  recommendation is hidden, and the reason is RECORDED
+  (`features/practice/strategy-diagnostics.ts`). Without the third, a hole in the
+  tables is indistinguishable from an advisor with nothing to say.
+- **A label on a `Pressable` REPLACES the text of everything inside it on iOS.**
+  So a scrim that wraps a sheet silences the sheet. Both Practice sheets did
+  this; the dismiss target is now a sibling occupying the visible scrim only.
+  This has now bitten three times (the Home card, the accessibility switches,
+  these two sheets) — always invisibly, always with a perfect screenshot.
 
 ## Current migration head
 
@@ -108,25 +122,35 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-24
+## Last known green verification — 2026-08-24 (end of phase 2)
 
 ```
 npx tsc --noEmit                    exit 0
-npm run lint                        0 errors (38 warnings)
+npm run lint                        0 errors (37 warnings)
 npm run check:functions             all 3 Edge Functions typecheck
-npx vitest run tests/engine         17 files /   471 tests PASS   (phase 1: was 209)
-npm run test:unit                   94 files / 1,901 tests PASS   (phase 0: 86 / 1,639)
-npm run test:server                 13 files /   116 tests PASS  (load ~5, 0 absorptions)
-npm run test:coverage               exit 0 — every gate met; shared/blackjack 98.76/95.85/100/99.70
-supabase db reset                   43 migrations + seed, clean
-supabase test db                    23 files /   453 assertions PASS
-npm run benchmark                   1204-1347 us/hand (stashed baseline 1204-1246 on the same host)
+npm run strategy:generate           380 cells, 21.9 s, expectation -0.3345%/unit, 0 disagreements
+npm run test:unit                  103 files / 2,017 tests PASS   (phase 1: 94 / 1,901)
+npm run test:coverage              101 files / 1,991 tests, every gate met
+                                    shared/blackjack        98.76/95.85/100/99.70
+                                    _shared/strategy        98.12/94.40/100/99.29
+                                    src/features/practice   94.01/82.56/95.91/97.80  (NEW gate)
+npm run test:server                 13 files /   116 tests PASS  (live stack)
+maestro practice-hand.yaml          PASS
+maestro practice-resume.yaml        PASS   (extended: same cards, no duplicate settlement)
+maestro practice-analysis.yaml      PASS   (new)
+maestro career-node.yaml            PASS   (28 steps, after a selector fix)
 ```
 
-**Not re-run in phase 1:** the four Maestro E2E flows (need an idle host, a
-booted simulator and a debug build), `supabase db lint`, `npm run contrast:check`,
-`expo-doctor` and `expo export` — phase 1 changed no schema, no colour and no
-asset. All were green in phase 0 and nothing since touches them.
+Phase 1's figures, unchanged by phase 2 and not re-run: `supabase db reset` (43
+migrations + seed, clean), `supabase test db` (23 files / 453 assertions),
+`npm run benchmark` (1204-1347 us/hand).
+
+**Not re-run in phase 2:** `every-screen.yaml` — a `.env.local` is present and
+that flow asserts ".*no server configured.*" in five places, true only of an
+unconfigured build. Move it aside or expect those five to fail; it is not a
+regression. Also not re-run: `supabase db lint`, `npm run contrast:check`,
+`expo-doctor`, `expo export` and the benchmark — phase 2 changed no schema, no
+colour token and no engine hot path.
 
 **Benchmark note:** both figures above sit well over the 752-808 us/hand
 `CLAUDE.md` records. That is this host today, not a regression — proved by
@@ -151,14 +175,22 @@ proof in `docs/phase-reports/phase-00.md`. CI already does this correctly.
 
 ## Exact next phase
 
-**Phase 2 — Practice / Learning / Local Persistence.** Do not start it from this
-file alone: read `docs/phase-reports/phase-01.md` for what the engine now
-guarantees and `CLAUDE.md` for the invariants.
+**Phase 3 — Database / Auth.** Do not start it from this file alone: read
+`docs/phase-reports/phase-02.md` and `CLAUDE.md` for the invariants.
 
-Two things phase 1 leaves for phase 2 to know. `src/features/practice/
-persistence.ts` proves a restored blob by issuing one `ADVANCE` — the engine's
-round-trip safety is now tested directly in `tests/engine/serialization.test.ts`,
-so a Practice resume failure is a persistence-layer question, not an engine one.
-And `tests/helpers/engine-harness.ts` now REFUSES a fixture shoe shorter than the
-52-card safety reserve: such a fixture used to be silently reshuffled away by
-`startSession` and the test then ran against random cards.
+Four things phase 2 leaves for a later phase to know.
+
+1. **`src/features/practice` is now a COVERAGE-GATED area** (92/80/94/96 in
+   `vitest.config.mts`), and the gate is proved to fail when breached. Two React
+   hooks in that directory are excluded by name because React Native cannot be
+   parsed under Node.
+2. **Strategy cells now carry `probabilities`** (`bustIfHit`, `dealerBust`),
+   emitted by the solver and optional on the type. A consumer that finds them
+   absent must render nothing rather than compute a substitute — the same
+   fail-safe rule as the recommendation itself, one level down.
+3. **A deep link is how a Maestro flow should reach a screen.** Two flows lost
+   runs this phase to selectors that COMPLETED against the wrong destination or
+   against an unreadable hierarchy. `arc21://game/practice` and `arc21://career`
+   both land directly.
+4. **`every-screen.yaml` has still never been walked against a configured
+   build.** It asserts what a screen *says* in one configuration. → Phase 11.

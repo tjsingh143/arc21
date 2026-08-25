@@ -42,7 +42,6 @@ import { formatChipDelta, formatChips } from "../../src/design/typography";
 import { AccuracyRing, RateBar, Sparkline, StatRow } from "../../src/features/stats/charts";
 import {
   buildPracticeStatistics,
-  HAND_RESULTS_UNAVAILABLE,
   type MistakePattern,
 } from "../../src/features/stats/aggregate";
 import {
@@ -63,6 +62,7 @@ import {
   formatDecimal,
   formatPercent,
   sampleCaveat,
+  type Rate,
 } from "../../src/features/stats/rate";
 import { sessionChips } from "../../src/features/stats/session";
 import { hasRoute } from "../../src/features/home/route-availability";
@@ -281,12 +281,57 @@ export default function StatsScreen() {
 
               <SurfaceCard>
                 <StatRow label="Hands played" value={formatChips(play.handsPlayed)} />
+                <StatRow
+                  label="Hands settled"
+                  value={formatChips(play.handsSettled)}
+                  detail="A split round settles two or more"
+                />
                 <StatRow label="Decisions graded" value={formatChips(play.decisions)} />
                 <StatRow
                   label="Decisions per hand"
                   value={play.decisionsPerHand === null ? "—" : formatDecimal(play.decisionsPerHand)}
                   detail="Splits and doubles push this above one"
                 />
+
+                <View style={styles.divider} />
+
+                {/*
+                  Wins, losses, pushes and blackjacks, tallied from the engine's
+                  own settlement events — every one of them a `HAND_SETTLED` the
+                  engine authored, never reconstructed from the bankroll.
+
+                  This card used to carry a note saying these could not be shown
+                  because the device did not record them. It did not record them
+                  because the store threw the events away; the note described the
+                  store, not the product. Nothing here is the headline: the
+                  headline is Mastery, at the top of this screen.
+                */}
+                <StatRow
+                  label="Won"
+                  value={`${formatChips(play.handsWon)}${percentSuffix(play.winRate)}`}
+                  detail={
+                    play.blackjacks > 0
+                      ? `Including ${describeSample(play.blackjacks, "blackjack")}`
+                      : undefined
+                  }
+                  tone="success"
+                />
+                <StatRow
+                  label="Lost"
+                  value={formatChips(play.handsLost)}
+                  detail={play.busts > 0 ? `${formatChips(play.busts)} by busting` : undefined}
+                />
+                <StatRow
+                  label="Pushed"
+                  value={`${formatChips(play.handsPushed)}${percentSuffix(play.pushRate)}`}
+                />
+                {play.handsSurrendered > 0 ? (
+                  <StatRow
+                    label="Surrendered"
+                    value={formatChips(play.handsSurrendered)}
+                    detail="Neither a win nor a loss — half the wager came back"
+                  />
+                ) : null}
 
                 <View style={styles.divider} />
 
@@ -310,13 +355,28 @@ export default function StatsScreen() {
                   }
                 />
 
-                {/*
-                  Wins, losses, pushes and blackjacks are deliberately absent.
-                  This device records hands, decisions and chips — not the result
-                  of each hand — so those counters cannot be derived from
-                  anything here. Zeros would read as "you have won nothing".
-                */}
-                <UnavailableNote>{HAND_RESULTS_UNAVAILABLE}</UnavailableNote>
+                <StatRow
+                  label="Average bet"
+                  value={play.averageBet === null ? "—" : formatChips(Math.round(play.averageBet))}
+                  detail={`${formatChips(play.chipsWagered)} wagered in total`}
+                />
+                <StatRow
+                  label="Best bankroll"
+                  value={play.maxBankroll === 0 ? "—" : formatChips(play.maxBankroll)}
+                  detail="The most you have held here, chips on the felt included"
+                />
+                <StatRow
+                  label="Lifetime net"
+                  value={formatChipDelta(play.lifetimeNetChips)}
+                  detail="Across every hand ever settled here, resets included"
+                  tone={
+                    play.lifetimeNetChips === 0
+                      ? "textPrimary"
+                      : play.lifetimeNetChips > 0
+                        ? "success"
+                        : "danger"
+                  }
+                />
               </SurfaceCard>
             </View>
 
@@ -334,6 +394,33 @@ export default function StatsScreen() {
                 <ActionLine label="Doubles" tally={behaviour.byAction.DOUBLE} />
                 <ActionLine label="Splits" tally={behaviour.byAction.SPLIT} />
                 <ActionLine label="Surrenders" tally={behaviour.byAction.SURRENDER} />
+
+                <View style={styles.divider} />
+
+                {/*
+                  The lines above are windowed by the decision log and answer
+                  "how often did you take the advice". These are lifetime counts
+                  of what was actually played, which is a different question.
+                */}
+                <StatRow
+                  label="Doubles played"
+                  value={formatChips(behaviour.lifetime.doubles)}
+                  detail={
+                    behaviour.lifetime.doubles > 0
+                      ? `${formatChips(behaviour.lifetime.doubleWins)} won${percentSuffix(behaviour.lifetime.doubleWinRate)}`
+                      : undefined
+                  }
+                />
+                <StatRow label="Splits played" value={formatChips(behaviour.lifetime.splits)} />
+                <StatRow
+                  label="Surrenders taken"
+                  value={formatChips(behaviour.lifetime.surrenders)}
+                />
+                <StatRow
+                  label="Insurance taken"
+                  value={formatChips(behaviour.lifetime.insuranceTaken)}
+                  detail="A separate wager, never part of a basic-strategy cell"
+                />
               </SurfaceCard>
 
               <SurfaceCard>
@@ -401,6 +488,28 @@ export default function StatsScreen() {
                 <StatRow label="Longest run of mistakes" value={formatChips(streaks.worstIncorrect)} />
                 <AppText variant="caption" color="textDisabled" numeric>
                   {`Measured over the last ${describeSample(streaks.window, "decision")}, which is all this device keeps.`}
+                </AppText>
+
+                <View style={styles.divider} />
+
+                {/*
+                  Hand streaks are recorded and shown plainly, and are
+                  deliberately BELOW the decision streaks with no tone, no
+                  celebration and no ring. A run of winning hands is the shoe's
+                  doing, not the player's.
+                */}
+                <StatRow
+                  label="Hands won in a row now"
+                  value={formatChips(streaks.currentRoundWins)}
+                />
+                <StatRow label="Longest run of wins" value={formatChips(streaks.longestRoundWins)} />
+                <StatRow
+                  label="Longest run of losses"
+                  value={formatChips(streaks.longestRoundLosses)}
+                />
+                <AppText variant="caption" color="textDisabled">
+                  Hand streaks are luck, not skill. They are here because they
+                  happened, not because they measure anything.
                 </AppText>
               </SurfaceCard>
             </View>
@@ -543,6 +652,17 @@ function ModeFilter({
 }
 
 /** Times an action was taken, was the right play, and was left on the table. */
+/**
+ * " (48%)", or nothing at all when the rate has no sample.
+ *
+ * A percentage with no denominator is not 0% — it is "nothing has happened
+ * yet" — so this appends nothing rather than a misleading zero.
+ */
+function percentSuffix(value: Rate): string {
+  const rendered = formatPercent(value, "");
+  return rendered === "" ? "" : ` (${rendered})`;
+}
+
 function ActionLine({
   label,
   tally,
