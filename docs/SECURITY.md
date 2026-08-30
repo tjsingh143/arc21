@@ -21,6 +21,8 @@ attacker's control.
 | Bypass a table buy-in | Buy-in debit and stack creation happen in one transaction |
 | Replay an accepted economic command | `clientActionId` uniqueness returns the first committed result |
 | Act out of turn or illegally | Server re-runs `getLegalActions` on authoritative state |
+| Delete somebody else's account | `delete_own_account()` takes no arguments and reads the caller from `auth.uid()` |
+| Set a password shorter than the stated policy | `minimum_password_length = 8` in GoTrue, not only in the client's validator |
 
 **A hidden button is not a security boundary.** Every action is validated
 server-side on authoritative state regardless of what the UI rendered.
@@ -309,6 +311,27 @@ its validity. `additional_redirect_urls` in `supabase/config.toml` lists this
 exact string, not a `arc21://**` glob, so GoTrue itself refuses to redirect a
 recovery flow anywhere else — the allowlist is what stops the link being
 retargeted, not client-side handling of wherever it happens to land.
+
+**The eight-character password minimum is enforced by the server.**
+`src/features/auth/credentials.ts` has always stated eight and its own header
+says it is "deliberately client-side only" and "not a security control" — which
+was accurate and left the policy enforced nowhere, because GoTrue's default
+`minimum_password_length` is six. A plain POST to `/auth/v1/signup`, or the
+recovery flow driven by a modified client, set a six-character password on an
+account carrying a competitive record and a friend list. `supabase/config.toml`
+now says eight. Raising it affects passwords being SET, so no existing account
+is locked out.
+
+**Account deletion is total, and refuses for exactly one reason.** It is refused
+while the caller still holds a seat — `active` or `disconnected` — at a running
+table, because those seats hold escrowed chips. It is NOT refused for a seat the
+player has already left, even at a table that is still running: `left` is
+written only after `settleTableClosure` has returned the escrow. A lobby the
+departing player hosts is handed to the longest-seated member through
+`leave_room`, the one implementation of that rule, rather than deleted from
+under the players in it. Shared history survives with `user_id` nulled AND the
+seat's copied `display_name` replaced, because a foreign key anonymises the
+reference and not the name beside it.
 
 **The push sender is service-role only.** `send-notifications` reads other
 players' notification titles and bodies by design, so a signed-in player's token

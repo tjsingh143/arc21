@@ -183,7 +183,16 @@ enable_anonymous_sign_ins = false
 # Allow/disallow testing manual linking of accounts
 enable_manual_linking = false
 # Passwords shorter than this value will be rejected as weak. Minimum 6, recommended 8 or more.
-minimum_password_length = 6
+#
+# EIGHT, MATCHING `PASSWORD_MIN_LENGTH` in `src/features/auth/credentials.ts`.
+# That module's own header says it is "deliberately client-side only" and "not a
+# security control" — which was true, and left the eight-character policy stated
+# in one place and enforced in none, because GoTrue's default six accepted what
+# the client refused. A modified client, or a plain POST to /auth/v1/signup, set
+# a six-character password against an account carrying a competitive record and
+# a friend list. Raising it here only affects passwords being SET: an account
+# that already has a shorter one still signs in.
+minimum_password_length = 8
 # Passwords that do not meet the following requirements will be rejected as weak. Supported values
 # are: `letters_digits`, `lower_upper_letters_digits`, `lower_upper_letters_digits_symbols`
 password_requirements = ""

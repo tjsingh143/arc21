@@ -122,17 +122,28 @@ holds your data references it with `on delete cascade`. Your profile,
 statistics, ledger, friendships, tournament entries, cosmetics and push tokens
 go with it.
 
-**It refuses while you are sitting at an active table**, and says so. Deleting
-an account mid-hand would strand the other players at that table, so leave the
-table first. This is the only condition under which deletion is declined.
+**It refuses while you still hold a seat at a running table**, and says so.
+Deleting an account mid-hand would strand the other players at that table and
+leave chips in escrow with no owner, so leave the table first. This is the only
+condition under which deletion is declined. Having *previously* played at a
+table that is still running is not a reason: once you have stood up, your seat
+is settled and deletion proceeds.
+
+**If you host a table, it is handed over rather than closed.** The longest-seated
+player becomes the host, exactly as it would if you had simply left. A table is
+only closed when nobody else is sitting at it.
 
 Two consequences worth stating plainly, because they are not reversible:
 
 - **A deleted account cannot be recovered**, and neither can the chips,
   progress or record attached to it.
 - **Rows that describe a shared event may survive in an anonymised form** where
-  another player's record depends on them — a completed tournament's result,
-  for example. They no longer identify you.
+  another player's record depends on them — a completed tournament's result, or
+  a hand another player also played. They no longer identify you: the seat you
+  sat in keeps its cards and its outcome, and its name becomes "Deleted
+  player". Notifications other players are holding *about* you — a friend
+  request, a table invite — are deleted outright rather than anonymised,
+  because each one names you and points at a profile that no longer exists.
 
 Local practice data is on your device and is not touched by account deletion;
 deleting the app removes it.

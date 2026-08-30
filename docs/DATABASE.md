@@ -365,7 +365,7 @@ suite.
 ## Reversibility and recovery
 
 The specification asks that migrations be "reversible where reasonable or include
-documented recovery". This is the position for every one of the thirty-two, so
+documented recovery". This is the position for every one of the forty-four, so
 that a bad deploy is answered by reading rather than by improvising.
 
 **There is no down-migration framework, and adding one would be worse than not
@@ -438,7 +438,7 @@ bites on three of them, and it is worth naming which:
 
 ### The forward guarantee, which is the one that is actually tested
 
-`supabase db reset` applies all thirty-two from an empty database on every run of
+`supabase db reset` applies all forty-four from an empty database on every run of
 the test suite, and `20260818120000_authorization_gate.sql` fails the migration
 if the authorization surface is wrong when it finishes. A migration that cannot
 apply cleanly from scratch is caught before it is ever deployed, which is the
@@ -473,11 +473,33 @@ supabase/tests/
   17_leaderboards_and_cosmetics  board projections, decisions, unlocks
   18_notifications.test.sql      the notification writer, payload allowlist and
                                  delivery record
+  19_rate_limits.test.sql        every window is a policy row, and refusals are
+                                 not themselves recorded
+  20_authorization_surface.test  the whole client authorization surface, as a
+                                 function called from migrations and from here
+  21_daily_tiebreak.test.sql     the daily board's tie-breaks come from the
+                                 attempt, not the week bucket
+  22_migration_recovery.test.sql the three derived states are re-derivable
+  23_account_lifecycle.test.sql  deletion is total and refuses for exactly one
+                                 stated reason. Does NOT name the tables it
+                                 checks: it asks the catalogue for every
+                                 cascading reference to the account, so a table
+                                 added later without a cascade fails it with no
+                                 edit
 ```
 
-**355 assertions across 19 files.** They test authorization by **acting as the
+**469 assertions across 24 files.** They test authorization by **acting as the
 attacker** — `SET LOCAL ROLE authenticated` plus a `request.jwt.claims` subject,
 which is exactly the context PostgREST establishes for a real request.
+
+Two things pgTAP cannot reach, both in `tests/server/`:
+
+* **concurrency.** One session in one transaction cannot express two signups
+  racing for a handle. `account-lifecycle.integration.test.ts` fires eight at
+  once through the real GoTrue.
+* **the write half of the IDOR sweep.** `rls-idor.integration.test.ts` reads;
+  `rls-writes.integration.test.ts` writes, with a second real token, across
+  every one of the thirteen client write grants.
 
 Two real defects surfaced while writing them, both fixed:
 
@@ -485,6 +507,15 @@ Two real defects surfaced while writing them, both fixed:
    handle was `'p' || substr(id, 1, 12)`, and the collision branch retried the
    same string — so two accounts sharing their first twelve hex digits would
    deadlock on the unique index instead of falling back. Now suffixed until free.
+   Two further versions of the same bug have been found since, and both cost a
+   player their account: a derived handle that folded into a forbidden word
+   could not be repaired by suffixing at all (fixed in
+   `20260823150000`), and a *concurrent* signup for the same requested handle
+   violated `profiles_username_key` between the check and the insert, which
+   aborted the trigger, aborted the `auth.users` insert, and answered HTTP 500
+   (fixed in `20260829120000`). Every version of it looks like a different bug
+   and is the same one: **the pre-check is advisory, so the insert must be able
+   to fail and recover.**
 2. **Guard triggers were unreachable for client roles.** `is_client_role()` had
    its `EXECUTE` revoked from `PUBLIC` and never re-granted. Trigger functions
    run as the invoker, so *every* legitimate client write — renaming yourself,

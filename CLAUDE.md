@@ -584,6 +584,91 @@ runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note
 that iOS raises an "Open in Arc 21?" confirmation when the app is already
 foregrounded — handle it with a conditional `tapOn: "Open"`.
 
+**A UNIQUENESS PRE-CHECK IS ADVISORY, so the insert must be able to fail and
+recover.** `handle_new_user` asks whether a requested handle is taken and then
+inserts it, and `not exists (select …)` answers against COMMITTED rows. Two
+signups a millisecond apart both found it free; the second violated
+`profiles_username_key`, which aborted the trigger, aborted the `auth.users`
+insert that fired it, and answered the player **HTTP 500 with no account**.
+Twelve concurrent pairs, twelve 500s. Nothing had promised the handle — the very
+same function already falls back to a derived one when the name is taken — so
+the fix is to catch `unique_violation` on that ONE constraint and derive.
+Distinguish the constraint: a duplicate primary key there means the account
+already has a profile, which is a real fault. This is the third version of one
+bug (see `docs/DATABASE.md`); each looked different and each cost an account.
+
+**A FOREIGN KEY ANONYMISES A REFERENCE, NOT THE COPY BESIDE IT.**
+`game_session_seats.user_id` is `on delete set null` so a game other people
+played is not deleted under them — and `display_name` is a COPY of the profile's
+name taken when the seat opened, which no key touches. A deleted player stayed
+named, by name, on every table they had ever sat at, visible to every other
+participant, while both the migration and `docs/PRIVACY.md` said the row "no
+longer identifies you". When a column is denormalised for a good reason, it is
+outside every guarantee the key gives you.
+
+**A `no action` FOREIGN KEY TURNS A CASCADE INTO A REFUSAL somewhere that reads
+nothing like the constraint.** `matchmaking_queue.room_id` had no `on delete`
+clause. `rooms.host_user_id` cascades from `auth.users`, and whoever arrives
+first at a tier hosts the room `join_matchmaking` creates — so as soon as a
+second player was matched in, the first could not delete their account at all:
+`update or delete on table "rooms" violates foreign key constraint
+"matchmaking_queue_room_id_fkey"`, rendered by PostgREST as a 409 naming a
+constraint. Before trusting a `delete … cascade`, walk the FK graph one hop
+past the tables you were thinking about.
+
+**A GUARD THAT COUNTS ROWS MUST ASK WHAT THE ROW'S STATUS MEANS.** Account
+deletion refused while any seat of the player's sat in an ACTIVE session —
+including seats with status `left`, which are written only after
+`settleTableClosure` has returned the escrow. So leaving a busy public table and
+then deleting produced "leave your table before deleting your account", telling
+the player to do the thing they had just done, for as long as the other players
+kept the table running. `active` and `disconnected` are held seats; `left` is
+not.
+
+**A POLICY THE CLIENT ENFORCES AND THE SERVER DOES NOT IS A STATED POLICY, NOT
+AN ENFORCED ONE.** `credentials.ts` has always required eight characters and its
+own header says it is "deliberately client-side only… not a security control" —
+both true, and together they left `minimum_password_length = 6` accepting what
+the client refused. When a validator's comment says the server checks this too,
+go and look.
+
+**A TEST THAT NAMES THE TABLES IT CHECKS STOPS CHECKING.**
+`11_delete_account.test.sql` warned in its own comment that "a per-table
+assertion would silently miss a table added later without a cascade" — and then
+named six tables. Sixteen migrations later nothing was checking notifications,
+push tokens, daily entries, tournament entries, rooms or the queue.
+`23_account_lifecycle.test.sql` asks the CATALOGUE for every cascading reference
+to the account instead, so a table added tomorrow fails it with no edit.
+
+**A FILTER THAT NAMES ONE COLUMN OF A NORMALISED PAIR IS A COIN FLIP.**
+`create_friendship_on_accept` stores `(least(a, b), greatest(a, b))`, so which
+column holds a given player is decided by how two random uuids sort.
+`friendships?user_id_a=eq.X` matched about half the time — and in the half where
+it did not, the "a stranger cannot delete it" assertion passed because it named
+no row, not because a policy stopped it. Reproduced on purpose first: seven
+failures in eight runs. Use `or=(user_id_a.eq.X,user_id_b.eq.X)`.
+
+**`supabase functions serve` ACCUMULATES, and `docker restart` KILLS IT.** Two
+server-suite failures in phase 3 were the local edge runtime, not the product:
+one file failed to COLLECT because the stack guard's 5 s probe landed inside a
+`CPU time soft limit reached` window, and `accepts exactly one of twenty
+simultaneous commands` timed out at 90 s. The failing runs had logged **45 CPU
+soft-limit and 16 hard-limit events**; a freshly restarted `functions serve`
+logged 21 and went green with the same commit. Restart it before a full
+`npm run test:server`, and check `uptime` first. Separately: running
+`docker restart supabase_edge_runtime_arc21` while `functions serve` is up kills
+that process — it prints `container exited gracefully` and the gateway then
+answers **503**, which reads exactly like a broken stack. Restart
+`functions serve` instead.
+
+**`tests/strategy/generated-table.test.ts` IS LOAD-GATED, like Maestro.** Its
+`beforeAll` re-solves the six-deck chart with a 180 s budget. Measured on this
+host: **29.9 s at load 5.8, 149.7 s at load 25** — reproduced by spinning one
+busy loop per core on purpose. Above roughly load 30 it crosses 180 s and the
+file fails with a hook timeout that reads like a solver regression. Check
+`uptime` before believing one, exactly as `CLAUDE.md` already says for Maestro
+and the benchmark.
+
 ---
 
 ## Product rules that are easy to get wrong

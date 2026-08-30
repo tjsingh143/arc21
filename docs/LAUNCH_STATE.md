@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 3 — Database / Auth (not started)
-**Last Completed Phase:** 2 — Practice / Learning / Local Persistence (PASS, 2026-08-24)
+**Current Phase:** 4 — Economy / Server Solo (not started)
+**Last Completed Phase:** 3 — Database / Auth / Account lifecycle (PASS, 2026-08-29)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -16,7 +16,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 0 — Baseline | **PASS** | Every gate below run and green on 2026-08-24. |
 | 1 — Blackjack Engine | **PASS** | 471 engine tests; six defects fixed, each regression proved to fail without its fix. |
 | 2 — Practice / Learning / Local Persistence | **PASS** | Nine defects fixed, each regression proved to fail without its fix; kill/resume verified on device with the same CARDS, not just the same bankroll. |
-| 3 — Database / Auth | IN PROGRESS | Built; 453 pgTAP assertions pass; auth boundary RAN. |
+| 3 — Database / Auth | **PASS** | Seven defects fixed, each regression proved to fail without its fix; the account lifecycle run end to end against the real GoTrue. |
 | 4 — Economy / Server Solo | IN PROGRESS | Built; escrow/idempotency/overflow all graded RAN. |
 | 5 — Mobile Product / Career / Stats | IN PROGRESS | Built; `career-node.yaml` and `every-screen.yaml` RAN. |
 | 6 — Social / Private Multiplayer | IN PROGRESS | Built; `private-lobby.yaml` passed 37 steps against a real server. |
@@ -62,6 +62,23 @@ off. Treat every one as unverified until its own phase runs.
   only by `npm run check:functions`.
 - Server-needed code lives in `supabase/functions/_shared/`; `shared/` holds a
   one-line barrel re-exporting it.
+- **Account deletion is TOTAL and refuses for exactly one reason.** It is
+  refused only while the caller still HOLDS a seat (`active` or `disconnected`)
+  at a running table — a `left` seat is already settled, and refusing on one
+  told a player to leave a table they had left. A lobby the departing player
+  hosts is handed over through `leave_room`, never deleted from under the
+  players in it. `23_account_lifecycle.test.sql` asks the CATALOGUE which
+  cascading references survive, so a new table with a user column and no cascade
+  fails it without anybody editing it.
+- **A foreign key anonymises a REFERENCE, not the copy beside it.**
+  `game_session_seats.display_name` is a copy of the profile's name; nothing
+  cleared it, so a deleted player stayed named on every table they had sat at.
+  Deletion now sets it to `Deleted player` explicitly.
+- **A uniqueness pre-check is advisory.** `handle_new_user` checks whether a
+  handle is taken and then inserts it; concurrent signups for one handle gave
+  the loser HTTP 500 and no account. The insert now catches `unique_violation`
+  on `profiles_username_key` and derives a fresh handle. Third version of this
+  same bug — see `docs/DATABASE.md`.
 - **Practice statistics and the Practice session are SEPARATE records.**
   `practice:stats` and `practice:session`, written statistics-first. They shared
   one blob before phase 2, so any reason to reject a session — a truncated write,
@@ -79,8 +96,8 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260824020000_cosmetic_unlock_fallthrough.sql`
-(43 migrations, all applied from scratch cleanly on 2026-08-24).
+`supabase/migrations/20260829120000_account_lifecycle_completeness.sql`
+(44 migrations, all applied from scratch cleanly on 2026-08-29).
 
 ## Important contracts / interfaces
 
@@ -105,6 +122,13 @@ None blocking. Recorded observations, all assigned onward:
    6 concurrent requests at load 13–16 → 3 answered, 3 × HTTP 504 after 150 s;
    the same 4-way test at load 5.8 → all under 0.2 s. **Run the server suite on
    an idle machine**, exactly as `CLAUDE.md` already requires for Maestro.
+   Seen twice again in phase 3, in both of its shapes: a collection failure from
+   the stack guard, and `accepts exactly one of twenty simultaneous commands`
+   timing out at 90 s. **`functions serve` ALSO accumulates** — the failing runs
+   had logged 45 CPU soft-limit and 16 hard-limit events; a freshly restarted
+   one logged 21 and went green. Restart it before a full server run. And never
+   `docker restart supabase_edge_runtime_arc21` while it is running: that kills
+   the process and the gateway then answers 503.
 2. **`rate_limit_events` FK violation for a non-existent user** — a validly
    signed token for an account that does not exist cannot have its rate limit
    recorded (`rate_limit_events_user_id_fkey`). Logged as a warning and handled;
@@ -115,6 +139,12 @@ None blocking. Recorded observations, all assigned onward:
    `supabase start --ignore-health-check`. Environment, not repo.
 4. **CI has never executed on a runner.** Every step has been run locally in the
    workflow's order. → **Phase 11.**
+5. **`tests/strategy/generated-table.test.ts` is load-gated.** Its `beforeAll`
+   re-solves the six-deck chart against a 180 s budget. Measured on this host by
+   loading it on purpose: **29.9 s at load 5.8, 149.7 s at load 25.** Above
+   roughly load 30 it crosses the budget and fails with a hook timeout that
+   reads like a solver regression. Environment, not product — but a shared CI
+   runner is exactly that machine. → **Phase 11.**
 
 ## External blockers
 
@@ -122,7 +152,33 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-24 (end of phase 2)
+## Last known green verification — 2026-08-29 (end of phase 3)
+
+```
+supabase db reset                   exit 0 · 44 migrations + seed, from empty
+supabase db lint                    no schema errors (extensions, private, public)
+supabase test db                    24 files /   469 tests PASS   (phase 2: 23 / 453)
+npx tsc --noEmit                    exit 0
+npm run lint                        0 errors (37 warnings)
+npm run check:functions             all 3 Edge Functions typecheck
+npm run test:unit                  103 files / 2,017 tests PASS
+npm run test:server                 15 files /   130 tests PASS   (phase 2: 13 / 116)
+                                    live stack, after a clean db reset AND a
+                                    freshly restarted `functions serve`
+```
+
+Auth journeys additionally exercised by hand against the running GoTrue and
+Mailpit — sign-up, sign-in, wrong password, unknown account, refresh, rotation,
+sign-out, recovery link, weak password, anonymous sign-in. Table in
+`docs/phase-reports/phase-03.md` §B5.
+
+**Not re-run in phase 3:** the Maestro flows, `npm run test:coverage`,
+`npm run strategy:generate`, `npm run contrast:check`, `npm run benchmark` and
+`expo export` — phase 3 changed no screen, no colour token, no engine hot path
+and no strategy input. Its own surface is the database, the Edge-function
+authorization boundary and GoTrue, all of which were run.
+
+## Previous green verification — 2026-08-24 (end of phase 2)
 
 ```
 npx tsc --noEmit                    exit 0
@@ -175,22 +231,41 @@ proof in `docs/phase-reports/phase-00.md`. CI already does this correctly.
 
 ## Exact next phase
 
-**Phase 3 — Database / Auth.** Do not start it from this file alone: read
-`docs/phase-reports/phase-02.md` and `CLAUDE.md` for the invariants.
+**Phase 4 — Economy / Server Solo.** Do not start it from this file alone: read
+`docs/phase-reports/phase-03.md` and `CLAUDE.md` for the invariants.
 
-Four things phase 2 leaves for a later phase to know.
+Six things phase 3 leaves for a later phase to know.
 
-1. **`src/features/practice` is now a COVERAGE-GATED area** (92/80/94/96 in
-   `vitest.config.mts`), and the gate is proved to fail when breached. Two React
-   hooks in that directory are excluded by name because React Native cannot be
-   parsed under Node.
-2. **Strategy cells now carry `probabilities`** (`bustIfHit`, `dealerBust`),
-   emitted by the solver and optional on the type. A consumer that finds them
-   absent must render nothing rather than compute a substitute — the same
-   fail-safe rule as the recommendation itself, one level down.
-3. **A deep link is how a Maestro flow should reach a screen.** Two flows lost
-   runs this phase to selectors that COMPLETED against the wrong destination or
-   against an unreadable hierarchy. `arc21://game/practice` and `arc21://career`
-   both land directly.
-4. **`every-screen.yaml` has still never been walked against a configured
+1. **`service_role` holds NO grant on any table in this schema**, deliberately —
+   the Edge Functions connect to Postgres directly. Reaching for the service key
+   over PostgREST answers 403 with a hint telling you to grant it, which is the
+   opposite of what this project wants. Read a profile with a real player's
+   token; confirm a deleted account through GoTrue's admin API.
+2. **`rls-idor` reads and `rls-writes` writes.** The write sweep covers all
+   thirteen client write grants with a second real token, and its completeness
+   is guaranteed by `assert_client_authorization_surface()` refusing a
+   fourteenth. Two shapes of denial are both correct: a `with check` violation
+   is a 403, a `using` mismatch is a 200 with an empty list — so assert the
+   TARGET ROW afterwards, never the status code alone.
+3. **`23_account_lifecycle.test.sql` names no tables.** It populates every
+   user-scoped table, deletes, then asks `pg_constraint` which cascading
+   references survive. Adding a table with a user column and no cascade fails it
+   with the table named and no edit to the file.
+4. **The gate now covers `private` too.** `assert_client_authorization_surface()`
+   refuses a `private` table without RLS, not only a `public` one. A new private
+   table needs `revoke all … from anon, authenticated, service_role` and
+   `enable row level security`, the same as its two neighbours.
+5. **`minimum_password_length` is 8 in `config.toml`**, matching
+   `PASSWORD_MIN_LENGTH`. Keep the two together: the client one is not a
+   security control and says so.
+6. **`every-screen.yaml` has still never been walked against a configured
    build.** It asserts what a screen *says* in one configuration. → Phase 11.
+
+And from phase 2, still true:
+
+- **`src/features/practice` is a COVERAGE-GATED area** (92/80/94/96 in
+  `vitest.config.mts`), proved to fail when breached.
+- **Strategy cells carry optional `probabilities`**; a consumer that finds them
+  absent renders nothing rather than computing a substitute.
+- **A deep link is how a Maestro flow should reach a screen** —
+  `arc21://game/practice`, `arc21://career`.
