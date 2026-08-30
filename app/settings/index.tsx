@@ -138,6 +138,26 @@ export default function SettingsScreen() {
           </SurfaceCard>
 
           <SurfaceCard>
+            {/*
+              THE ROW THAT DID NOT EXIST. `confirmLeavingOnlineGame` was
+              declared in `AppSettings`, defaulted to true, validated by the Zod
+              schema and written to disk on every save — and a full-repository
+              grep found three references to it, all inside `settings.ts`. No
+              row offered it and no call site read it.
+
+              It guards the one economic command a single mis-tap can fire:
+              "Leave table" sends `CASH_OUT`, closing the seat and returning the
+              escrowed stack, and it sits top-left of the table where a thumb
+              reaches for back. `shouldConfirmLeavingTable` is the predicate the
+              table now reads.
+            */}
+            <ToggleRow
+              label="Confirm before leaving an online table"
+              detail="Ask first, because leaving closes your seat and returns your chips."
+              value={settings.confirmLeavingOnlineGame}
+              disabled={!ready}
+              onChange={(next) => void update({ confirmLeavingOnlineGame: next })}
+            />
             <ToggleRow
               label="Large card labels"
               detail="Bigger ranks and suits on the cards themselves."

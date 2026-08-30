@@ -146,10 +146,18 @@ export function describeProgressionUnavailable(
     case "NO_ACCOUNT":
       return {
         title: "No level yet",
+        /*
+         * "This build has no sign-in" was true when it was written and false by
+         * the time anybody read it — the identical expiry that
+         * `describeCompetitionUnavailable` carried, found in the same sweep.
+         * The screen offering this note also offers a working sign-in, so the
+         * note now names it instead of denying it exists.
+         */
         body:
           "Level and XP are awarded by the server so they cannot be edited from a phone. " +
-          "This build has no sign-in, so there is no level to show — and showing " +
-          "“Level 1” would be inventing one.",
+          "You are playing as a guest, so there is no level to show — and showing " +
+          "“Level 1” would be inventing one. Create an account and your XP is " +
+          "kept from then on.",
       };
     case "OFFLINE":
       return {

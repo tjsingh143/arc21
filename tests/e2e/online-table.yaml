@@ -183,7 +183,34 @@ appId: com.arc21.app
     timeout: 45000
 
 # --- Leave, and be paid out ------------------------------------------------
+#
+# LEAVING NOW ASKS FIRST, and this flow is what proves the dialog is real.
+#
+# `AppSettings.confirmLeavingOnlineGame` defaults to true and — until phase 5 —
+# was read by nothing at all: declared, defaulted, validated and persisted, with
+# three references in the whole repository, all inside `settings.ts`. It guards
+# the one economic command a mis-tap can fire, because "Leave table" sends
+# `CASH_OUT`, and it sits where a thumb reaches for a back button that
+# `TABLE_SCREEN_OPTIONS` deliberately removed.
+#
+# The title is asserted BEFORE the tap. A `tapOn` that finds nothing fails, but a
+# tap that lands on the wrong thing "COMPLETED" — which is how three taps on the
+# accessibility switches once reported success and moved no switch.
 - tapOn: "Leave table"
+
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 15000
+# The dialog states the amount coming back, from the server's snapshot rather
+# than a local guess. Matched loosely on the digits so a different tier or a
+# different run of cards does not break the flow.
+- assertVisible: ".*chips return to your balance.*"
+
+# The DESTRUCTIVE button, which is deliberately not the cancel one. "Stay" is
+# `style: cancel`; this is `style: destructive`.
+- tapOn:
+    text: "Leave table"
+    index: 1
 
 # HOME, not the setup screen. `quick.tsx` REPLACES itself with the table rather
 # than pushing it, so leaving returns to what was underneath — which is right:

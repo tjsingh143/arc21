@@ -92,6 +92,20 @@ export interface OnlineTableStoreState {
   readonly pending: boolean;
   /** Chips staged locally before LOCK_BET. Not a wager until the server says so. */
   readonly stagedBet: number;
+  /**
+   * The last wager the SERVER accepted from this seat, for the Repeat control.
+   *
+   * THE DEFECT THIS CLOSES. `BettingBar` has always drawn a Repeat button and
+   * `app/table/[gameId].tsx` passed it `lastBet={0}` with an `onRepeat` of
+   * `() => undefined` — so at every server table the control rendered
+   * permanently disabled. Practice passes both for real and works; the online
+   * modes are exactly the ones where a player bets the same amount hand after
+   * hand.
+   *
+   * Recorded only when `LOCK_BET` came back ok, which is the whole point: a
+   * bet the server refused is not a bet to repeat.
+   */
+  readonly lastBet: number;
   readonly notice: string | null;
   /**
    * What the server said happened, most recently.
@@ -106,6 +120,16 @@ export interface OnlineTableStoreState {
   refresh: () => Promise<void>;
   addChip: (amount: number) => void;
   clearBet: () => void;
+  /**
+   * Stage the previous accepted wager again.
+   *
+   * Staged, never sent: the specification is explicit that a previous bet may
+   * be SUGGESTED next hand and must not be silently committed. It goes through
+   * the same clamp `addChip` uses, so a stack that shrank since — or a table
+   * whose maximum moved, which a tournament's boundary can do between hands —
+   * cannot stage an impossible amount.
+   */
+  repeatBet: () => void;
   lockBet: () => Promise<void>;
   act: (action: PlayerActionType) => Promise<void>;
   /**
@@ -220,6 +244,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   connection: LIVE,
   pending: false,
   stagedBet: 0,
+  lastBet: 0,
   notice: null,
   lastEvents: EMPTY_EVENTS,
 
@@ -235,6 +260,10 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     set({
       status: { kind: "at-table", state: read.state, seatId },
       stagedBet: 0,
+      // A different table has different limits and a different stack, and this
+      // client has no history at THIS one yet. Repeat stays unavailable until
+      // the server accepts a bet here.
+      lastBet: 0,
       notice: null,
       lastEvents: read.events,
     });
@@ -311,6 +340,16 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
 
   clearBet: () => set({ stagedBet: 0, notice: null }),
 
+  repeatBet: () => {
+    const previous = get().lastBet;
+    if (previous <= 0) return;
+    // Clear first, then stage through `addChip`, so the clamp against this
+    // seat's stack and the table maximum is applied exactly once and in one
+    // place. Copying the clamp here would be a second implementation of it.
+    set({ stagedBet: 0 });
+    get().addChip(previous);
+  },
+
   lockBet: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
@@ -361,6 +400,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     set({
       pending: false,
       stagedBet: 0,
+      // The amount the server ACCEPTED, not the amount that was staged: a
+      // refused or clamped bet is not the one to offer again.
+      lastBet: staged,
       connection: LIVE,
       status: { kind: "at-table", state: locked.state, seatId: current.seatId },
       notice: null,
@@ -446,6 +488,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       status: { kind: "idle" },
       connection: LIVE,
       stagedBet: 0,
+      lastBet: 0,
       notice: null,
       pending: false,
       lastEvents: EMPTY_EVENTS,

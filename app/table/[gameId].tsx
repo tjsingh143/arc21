@@ -10,8 +10,8 @@
  * this size showing five equal hands makes all five unreadable.
  */
 
-import { useEffect, useMemo, useRef } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useEffect, useMemo, useRef } from "react";
+import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
 
@@ -24,6 +24,7 @@ import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
 import { InsuranceSheet } from "../../src/components/table/InsuranceSheet";
 import { HandCards } from "../../src/components/table/HandCards";
+import { HandSelector } from "../../src/components/table/HandSelector";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
 import { useTableTextVariant } from "../../src/design/accessibility";
@@ -33,7 +34,13 @@ import { announce } from "../../src/lib/accessibility/announce";
 import { rankName } from "../../shared/blackjack/cards.js";
 import { isVisibleCard } from "../../shared/blackjack/types.js";
 import type { PublicGameState } from "../../shared/blackjack/index.js";
-import { mayLeaveTable } from "../../src/features/table/leave-guard";
+import {
+  describeLeaveTableConfirmation,
+  LEAVE_TABLE_CONFIRM_TITLE,
+  mayLeaveTable,
+  shouldConfirmLeavingTable,
+} from "../../src/features/table/leave-guard";
+import { useSettings } from "../../src/features/settings/use-settings";
 import {
   describeDealerUpCardForAnnouncement,
   insuranceOffer,
@@ -42,6 +49,14 @@ import {
   useOnlineTableStore,
   YOUR_TURN_ANNOUNCEMENT,
 } from "../../src/features/table";
+import {
+  describeSplitHands,
+  focusedSplitHandId,
+} from "../../src/features/table/split-hands";
+import {
+  describeTableProgress,
+  describeTableRules,
+} from "../../src/features/table/table-rules";
 import { usePresenceStore } from "../../src/features/presence";
 
 /**
@@ -68,6 +83,8 @@ export default function SharedTable() {
   const refresh = useOnlineTableStore((state) => state.refresh);
   const addChip = useOnlineTableStore((state) => state.addChip);
   const clearBet = useOnlineTableStore((state) => state.clearBet);
+  const lastBet = useOnlineTableStore((state) => state.lastBet);
+  const repeatBet = useOnlineTableStore((state) => state.repeatBet);
   const lockBet = useOnlineTableStore((state) => state.lockBet);
   const act = useOnlineTableStore((state) => state.act);
   const takeInsurance = useOnlineTableStore((state) => state.takeInsurance);
@@ -130,6 +147,29 @@ export default function SharedTable() {
   const offer = useMemo(
     () => (status.kind === "at-table" ? insuranceOffer(status.state.phase, legal ?? null) : null),
     [status, legal],
+  );
+
+  /*
+   * The split presentation, derived from subscribed state with `useMemo` — the
+   * same discipline as `seat` and `legal` above, and for the same reason.
+   * `describeSplitHands` returns an empty array for a single hand, so an
+   * ordinary hand renders no chip row at all.
+   */
+  const splitHands = useMemo(
+    () =>
+      describeSplitHands({
+        hands: seat?.hands ?? [],
+        activeHandId: status.kind === "at-table" ? status.state.activeHandId : null,
+      }),
+    [seat, status],
+  );
+  const focusedHandId = useMemo(
+    () =>
+      focusedSplitHandId({
+        hands: seat?.hands ?? [],
+        activeHandId: status.kind === "at-table" ? status.state.activeHandId : null,
+      }),
+    [seat, status],
   );
 
   const dealerUpCard = useMemo(() => {
@@ -200,6 +240,29 @@ export default function SharedTable() {
 
   return (
     <Frame>
+      {/*
+        THE TERMS OF THE TABLE, ON THE TABLE.
+
+        `rulesSummary`, `handNumber` and `shoe` have been on every snapshot
+        since the contract was written and this screen rendered none of them —
+        so the tables where the rules are NOT the player's own choice were the
+        only ones that never stated them. Derived from the snapshot by
+        `table-rules.ts`, never typed into copy.
+      */}
+      <View style={styles.tableInfo}>
+        <AppText variant="caption" color="textSecondary" numeric testID="table-progress">
+          {describeTableProgress(table)}
+        </AppText>
+        <AppText
+          variant="caption"
+          color="textDisabled"
+          align="center"
+          testID="table-rules"
+        >
+          {describeTableRules(table.rulesSummary)}
+        </AppText>
+      </View>
+
       <View style={styles.dealer}>
         <AppText variant={overlineVariant} color="textSecondary">
           Dealer
@@ -261,22 +324,54 @@ export default function SharedTable() {
       ) : null}
 
       <View style={styles.mine}>
-        <AppText variant={overlineVariant} color="textSecondary">
-          You
-        </AppText>
-        {seat?.hands.map((hand) => (
-          <View key={hand.id} style={styles.myHand}>
-            <HandCards
-              cards={[...hand.cards]}
-              size="hero"
-              detail={hand.wager > 0 ? `Bet ${formatChips(hand.wager)}` : undefined}
-              focused={table.activeHandId === hand.id}
-            />
-            {hand.outcome ? (
-              <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
-            ) : null}
-          </View>
-        ))}
+        <View style={styles.mineHeader}>
+          <AppText variant={overlineVariant} color="textSecondary">
+            You
+          </AppText>
+          {/*
+            YOUR OWN STACK, VISIBLE THE WHOLE TIME.
+
+            Every other seat at the table showed its stack; this one showed its
+            stack only during betting, inside `BettingBar`'s "Available". So
+            from the moment the cards were dealt until the next betting round
+            the player could see four other people's chips and not their own.
+          */}
+          {seat ? (
+            <AppText variant="bodyStrong" numeric testID="table-my-stack">
+              {formatChips(seat.stack)}
+            </AppText>
+          ) : null}
+        </View>
+
+        {/*
+          The chip row for a split, and nothing at all for an ordinary hand.
+          Rendered ABOVE the hero hand so the reading order is "which hands do I
+          hold" then "the one I am playing" — see `split-hands.ts` for what this
+          replaced at each of the three tables.
+        */}
+        <HandSelector hands={splitHands} testID="table-hand-selector" />
+
+        {seat?.hands.map((hand) =>
+          /*
+            ONE hand at hero size. This used to render EVERY hand at hero size,
+            stacked: four of them do not fit a phone in portrait, and the only
+            thing distinguishing the live one was a one-pixel border.
+          */
+          hand.id === focusedHandId ? (
+            <View key={hand.id} style={styles.myHand}>
+              <HandCards
+                cards={[...hand.cards]}
+                size="hero"
+                detail={hand.wager > 0 ? `Bet ${formatChips(hand.wager)}` : undefined}
+                focused={seat.hands.length > 1}
+                testID="table-hand-value"
+              />
+              {hand.outcome ? (
+                <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
+              ) : null}
+            </View>
+          ) : null,
+        )}
         {seat && seat.hands.every((hand) => hand.cards.length === 0) ? (
           <AppText variant="caption" color="textDisabled">
             No cards yet.
@@ -336,11 +431,19 @@ export default function SharedTable() {
         <BettingBar
           legal={legal}
           stagedBet={stagedBet}
-          lastBet={0}
+          /*
+            REPEAT USED TO BE DEAD HERE. `lastBet` was the literal 0 and
+            `onRepeat` was `() => undefined`, so the control rendered
+            permanently disabled at every server table — Quick Play, public,
+            private, tournament and daily — while Practice, which passes both
+            for real, worked. The store remembers the last bet the SERVER
+            accepted; see `online-table-store.ts`.
+          */
+          lastBet={lastBet}
           availableStack={seat.stack}
           onAddChip={addChip}
           onClear={clearBet}
-          onRepeat={() => undefined}
+          onRepeat={repeatBet}
           onLock={() => void lockBet()}
           pending={controlsDisabled}
         />
@@ -405,6 +508,8 @@ export default function SharedTable() {
  */
 function Frame({ children }: { children: React.ReactNode }) {
   const leaveTable = useOnlineTableStore((state) => state.leaveTable);
+  const status = useOnlineTableStore((state) => state.status);
+  const { settings } = useSettings();
   const navigation = useNavigation();
   /*
    * A route can be removed without anybody pressing "Leave table": the Android
@@ -425,19 +530,62 @@ function Frame({ children }: { children: React.ReactNode }) {
    */
   const leaving = useRef(false);
 
+  /*
+   * The stack this seat would be cashing out, from the server's snapshot and
+   * nowhere else. Derived with `useMemo` on subscribed state rather than by
+   * calling a store getter during render — the React Compiler freezes a getter
+   * call at its first result, which is how the Deal button was once disabled
+   * permanently.
+   */
+  const stack = useMemo(() => ownSeat(status)?.stack ?? 0, [status]);
+
+  /*
+   * "Confirm before leaving an online game" — `AppSettings.confirmLeavingOnlineGame`.
+   *
+   * Read HERE, and this is the whole point of the fix: the preference existed,
+   * defaulted to true and persisted correctly, and no code anywhere read it.
+   * See `shouldConfirmLeavingTable` for why the stack is part of the question.
+   */
+  const confirmFirst = shouldConfirmLeavingTable({
+    confirmEnabled: settings.confirmLeavingOnlineGame,
+    stack,
+  });
+
+  /**
+   * Ask, then cash out — or cash out directly when there is nothing to confirm.
+   *
+   * Resolves to the server's answer, exactly as `leaveTable()` does, so every
+   * caller keeps treating a refusal as "stay at the table". Declining the
+   * dialog resolves `false` for the same reason: nothing was cashed out, so
+   * nothing may navigate.
+   */
+  const confirmThenLeave = useCallback(async (): Promise<boolean> => {
+    if (!confirmFirst) return leaveTable();
+    const agreed = await new Promise<boolean>((resolve) => {
+      Alert.alert(LEAVE_TABLE_CONFIRM_TITLE, describeLeaveTableConfirmation(stack), [
+        // `onDismiss` is Android-only and does not fire for a backdrop tap on
+        // iOS, so Cancel carries the negative answer rather than relying on it.
+        { text: "Stay", style: "cancel", onPress: () => resolve(false) },
+        { text: "Leave table", style: "destructive", onPress: () => resolve(true) },
+      ]);
+    });
+    if (!agreed) return false;
+    return leaveTable();
+  }, [confirmFirst, leaveTable, stack]);
+
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (event) => {
       if (mayLeaveTable({ alreadyLeaving: leaving.current, cashedOut: false })) return;
       event.preventDefault();
       void (async () => {
-        const cashedOut = await leaveTable();
+        const cashedOut = await confirmThenLeave();
         if (!mayLeaveTable({ alreadyLeaving: false, cashedOut })) return;
         leaving.current = true;
         navigation.dispatch(event.data.action);
       })();
     });
     return unsubscribe;
-  }, [navigation, leaveTable]);
+  }, [navigation, confirmThenLeave]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -449,7 +597,7 @@ function Frame({ children }: { children: React.ReactNode }) {
           label="Leave table"
           onPress={() => {
             void (async () => {
-              if (await leaveTable()) router.back();
+              if (await confirmThenLeave()) router.back();
             })();
           }}
         />
@@ -527,6 +675,7 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "center",
   },
+  tableInfo: { alignItems: "center", gap: spacing.xs },
   dealer: { alignItems: "center", gap: spacing.sm },
   others: { gap: spacing.md },
   otherHeader: {
@@ -535,5 +684,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   mine: { alignItems: "center", gap: spacing.md },
+  mineHeader: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "space-between",
+    alignSelf: "stretch",
+    gap: spacing.md,
+  },
   myHand: { alignItems: "center", gap: spacing.sm },
 });

@@ -19,7 +19,7 @@
  * from practice decisions, hands played, and career stars earned locally.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -42,6 +42,17 @@ import { useLevelStore } from "../../src/features/stats/level-store";
 import { useLoadoutStore } from "../../src/features/cosmetics";
 import { CosmeticAvatar } from "../../src/features/cosmetics/art";
 import { useAccountProfileStore, useAuthStore } from "../../src/features/auth";
+import type { AccountProfile } from "../../src/features/auth/account-profile-store";
+import { AuthField } from "../../src/features/auth/auth-ui";
+import { USERNAME_MAX_LENGTH } from "../../src/features/auth/credentials";
+import {
+  changedFields,
+  DISPLAY_NAME_MAX_LENGTH,
+  hasChanges,
+  RENAME_LIMIT_NOTE,
+  validateDisplayName,
+  validateUsername,
+} from "../../src/features/auth/profile-rename";
 import { useCompetitionStore } from "../../src/features/stats/competition-store";
 import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
@@ -134,6 +145,35 @@ export default function ProfileScreen() {
             </AppText>
           </View>
         </View>
+
+        {/*
+          THE DOOR THAT HAD NO HANDLE ON THE INSIDE.
+
+          `guard_profile_username`, `normalise_profile_display_name`, the unique
+          key and TWO rate-limit policies have guarded renaming since phase 3 —
+          `docs/AUDIT.md` records the 30-day limit being measured over HTTP —
+          and nothing in this app had ever written either column after signup.
+          A player was stuck with whatever handle the signup form derived.
+
+          Only for a signed-in player, because there is no row to change
+          otherwise. A guest sees the account card further down instead.
+        */}
+        {accountProfile ? (
+          /*
+            KEYED ON THE STORED VALUES, which is how the drafts stay in step
+            with the server without a `setState` inside an effect — the pattern
+            the React Compiler lint rejects, and rightly: it schedules a second
+            render pass on every change of the row.
+
+            A successful save changes the row, so this remounts with the new
+            name already in the fields. A REFUSED one does not, so the refusal
+            stays on screen with what the player typed still in place.
+          */
+          <EditIdentityCard
+            key={`${accountProfile.displayName}:${accountProfile.username}`}
+            profile={accountProfile}
+          />
+        ) : null}
 
         {/* Level and XP: absent, and the screen says why rather than showing a
             level the player has not earned. */}
@@ -278,6 +318,134 @@ export default function ProfileScreen() {
         </AppText>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * Change your display name and your handle.
+ *
+ * TWO FIELDS, ONE SAVE, and the limits stated BEFORE the player commits rather
+ * than discovered by hitting them. A handle can be changed once every thirty
+ * days; a limit somebody learns about by tripping it is a trap.
+ *
+ * The card renders the SERVER's values, not the draft, once a save succeeds:
+ * both columns are normalised by triggers — the handle is lowercased, the
+ * display name sanitised — so echoing what was typed would show a value that
+ * does not exist. `rename` re-reads the row for exactly that reason.
+ *
+ * Nothing is validated here as a security control. `credentials.ts` says the
+ * same of its own rules and is right to: the checks below only stop a typo
+ * spending a thirty-day budget on a round trip the server would refuse.
+ */
+function EditIdentityCard({ profile }: { profile: AccountProfile }) {
+  const rename = useAccountProfileStore((state) => state.rename);
+
+  const [open, setOpen] = useState(false);
+  const [displayName, setDisplayName] = useState(profile.displayName);
+  const [username, setUsername] = useState(profile.username);
+  const [busy, setBusy] = useState(false);
+  /*
+   * Errors only. A success needs no word: the card closes and renders the
+   * SERVER's new name, which is stronger evidence than the string "Saved" and
+   * cannot disagree with what was actually stored.
+   */
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  const request = changedFields({
+    current: { displayName: profile.displayName, username: profile.username },
+    draft: { displayName, username },
+  });
+
+  const displayNameError =
+    request.displayName === undefined ? undefined : validateDisplayName(displayName);
+  const usernameError = request.username === undefined ? undefined : validateUsername(username);
+  const canSave = hasChanges(request) && !displayNameError && !usernameError && !busy;
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setRefusal(null);
+    const outcome = await rename(request);
+    setBusy(false);
+    if (outcome.ok) {
+      setOpen(false);
+      return;
+    }
+    setRefusal(outcome.message);
+  }
+
+  if (!open) {
+    return (
+      <SurfaceCard>
+        <AppText variant="bodyStrong">Your name</AppText>
+        <AppText variant="body" color="textSecondary">
+          {`${profile.displayName} · @${profile.username}`}
+        </AppText>
+        <Button
+          label="Edit name"
+          variant="secondary"
+          size="medium"
+          testID="profile-edit-name"
+          onPress={() => {
+            setRefusal(null);
+            setOpen(true);
+          }}
+        />
+      </SurfaceCard>
+    );
+  }
+
+  return (
+    <SurfaceCard>
+      <AppText variant="bodyStrong">Your name</AppText>
+      <AuthField
+        label="Display name"
+        value={displayName}
+        onChangeText={setDisplayName}
+        error={displayNameError}
+        editable={!busy}
+        maxLength={DISPLAY_NAME_MAX_LENGTH}
+        testID="profile-display-name"
+      />
+      <AuthField
+        label="Handle"
+        value={username}
+        onChangeText={setUsername}
+        error={usernameError}
+        editable={!busy}
+        maxLength={USERNAME_MAX_LENGTH}
+        testID="profile-username"
+      />
+      <AppText variant="caption" color="textDisabled">
+        {RENAME_LIMIT_NOTE}
+      </AppText>
+      {refusal ? (
+        <AppText variant="caption" color="danger" testID="profile-name-refusal">
+          {refusal}
+        </AppText>
+      ) : null}
+      <View style={styles.actions}>
+        <Button
+          label="Cancel"
+          variant="quiet"
+          size="medium"
+          disabled={busy}
+          onPress={() => {
+            setDisplayName(profile.displayName);
+            setUsername(profile.username);
+            setRefusal(null);
+            setOpen(false);
+          }}
+        />
+        <Button
+          label={busy ? "Saving…" : "Save"}
+          size="medium"
+          disabled={!canSave}
+          pending={busy}
+          testID="profile-save-name"
+          onPress={() => void save()}
+        />
+      </View>
+    </SurfaceCard>
   );
 }
 

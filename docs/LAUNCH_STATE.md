@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 5 — Mobile Product / Career / Stats (not started)
-**Last Completed Phase:** 4 — Economy / Server Solo (PASS, 2026-08-30)
+**Current Phase:** 6 — Social / Private Multiplayer (not started)
+**Last Completed Phase:** 5 — Mobile Product / Career / Stats (PASS, 2026-08-30)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -18,7 +18,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 2 — Practice / Learning / Local Persistence | **PASS** | Nine defects fixed, each regression proved to fail without its fix; kill/resume verified on device with the same CARDS, not just the same bankroll. |
 | 3 — Database / Auth | **PASS** | Seven defects fixed, each regression proved to fail without its fix; the account lifecycle run end to end against the real GoTrue. |
 | 4 — Economy / Server Solo | **PASS** | Three defects fixed, each regression proved to fail without its fix; every economic command replayed, every modified-client attack run against the live stack. |
-| 5 — Mobile Product / Career / Stats | IN PROGRESS | Built; `career-node.yaml` and `every-screen.yaml` RAN. |
+| 5 — Mobile Product / Career / Stats | **PASS** | Eight defects fixed, each regression proved to fail without its fix; the rename proved against the live stack, the last defect found only by looking at a rendered screen, and a guard that had stopped covering its own subject strengthened and proved to fail on three breaches. |
 | 6 — Social / Private Multiplayer | IN PROGRESS | Built; `private-lobby.yaml` passed 37 steps against a real server. |
 | 7 — Public Multiplayer | IN PROGRESS | Built; `online-table.yaml` RAN. |
 | 8 — Sprint Tournament | IN PROGRESS | Built; TESTED, with a documented pool-drain fix for a real flake. |
@@ -122,6 +122,47 @@ off. Treat every one as unverified until its own phase runs.
   `testID`, so `table-advice` had matched nothing in the tree since the advice
   panel shipped. Both branches forward it now.
 
+- **A PREFERENCE THAT NOTHING READS IS A FEATURE THAT DOES NOT EXIST.**
+  `confirmLeavingOnlineGame` was declared, defaulted, validated and persisted,
+  and a full-repository grep found three references, all inside `settings.ts`.
+  The stored blob was well-formed, so it looked like a working feature on disk.
+  It now gates the only economic command a single mis-tap can fire — "Leave
+  table" sends `CASH_OUT` — through `shouldConfirmLeavingTable`, and BOTH leave
+  paths go through it: the control and the `beforeRemove` listener.
+- **THE THREE TABLES THAT DEAL CARDS MUST SHARE THEIR PRESENTATION.** Practice,
+  the career table and `/table/[gameId]` each render `BettingBar`, `ActionDock`
+  and `HandCards`, and the two written later kept the gaps the first one had
+  already filled: no split-hand chip row, `lastBet={0}` with an empty
+  `onRepeat`, and — at the career table — no `OutcomeBadge` at all.
+  `src/features/table/split-hands.ts` and `HandSelector.tsx` are now the single
+  implementation. When you touch one table, check the other two.
+- **A SERVER TABLE MUST STATE ITS OWN TERMS.** `rulesSummary`, `handNumber` and
+  `shoe` have been on every snapshot since the wire contract was written and
+  `/table/[gameId]` rendered none of them — so the tables where the rules are
+  NOT the player's own choice were the only ones that never said what they were.
+  `table-rules.ts` derives both lines from the snapshot; nothing is typed.
+  In the same block, every OTHER seat rendered its stack and the player's own
+  did not, outside the betting bar.
+- **RENAMING EXISTED ON THE SERVER AND HAD NO CONTROL.** Two triggers, a unique
+  key, two rate-limit policies, a column-level grant, and a documented
+  55000 → PT429 fix "so a player who renamed twice in a month is not told the
+  server broke" — and nothing in the app had ever written either column after
+  signup. `profile-rename.ts` plus `EditIdentityCard` are the missing half;
+  `tests/server/profile-rename.integration.test.ts` drives every one of those
+  guards over HTTP, including the 429.
+- **`tests/wallet/no-write-path.test.ts` NAMES THE DIRECTORIES IT SCANS**, and
+  had stopped covering one: `src/features/settings` wrote `profiles.privacy`
+  from outside the scan. It now scans four directories and allowlists exactly
+  one table, one verb and six columns — and it is proved to fail on a wallet
+  write, an off-allowlist column and an untyped patch, rather than assumed to.
+
+- **A UNIT TEST CANNOT SEE A SHAPE.** `HandSelector`'s chip row rendered as two
+  ELLIPSES with the labels spilling out of them — a `ScrollView` with no
+  `flexGrow: 0` expanded to fill `playerArea`, its children stretched, and
+  `radius.pill` (999) on a 200-point-tall box is an ellipse. `tsc`, `lint` and 21
+  green assertions could not see it; one screenshot could. When a change is
+  visual, LOOK at it.
+
 ## Current migration head
 
 `supabase/migrations/20260830120000_active_session_lookup.sql`
@@ -177,6 +218,20 @@ None blocking. Recorded observations, all assigned onward:
    roughly load 30 it crosses the budget and fails with a hook timeout that
    reads like a solver regression. Environment, not product — but a shared CI
    runner is exactly that machine. → **Phase 11.**
+6. **Maestro's load sensitivity was met head on, not worked around.**
+   `online-table.yaml` on an iPhone 17e failed at load average **142** — a second
+   simulator booting while Metro re-bundled — with the Quick Play buy-in never
+   completing. Bringing the machine back to idle first and re-running the same
+   commit passed. Nothing product-side changed between the two. The rule stands:
+   **build, wait for `uptime` below ~10, then run flows.**
+7. **The simulator reached a broken install state twice in phase 5.**
+   `simctl get_app_container` returned a `com.arc21.app-<timestamp>.app`
+   placeholder and every launch failed `FBSOpenApplicationServiceErrorDomain
+   code=1`; separately the XCUITest driver refused to start with a repeating
+   `Failed to connect to 127.0.0.1:54474`. Both cleared by `simctl uninstall` +
+   `install` from DerivedData, and by rebooting the simulator with stale
+   `maestro-driver-ios` processes killed. Harness, not product — but check the
+   container path FIRST, because a missing app reads as a broken flow.
 
 ## External blockers
 
@@ -184,163 +239,29 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-30 (end of phase 4)
+## Last known green verification — 2026-08-30 (end of phase 5)
 
 ```
-supabase db reset                   exit 0 · 45 migrations + seed, from empty
-supabase db lint                    no schema errors (extensions, private, public)
-supabase test db                    25 files /   483 tests PASS   (phase 3: 24 / 469)
-npx tsc --noEmit                    exit 0
-npm run lint                        0 errors (37 warnings)
+npx tsc --noEmit                    exit 0  (covers tests/ too — see below)
+npm run lint                        0 errors (37 warnings, unchanged)
 npm run check:functions             all 3 Edge Functions typecheck
-npm run test:unit                  105 files / 2,052 tests PASS   (phase 3: 103 / 2,017)
-npm run test:server                 16 files /   167 tests PASS   (phase 3: 15 / 130)
-                                    live stack, after a clean db reset
+npm run test:unit                  112 files / 2,183 tests PASS  (phase 4: 105 / 2,052)
+npm run test:server                 17 files /   175 tests PASS  (phase 4:  16 /   167)
+                                    live stack, edge runtime at 9 CPU soft limits / 0 hard
+supabase test db                    25 files /   483 tests PASS
+npm run contrast:check              46 pairings, 0 failing (+2 Increased-contrast substitutes)
+
+Maestro, iPhone 17 Pro (iOS 26.5), dev build + Metro, stack live:
+  practice-hand.yaml                exit 0, every step COMPLETED
+  career-node.yaml                  exit 0, all 20 hand iterations, stars progressed
+  online-table.yaml                 exit 0 — updated for the new leave confirmation
+  every-screen.yaml                 exit 0, with .env.local moved aside
 ```
 
-Additionally exercised by hand against the running stack and recorded in
-`docs/phase-reports/phase-04.md`: the buy-in/cash-out round trip and its replays,
-the LEAVE-then-CASH_OUT pair, the mid-hand refusals, eight simultaneous recovery
-grants, the cooldown and its expiry, and every modified-client write attempt.
+The database was NOT reset during phase 5; the migration head is unchanged from
+phase 4, which applied all 45 from empty.
 
-**Not re-run in phase 4:** the Maestro flows, `npm run test:coverage`,
-`npm run strategy:generate`, `npm run contrast:check`, `npm run benchmark` and
-`expo export` — phase 4 changed no colour token, no engine hot path and no
-strategy input. It DID add a resume card to Play and to Quick Play, whose
-enablement predicate and wording are unit-tested and whose Maestro walk is
-assigned to phase 5.
-
-## Previous green verification — 2026-08-29 (end of phase 3)
-
-```
-supabase db reset                   exit 0 · 44 migrations + seed, from empty
-supabase db lint                    no schema errors (extensions, private, public)
-supabase test db                    24 files /   469 tests PASS   (phase 2: 23 / 453)
-npx tsc --noEmit                    exit 0
-npm run lint                        0 errors (37 warnings)
-npm run check:functions             all 3 Edge Functions typecheck
-npm run test:unit                  103 files / 2,017 tests PASS
-npm run test:server                 15 files /   130 tests PASS   (phase 2: 13 / 116)
-                                    live stack, after a clean db reset AND a
-                                    freshly restarted `functions serve`
-```
-
-Auth journeys additionally exercised by hand against the running GoTrue and
-Mailpit — sign-up, sign-in, wrong password, unknown account, refresh, rotation,
-sign-out, recovery link, weak password, anonymous sign-in. Table in
-`docs/phase-reports/phase-03.md` §B5.
-
-**Not re-run in phase 3:** the Maestro flows, `npm run test:coverage`,
-`npm run strategy:generate`, `npm run contrast:check`, `npm run benchmark` and
-`expo export` — phase 3 changed no screen, no colour token, no engine hot path
-and no strategy input. Its own surface is the database, the Edge-function
-authorization boundary and GoTrue, all of which were run.
-
-## Earlier green verification — 2026-08-24 (end of phase 2)
-
-```
-npx tsc --noEmit                    exit 0
-npm run lint                        0 errors (37 warnings)
-npm run check:functions             all 3 Edge Functions typecheck
-npm run strategy:generate           380 cells, 21.9 s, expectation -0.3345%/unit, 0 disagreements
-npm run test:unit                  103 files / 2,017 tests PASS   (phase 1: 94 / 1,901)
-npm run test:coverage              101 files / 1,991 tests, every gate met
-                                    shared/blackjack        98.76/95.85/100/99.70
-                                    _shared/strategy        98.12/94.40/100/99.29
-                                    src/features/practice   94.01/82.56/95.91/97.80  (NEW gate)
-npm run test:server                 13 files /   116 tests PASS  (live stack)
-maestro practice-hand.yaml          PASS
-maestro practice-resume.yaml        PASS   (extended: same cards, no duplicate settlement)
-maestro practice-analysis.yaml      PASS   (new)
-maestro career-node.yaml            PASS   (28 steps, after a selector fix)
-```
-
-Phase 1's figures, unchanged by phase 2 and not re-run: `supabase db reset` (43
-migrations + seed, clean), `supabase test db` (23 files / 453 assertions),
-`npm run benchmark` (1204-1347 us/hand).
-
-**Not re-run in phase 2:** `every-screen.yaml` — a `.env.local` is present and
-that flow asserts ".*no server configured.*" in five places, true only of an
-unconfigured build. Move it aside or expect those five to fail; it is not a
-regression. Also not re-run: `supabase db lint`, `npm run contrast:check`,
-`expo-doctor`, `expo export` and the benchmark — phase 2 changed no schema, no
-colour token and no engine hot path.
-
-**Benchmark note:** both figures above sit well over the 752-808 us/hand
-`CLAUDE.md` records. That is this host today, not a regression — proved by
-stashing the phase-1 changes and re-measuring, rather than by comparing against a
-written-down number.
-
-## How to bring the stack up — THE PART THAT WASTED A WHOLE SESSION
-
-```bash
-export PATH="/opt/homebrew/bin:$PATH"
-supabase start --ignore-health-check
-supabase functions serve --no-verify-jwt     # ← REQUIRED, and not optional
-```
-
-`supabase start` alone leaves the functions unable to reach Postgres. Its
-containerised edge runtime is injected
-`SUPABASE_DB_URL=…@supabase_db_arc21:5432` — the container NAME — and Deno's
-resolver refuses to parse a DNS label containing an underscore, so every command
-answers `HTTP 500 INTERNAL … getaddrinfo ENOTFOUND`. `supabase functions serve`
-is injected `…@db:5432`, the underscore-free network ALIAS, and works. Full
-proof in `docs/phase-reports/phase-00.md`. CI already does this correctly.
-
-## Exact next phase
-
-**Phase 5 — Mobile Product / Career / Stats.** Do not start it from this file
-alone: read `docs/phase-reports/phase-04.md` and `CLAUDE.md` for the invariants.
-
-Four things phase 4 leaves for a later phase to know.
-
-1. **The resume card is new UI and Maestro has never seen it.** It renders on
-   Play and on Quick Play whenever `my_active_session()` names a seat, which
-   needs a CONFIGURED build and a live table — and `every-screen.yaml` only
-   passes against an unconfigured one. Phase 5 owns the flows.
-2. **`ACTIVE_SESSION_MODES` mirrors the `game_mode` enum** and
-   `tests/table/active-session.test.ts` compares the two. A mode added to one
-   and not the other would strand the player it was added for, so it fails the
-   suite instead.
-3. **`applyWalletDelta` labels every reference `game_session`**, including career
-   rewards (a node id) and sprint entries (a tournament id). Invisible to a
-   player — the wallet screen labels rows from `reason` — and deliberately not
-   changed in an append-only table for a cosmetic fix. → Phase 10.
-4. **A test that asserts a phase after `LOCK_BET` must handle a natural.** See
-   `reachPlayerTurns()` in `tests/server/economy-authority.integration.test.ts`.
-
-And from phase 3, still true.
-
-1. **`service_role` holds NO grant on any table in this schema**, deliberately —
-   the Edge Functions connect to Postgres directly. Reaching for the service key
-   over PostgREST answers 403 with a hint telling you to grant it, which is the
-   opposite of what this project wants. Read a profile with a real player's
-   token; confirm a deleted account through GoTrue's admin API.
-2. **`rls-idor` reads and `rls-writes` writes.** The write sweep covers all
-   thirteen client write grants with a second real token, and its completeness
-   is guaranteed by `assert_client_authorization_surface()` refusing a
-   fourteenth. Two shapes of denial are both correct: a `with check` violation
-   is a 403, a `using` mismatch is a 200 with an empty list — so assert the
-   TARGET ROW afterwards, never the status code alone.
-3. **`23_account_lifecycle.test.sql` names no tables.** It populates every
-   user-scoped table, deletes, then asks `pg_constraint` which cascading
-   references survive. Adding a table with a user column and no cascade fails it
-   with the table named and no edit to the file.
-4. **The gate now covers `private` too.** `assert_client_authorization_surface()`
-   refuses a `private` table without RLS, not only a `public` one. A new private
-   table needs `revoke all … from anon, authenticated, service_role` and
-   `enable row level security`, the same as its two neighbours.
-5. **`minimum_password_length` is 8 in `config.toml`**, matching
-   `PASSWORD_MIN_LENGTH`. Keep the two together: the client one is not a
-   security control and says so.
-6. **`every-screen.yaml` has still never been walked against a configured
-   build.** It asserts what a screen *says* in one configuration. → Phase 11.
-
-And from phase 2, still true:
-
-- **`src/features/practice` is a COVERAGE-GATED area** (92/80/94/96 in
-  `vitest.config.mts`), proved to fail when breached.
-- **Strategy cells carry optional `probabilities`**; a consumer that finds them
-  absent renders nothing rather than computing a substitute.
-- **A deep link is how a Maestro flow should reach a screen** —
-  `arc21://game/practice`, `arc21://career`.
+**`tsc` covers `tests/` and vitest does not typecheck.**
+`tests/table/split-hands.test.ts` built a `Card` with no `deckIndex` and ran
+green under vitest; `npx tsc --noEmit` caught it. A test that passes is not a
+test that compiles.

@@ -21,6 +21,8 @@ import { SurfaceCard } from "../../../src/components/ui/Card";
 import { ActionDock } from "../../../src/components/table/ActionDock";
 import { BettingBar } from "../../../src/components/table/BettingBar";
 import { HandCards } from "../../../src/components/table/HandCards";
+import { HandSelector } from "../../../src/components/table/HandSelector";
+import { OutcomeBadge } from "../../../src/components/table/OutcomeBadge";
 import { InsuranceSheet } from "../../../src/components/table/InsuranceSheet";
 import { StrategyPanel } from "../../../src/components/table/StrategyPanel";
 import { PlayingCard } from "../../../src/components/cards/PlayingCard";
@@ -35,6 +37,11 @@ import { isVisibleCard } from "../../../shared/blackjack/types.js";
 import { getLegalActions } from "../../../shared/blackjack/legal-actions.js";
 import { careerNodeBySlug, careerNodeWorkload } from "../../../shared/career/nodes.js";
 import { describeDealerUpCardForAnnouncement } from "../../../src/features/table/outcome-announcement.js";
+import {
+  describeSplitHands,
+  focusedSplitHandId,
+  splitHandFromEngineHand,
+} from "../../../src/features/table/split-hands";
 import { actionLabel, computeAdvice, NO_ADVICE } from "../../../src/features/practice/advice";
 import { NO_LEGAL_ACTIONS, PRACTICE_SEAT_ID } from "../../../src/features/practice/practice-store";
 import {
@@ -109,6 +116,19 @@ function StandardSession() {
   const seat = game.seats.find((candidate) => candidate.seatId === CAREER_SEAT_ID);
   if (!seat) return null;
 
+  /*
+   * The split presentation. Career runs the LOCAL engine, so its hands are
+   * `PlayerHand`s and are mapped into the shared shape rather than the module
+   * growing a second code path for them.
+   */
+  const activeHandId =
+    seat.hands[game.activeHandIndex ?? seat.currentHandIndex]?.id ?? null;
+  const splitInputs = seat.hands.map((hand) =>
+    splitHandFromEngineHand(hand, game.rules.splitAceTwentyOneIsBlackjack),
+  );
+  const splitHands = describeSplitHands({ hands: splitInputs, activeHandId });
+  const focusedHandId = focusedSplitHandId({ hands: seat.hands, activeHandId });
+
   const legal = getLegalActions(game, CAREER_SEAT_ID);
   const advice = computeAdvice(game, seat, legal.actions);
   const isBetting = game.phase === "BETTING_OPEN";
@@ -153,16 +173,45 @@ function StandardSession() {
               Place a bet to be dealt in.
             </AppText>
           ) : (
-            seat.hands.map((hand, index) =>
-              index === (game.activeHandIndex ?? seat.currentHandIndex) || seat.hands.length === 1 ? (
-                <HandCards
-                  key={hand.id}
-                  cards={[...hand.cards]}
-                  size="hero"
-                  detail={`Bet ${formatChips(hand.wager)}`}
-                />
-              ) : null,
-            )
+            <>
+              {/*
+                THE CHIP ROW A SPLIT NEEDS.
+
+                This screen rendered the active hand and nothing else, so after
+                a split the other hands — their totals, their wagers, whether
+                they had busted — were simply not on screen. The player was
+                acting on hand 2 of 3 with no way to know that was what they
+                were doing. Practice has had this row since it shipped; the
+                logic now lives in `split-hands.ts` so all three tables share
+                one implementation rather than three.
+              */}
+              <HandSelector hands={splitHands} testID="career-hand-selector" />
+
+              {seat.hands.map((hand) =>
+                hand.id === focusedHandId ? (
+                  <View key={hand.id} style={styles.hand}>
+                    <HandCards
+                      cards={[...hand.cards]}
+                      size="hero"
+                      detail={`Bet ${formatChips(hand.wager)}`}
+                      focused={seat.hands.length > 1}
+                    />
+                    {/*
+                      THE RESULT OF THE HAND, WHICH WAS NEVER SHOWN HERE.
+
+                      Practice and the online table both render this badge; the
+                      career table settled a hand and moved straight to "Next
+                      hand", so the one screen in the product whose whole
+                      purpose is teaching correct play never told the player
+                      how the hand had turned out.
+                    */}
+                    {hand.outcome ? (
+                      <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
+                    ) : null}
+                  </View>
+                ) : null,
+              )}
+            </>
           )}
         </View>
       </ScrollView>
@@ -176,11 +225,12 @@ function StandardSession() {
           <BettingBar
             legal={legal}
             stagedBet={session.stagedBet}
-            lastBet={0}
+            // Wired, not a literal 0 with an empty callback — see the store.
+            lastBet={session.lastBet}
             availableStack={seat.stack}
             onAddChip={session.addChip}
             onClear={session.clearBet}
-            onRepeat={() => {}}
+            onRepeat={session.repeatBet}
             onLock={session.lockBet}
           />
         ) : isComplete ? (
@@ -475,6 +525,7 @@ const styles = StyleSheet.create({
   },
   dealer: { alignItems: "center", gap: spacing.sm, paddingTop: spacing.lg, minHeight: 130 },
   divider: { height: 1, backgroundColor: colors.border },
+  hand: { alignItems: "center", gap: spacing.sm },
   player: { alignItems: "center", gap: spacing.md, flexGrow: 1, justifyContent: "center" },
   drillHand: { flexDirection: "row", gap: spacing.sm },
   dock: {

@@ -16,12 +16,12 @@ import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { rankName } from "../../shared/blackjack/cards.js";
-import { describeHandValue, evaluatePlayerHand } from "../../shared/blackjack/hand-value.js";
 import { getLegalActions } from "../../shared/blackjack/legal-actions.js";
-import { isVisibleCard, type PlayerHand } from "../../shared/blackjack/types.js";
+import { isVisibleCard } from "../../shared/blackjack/types.js";
 import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
 import { HandCards } from "../../src/components/table/HandCards";
+import { HandSelector } from "../../src/components/table/HandSelector";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { InsuranceSheet } from "../../src/components/table/InsuranceSheet";
 import { AppText } from "../../src/components/ui/AppText";
@@ -32,6 +32,10 @@ import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../src/design/type-metrics";
 import { formatChipDelta, formatChips } from "../../src/design/typography";
 import { announce } from "../../src/lib/accessibility/announce";
 import { describeDealerUpCardForAnnouncement } from "../../src/features/table/outcome-announcement.js";
+import {
+  describeSplitHands,
+  splitHandFromEngineHand,
+} from "../../src/features/table/split-hands";
 import {
   AssistanceModeSelector,
   ChallengeFeedback,
@@ -96,6 +100,22 @@ export default function PracticeTableScreen() {
     () => (game ? getLegalActions(game, PRACTICE_SEAT_ID) : NO_LEGAL_ACTIONS),
     [game],
   );
+
+  /*
+   * The split chip row, derived from the same subscribed state as legality.
+   * `describeSplitHands` returns an empty array for one hand, so an ordinary
+   * hand renders no row.
+   */
+  const splitHands = useMemo(() => {
+    const current = game?.seats.find((candidate) => candidate.seatId === PRACTICE_SEAT_ID);
+    if (!game || !current) return [];
+    return describeSplitHands({
+      hands: current.hands.map((hand) =>
+        splitHandFromEngineHand(hand, game.rules.splitAceTwentyOneIsBlackjack),
+      ),
+      activeHandId: current.hands[game.activeHandIndex ?? current.currentHandIndex]?.id ?? null,
+    });
+  }, [game]);
 
   /**
    * Advice is derived from the same subscribed state as legality, for the same
@@ -264,19 +284,15 @@ export default function PracticeTableScreen() {
             </AppText>
           ) : (
             <>
-              {seat.hands.length > 1 ? (
-                <View style={styles.handSelector}>
-                  {seat.hands.map((hand, index) => (
-                    <HandChip
-                      key={hand.id}
-                      hand={hand}
-                      index={index}
-                      active={index === activeHandIndex}
-                      splitAceTwentyOneIsBlackjack={game.rules.splitAceTwentyOneIsBlackjack}
-                    />
-                  ))}
-                </View>
-              ) : null}
+              {/*
+                The chip row, now from `src/components/table/HandSelector.tsx`.
+
+                It was a `HandChip` local to this file, which is why NEITHER of
+                the other two tables had one — the career table showed the
+                active hand alone and the online table showed four hero hands
+                stacked. One implementation, three tables.
+              */}
+              <HandSelector hands={splitHands} testID="practice-hand-selector" />
 
               {seat.hands.map((hand, index) => {
                 const isActive = index === activeHandIndex;
@@ -429,35 +445,6 @@ export default function PracticeTableScreen() {
 }
 
 /** Compact representation of one split hand in the selector. */
-function HandChip({
-  hand,
-  index,
-  active,
-  splitAceTwentyOneIsBlackjack,
-}: {
-  hand: PlayerHand;
-  index: number;
-  active: boolean;
-  splitAceTwentyOneIsBlackjack: boolean;
-}) {
-  const value = evaluatePlayerHand(hand, splitAceTwentyOneIsBlackjack);
-  const done = hand.status !== "ACTIVE";
-
-  return (
-    <View
-      style={[styles.handChip, active ? styles.handChipActive : null]}
-      accessible
-      accessibilityLabel={`Hand ${index + 1}, ${done ? hand.status.toLowerCase() : describeHandValue(value)}${
-        active ? ", active" : ""
-      }`}
-    >
-      <AppText variant="caption" color={active ? "textPrimary" : "textSecondary"} numeric>
-        {`Hand ${index + 1} · ${done && hand.status === "BUSTED" ? "Bust" : value.bestTotal}`}
-      </AppText>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -521,24 +508,6 @@ const styles = StyleSheet.create({
   heroHand: {
     alignItems: "center",
     gap: spacing.md,
-  },
-  handSelector: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-    justifyContent: "center",
-  },
-  handChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  handChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.surfaceRaised,
   },
   outcomeBadge: {
     alignItems: "center",
