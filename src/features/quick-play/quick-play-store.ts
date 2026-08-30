@@ -30,6 +30,7 @@ import { readRejection } from "../../lib/supabase/rejection.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { SqliteKeyValueStore, type KeyValueStore } from "../../lib/persistence/key-value-store.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
+import { useActiveSessionStore } from "../table/active-session-store.js";
 
 const STORAGE_KEY = "arc21.quickplay.selection.v1";
 
@@ -167,9 +168,20 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
        * sends the player to do the wrong thing in both cases.
        */
       if (rejection?.code === "SESSION_ALREADY_ACTIVE") {
+        /*
+         * Find out WHERE, and say so.
+         *
+         * This branch used to end at "leave that table first", which is advice
+         * the player could not act on: the game id reached the client once, in
+         * the reply to the OPEN that is being refused here, and nothing had
+         * persisted it or could ask for it back. A player whose app was killed
+         * mid-hand was locked out of every server mode for ever with their
+         * buy-in stranded. `my_active_session()` is the ask that was missing.
+         */
+        void useActiveSessionStore.getState().refresh();
         set({
           notice:
-            "You are already seated at a table, and your chips are there. Leave that table first — nothing has been charged for this one.",
+            "You are already seated at a table, and your chips are there. Return to it below — nothing has been charged for this one.",
         });
         return null;
       }
@@ -193,6 +205,9 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
     // The buy-in has left the wallet. The header caches the balance for the
     // life of the session, so without this it keeps showing the old number.
     void useWalletStore.getState().refresh();
+    // And the player now HAS a live seat, so the cached answer to "where are
+    // your chips" is out of date the moment this returns.
+    void useActiveSessionStore.getState().refresh();
     return { gameId: data.gameId, seatId: data.seatId };
   },
 

@@ -88,8 +88,25 @@ export async function settleCareerReward(
     referenceId: params.nodeId,
     metadata: { nodeCode: params.node.slug, stars: params.stars },
   });
-  await stampClaim(tx, params.userId, params.nodeId, ledger.id);
-  if (rewardXp > 0) {
+
+  /*
+   * THE XP FOLLOWS THE CLAIM MARKER, exactly as it does in the branch above.
+   *
+   * It used to be awarded unconditionally here while the zero-chip branch
+   * guarded it on `stampClaim`. The chips were safe either way — the ledger's
+   * unique key credits once — but XP has no such key, so two callers that both
+   * found `already` empty would each grant it. Serialisation elsewhere makes
+   * that unreachable today: the drill path holds `for update` on the attempt row
+   * and the boundary path holds the engine-state lock. Relying on that is an
+   * argument about locks in other files; the marker is already here, already
+   * returns whether it won, and makes "paid once" true by construction.
+   *
+   * A false answer therefore means somebody else paid this reward, so nothing
+   * new was credited and the response says so rather than reporting a figure
+   * this call did not move.
+   */
+  const stamped = await stampClaim(tx, params.userId, params.nodeId, ledger.id);
+  if (stamped && rewardXp > 0) {
     await tx`select public.award_milestone_xp(${params.userId}::uuid, ${rewardXp}::int)`;
   }
 
@@ -102,8 +119,8 @@ export async function settleCareerReward(
   await tx`select public.grant_earned_cosmetics_for(${params.userId}::uuid)`;
 
   return {
-    rewardChips,
-    rewardXp,
+    rewardChips: stamped ? rewardChips : 0,
+    rewardXp: stamped ? rewardXp : 0,
     walletBalance: ledger.balanceAfter,
   };
 }

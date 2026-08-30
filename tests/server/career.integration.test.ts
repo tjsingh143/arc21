@@ -432,6 +432,8 @@ suite("a drill is graded by the server", () => {
       nodeSlug: drill!.slug,
       clientSentAt: iso(),
     });
+    const before = await balanceOf(token);
+
     const short = await call("create-session", token, {
       action: "SUBMIT_CAREER_DRILL",
       clientRequestId: crypto.randomUUID(),
@@ -441,5 +443,27 @@ suite("a drill is graded by the server", () => {
     });
     expect(short.status).toBe(400);
     expect(short.body.code).toBe("INVALID_REQUEST");
+
+    /*
+     * AND NOTHING PARTIAL WAS LEFT BEHIND.
+     *
+     * `submitCareerDrill` takes `for update of a` on the attempt row and checks
+     * its status before it counts the answers, so a refusal here unwinds a
+     * transaction that had already locked the attempt. No reward, and — more
+     * easily missed — the attempt must still be IN PROGRESS, or a mistyped
+     * submission would burn a run: the node would refuse to restart and the
+     * player would be told to finish an attempt they can no longer submit.
+     */
+    expect(await balanceOf(token)).toBe(before);
+
+    const resumed = await call("create-session", token, {
+      action: "START_CAREER_NODE",
+      clientRequestId: crypto.randomUUID(),
+      nodeSlug: drill!.slug,
+      clientSentAt: iso(),
+    });
+    expect(resumed.status).toBe(200);
+    expect(resumed.body.attemptId).toBe(started.body.attemptId);
+    expect(resumed.body.rewardPaid).toBe(false);
   }, 300_000);
 });

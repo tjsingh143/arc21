@@ -47,8 +47,23 @@ export function SurfaceCard({
   const borderColor = useBorderColor();
 
   if (!onPress) {
+    /*
+     * `testID` travels down this branch too.
+     *
+     * It did not, and the omission was invisible in the way this project's
+     * accessibility defects always are: `app/table/[gameId].tsx` has carried
+     * `<SurfaceCard testID="table-advice">` with no `onPress` since the advice
+     * panel shipped, so the id existed in the source, matched nothing in the
+     * tree, and any flow selecting on it would have failed while looking like a
+     * broken screen. An inert card is the RIGHT shape for a container whose
+     * control is a Button inside it — a labelled Pressable replaces the text of
+     * everything within it on iOS — so this branch needs to stay addressable.
+     */
     return (
-      <View style={[styles.card, { borderColor }, disabled ? styles.disabled : null, style]}>
+      <View
+        testID={testID}
+        style={[styles.card, { borderColor }, disabled ? styles.disabled : null, style]}
+      >
         {children}
       </View>
     );

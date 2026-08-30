@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 4 — Economy / Server Solo (not started)
-**Last Completed Phase:** 3 — Database / Auth / Account lifecycle (PASS, 2026-08-29)
+**Current Phase:** 5 — Mobile Product / Career / Stats (not started)
+**Last Completed Phase:** 4 — Economy / Server Solo (PASS, 2026-08-30)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -17,7 +17,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 1 — Blackjack Engine | **PASS** | 471 engine tests; six defects fixed, each regression proved to fail without its fix. |
 | 2 — Practice / Learning / Local Persistence | **PASS** | Nine defects fixed, each regression proved to fail without its fix; kill/resume verified on device with the same CARDS, not just the same bankroll. |
 | 3 — Database / Auth | **PASS** | Seven defects fixed, each regression proved to fail without its fix; the account lifecycle run end to end against the real GoTrue. |
-| 4 — Economy / Server Solo | IN PROGRESS | Built; escrow/idempotency/overflow all graded RAN. |
+| 4 — Economy / Server Solo | **PASS** | Three defects fixed, each regression proved to fail without its fix; every economic command replayed, every modified-client attack run against the live stack. |
 | 5 — Mobile Product / Career / Stats | IN PROGRESS | Built; `career-node.yaml` and `every-screen.yaml` RAN. |
 | 6 — Social / Private Multiplayer | IN PROGRESS | Built; `private-lobby.yaml` passed 37 steps against a real server. |
 | 7 — Public Multiplayer | IN PROGRESS | Built; `online-table.yaml` RAN. |
@@ -94,10 +94,38 @@ off. Treat every one as unverified until its own phase runs.
   This has now bitten three times (the Home card, the accessibility switches,
   these two sheets) — always invisibly, always with a perfect screenshot.
 
+- **A live seat must be ADDRESSABLE, not just refusable.** Every online mode
+  refuses a second buy-in while a seat is held, and the game id reached the
+  client once — in the reply to the buy-in — and lived only in a route
+  parameter. Losing it locked the account out of Quick Play, Public Tables and
+  Career for ever with the buy-in stranded, and all three refusals advised the
+  player to "leave that table first". `public.my_active_session()` is the ask
+  that was missing; its predicate is `assertNoOtherLiveSeat`'s, and the server
+  suite asserts they agree by provoking the refusal rather than by comparing two
+  copies of a predicate.
+- **A solo or career table has no clocks on purpose**, so `RESOLVE_TIMEOUT`
+  cannot rescue a hand its player walked away from and nothing marks a session
+  abandoned. The way back is the only way back.
+- **XP has no idempotency key**, so anything that grants it must ride on
+  something that does — `career_progress.reward_claimed_at` for a career reward.
+  The chips were always safe; the ledger's unique key sees to that.
+- **A replayed command's payload is not byte-identical.** It is served from
+  `private.game_commands` as `jsonb`, which sorts keys by length then bytewise.
+  Same value, different bytes: assert equality of the parsed body.
+- **`LOCK_BET` can settle the hand.** A natural — the player's or the dealer's —
+  lands on HAND_COMPLETE inside the same cascade, so a test that assumes
+  PLAYER_TURNS after locking passes about fifteen times in sixteen. Deal again
+  rather than retrying the assertion.
+- **An inert `SurfaceCard` is the right shape and used to be unaddressable.**
+  With no `onPress` it renders a plain `View`, which is what keeps a labelled
+  `Pressable` from silencing everything inside it — and that branch dropped
+  `testID`, so `table-advice` had matched nothing in the tree since the advice
+  panel shipped. Both branches forward it now.
+
 ## Current migration head
 
-`supabase/migrations/20260829120000_account_lifecycle_completeness.sql`
-(44 migrations, all applied from scratch cleanly on 2026-08-29).
+`supabase/migrations/20260830120000_active_session_lookup.sql`
+(45 migrations, all applied from scratch cleanly on 2026-08-30).
 
 ## Important contracts / interfaces
 
@@ -111,6 +139,10 @@ off. Treat every one as unverified until its own phase runs.
   Replays a 5xx with a byte-identical body (same idempotency key).
 - `tests/server/stack-guard.ts` — the ONE probe deciding whether server tests
   run. Requires a 401 AND a sub-500 answer to a real command.
+- `public.my_active_session()` — where the caller's own chips are. Argument-free,
+  identity from `auth.uid()`, and it mirrors `assertNoOtherLiveSeat`'s predicate.
+- `src/features/table/active-session.ts` — the RN-free half of the resume path:
+  parsing, wording and the `canResume` predicate the card is gated on.
 
 ## Known unresolved defects
 
@@ -152,7 +184,33 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-29 (end of phase 3)
+## Last known green verification — 2026-08-30 (end of phase 4)
+
+```
+supabase db reset                   exit 0 · 45 migrations + seed, from empty
+supabase db lint                    no schema errors (extensions, private, public)
+supabase test db                    25 files /   483 tests PASS   (phase 3: 24 / 469)
+npx tsc --noEmit                    exit 0
+npm run lint                        0 errors (37 warnings)
+npm run check:functions             all 3 Edge Functions typecheck
+npm run test:unit                  105 files / 2,052 tests PASS   (phase 3: 103 / 2,017)
+npm run test:server                 16 files /   167 tests PASS   (phase 3: 15 / 130)
+                                    live stack, after a clean db reset
+```
+
+Additionally exercised by hand against the running stack and recorded in
+`docs/phase-reports/phase-04.md`: the buy-in/cash-out round trip and its replays,
+the LEAVE-then-CASH_OUT pair, the mid-hand refusals, eight simultaneous recovery
+grants, the cooldown and its expiry, and every modified-client write attempt.
+
+**Not re-run in phase 4:** the Maestro flows, `npm run test:coverage`,
+`npm run strategy:generate`, `npm run contrast:check`, `npm run benchmark` and
+`expo export` — phase 4 changed no colour token, no engine hot path and no
+strategy input. It DID add a resume card to Play and to Quick Play, whose
+enablement predicate and wording are unit-tested and whose Maestro walk is
+assigned to phase 5.
+
+## Previous green verification — 2026-08-29 (end of phase 3)
 
 ```
 supabase db reset                   exit 0 · 44 migrations + seed, from empty
@@ -178,7 +236,7 @@ sign-out, recovery link, weak password, anonymous sign-in. Table in
 and no strategy input. Its own surface is the database, the Edge-function
 authorization boundary and GoTrue, all of which were run.
 
-## Previous green verification — 2026-08-24 (end of phase 2)
+## Earlier green verification — 2026-08-24 (end of phase 2)
 
 ```
 npx tsc --noEmit                    exit 0
@@ -231,10 +289,27 @@ proof in `docs/phase-reports/phase-00.md`. CI already does this correctly.
 
 ## Exact next phase
 
-**Phase 4 — Economy / Server Solo.** Do not start it from this file alone: read
-`docs/phase-reports/phase-03.md` and `CLAUDE.md` for the invariants.
+**Phase 5 — Mobile Product / Career / Stats.** Do not start it from this file
+alone: read `docs/phase-reports/phase-04.md` and `CLAUDE.md` for the invariants.
 
-Six things phase 3 leaves for a later phase to know.
+Four things phase 4 leaves for a later phase to know.
+
+1. **The resume card is new UI and Maestro has never seen it.** It renders on
+   Play and on Quick Play whenever `my_active_session()` names a seat, which
+   needs a CONFIGURED build and a live table — and `every-screen.yaml` only
+   passes against an unconfigured one. Phase 5 owns the flows.
+2. **`ACTIVE_SESSION_MODES` mirrors the `game_mode` enum** and
+   `tests/table/active-session.test.ts` compares the two. A mode added to one
+   and not the other would strand the player it was added for, so it fails the
+   suite instead.
+3. **`applyWalletDelta` labels every reference `game_session`**, including career
+   rewards (a node id) and sprint entries (a tournament id). Invisible to a
+   player — the wallet screen labels rows from `reason` — and deliberately not
+   changed in an append-only table for a cosmetic fix. → Phase 10.
+4. **A test that asserts a phase after `LOCK_BET` must handle a natural.** See
+   `reachPlayerTurns()` in `tests/server/economy-authority.integration.test.ts`.
+
+And from phase 3, still true.
 
 1. **`service_role` holds NO grant on any table in this schema**, deliberately —
    the Edge Functions connect to Postgres directly. Reaching for the service key

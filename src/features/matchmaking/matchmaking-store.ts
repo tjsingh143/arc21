@@ -40,8 +40,14 @@ export interface MatchmakingStoreState {
 
 const UNREACHABLE = "Could not reach matchmaking. Nothing has been charged.";
 const SIGNED_OUT = "Public tables need an account. Practice stays available without one.";
+/*
+ * "Leave that table first" was advice the player could not act on: the game id
+ * reached the client once, in the reply to the join being refused here, and
+ * nothing persisted it or asked for it back. `Play` now offers the way back —
+ * `my_active_session()` names the table — so this says where to find it.
+ */
 const SEATED_ELSEWHERE =
-  "You are already seated at a table, and your chips are there. Leave that table first — nothing has been charged for this one.";
+  "You are already seated at a table, and your chips are there. Return to it from Play — nothing has been charged for this one.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);

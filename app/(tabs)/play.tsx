@@ -9,6 +9,7 @@
  * does: the dealer follows fixed rules and never varies with anything.
  */
 
+import { useEffect, useMemo } from "react";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -16,6 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { SurfaceCard } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { AppText } from "../../src/components/ui/AppText";
+import { Button } from "../../src/components/ui/Button";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
 import {
   modeAccessibilityHint,
@@ -23,6 +25,13 @@ import {
   modeBadge,
   modeNotice,
 } from "../../src/features/home/play-mode-presentation";
+import {
+  describeActiveSession,
+  describeActiveSessionMode,
+  resumeTargetFor,
+  selectActiveSession,
+  useActiveSessionStore,
+} from "../../src/features/table";
 
 interface Mode {
   title: string;
@@ -98,10 +107,61 @@ const MODES: Mode[] = [
 ];
 
 export default function PlayScreen() {
+  /*
+   * WHERE THE PLAYER'S CHIPS ARE, asked every time this screen opens.
+   *
+   * A buy-in leaves the wallet for a server-owned table stack, and the server
+   * refuses a second one while the seat is still held. Both are right — but the
+   * game id and the seat id reached the client exactly once, in the reply to
+   * the OPEN, and lived afterwards only in a route parameter. Kill the app
+   * mid-hand and every online mode below answered SESSION_ALREADY_ACTIVE for
+   * ever, with the buy-in stranded and each refusal advising the player to
+   * "leave that table first" — the one thing they could no longer do.
+   *
+   * `my_active_session()` is the ask that was missing. It derives the seat from
+   * `auth.uid()` using the SAME predicate as the server's one-live-seat control,
+   * so the card below can never point at a table the server does not count, and
+   * can never be absent for one it does.
+   */
+  const activeStatus = useActiveSessionStore((state) => state.status);
+  const refreshActive = useActiveSessionStore((state) => state.refresh);
+
+  useEffect(() => {
+    void refreshActive();
+  }, [refreshActive]);
+
+  // Derived from subscribed state with `useMemo`, never by calling a store
+  // getter during render — the React Compiler memoises against the stable
+  // function reference and freezes the value.
+  const active = useMemo(() => selectActiveSession(activeStatus), [activeStatus]);
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader title="Play" subtitle="Same rules everywhere." />
+
+        {/*
+          * Not a pressable card. A labelled `Pressable` REPLACES the text of
+          * everything inside it in the iOS accessibility tree, which has cost
+          * this project three surfaces already — so the card is inert and the
+          * Button inside it is the control.
+          */}
+        {active ? (
+          <SurfaceCard testID="play-resume-card">
+            <AppText variant="overline" color="textSecondary">
+              Still at a table
+            </AppText>
+            <AppText variant="sectionTitle">{describeActiveSessionMode(active.mode)}</AppText>
+            <AppText variant="body" color="textSecondary">
+              {describeActiveSession(active)}
+            </AppText>
+            <Button
+              label="Return to your table"
+              onPress={() => router.replace(resumeTargetFor(active) as never)}
+              testID="play-resume"
+            />
+          </SurfaceCard>
+        ) : null}
 
         {MODES.map((mode) => {
           const playable = mode.route !== undefined;

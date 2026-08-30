@@ -28,6 +28,33 @@ export {
 export { insuranceOffer, type InsuranceOffer } from "./insurance-affordance.js";
 
 export {
+  ACTIVE_SESSION_MODES,
+  ACTIVE_SESSION_ROUTE,
+  canResume,
+  describeActiveSession,
+  describeActiveSessionMode,
+  parseActiveSession,
+  parseActiveSessionRows,
+  resumeTargetFor,
+  type ActiveSession,
+  type ActiveSessionMode,
+  type ResumeTarget,
+} from "./active-session.js";
+
+export {
+  activeSessionGateway,
+  createSupabaseActiveSessionGateway,
+  createUnconfiguredActiveSessionGateway,
+  selectActiveSession,
+  setActiveSessionGateway,
+  useActiveSessionStore,
+  type ActiveSessionGateway,
+  type ActiveSessionOutcome,
+  type ActiveSessionStatus,
+  type ActiveSessionStoreState,
+} from "./active-session-store.js";
+
+export {
   describeDealerUpCardForAnnouncement,
   describeOutcomeForAnnouncement,
   YOUR_TURN_ANNOUNCEMENT,

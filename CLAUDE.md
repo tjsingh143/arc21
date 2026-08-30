@@ -648,6 +648,39 @@ it did not, the "a stranger cannot delete it" assertion passed because it named
 no row, not because a policy stopped it. Reproduced on purpose first: seven
 failures in eight runs. Use `or=(user_id_a.eq.X,user_id_b.eq.X)`.
 
+**A CONTROL THAT REFUSES MUST NAME SOMETHING THE PLAYER CAN DO.** Every online
+mode refuses a second buy-in while a seat is held — right, because one wallet
+must not fund two tables. But the game id reached the client exactly once, in
+the reply to the buy-in, and lived afterwards only in an `expo-router`
+parameter: kill the app mid-hand and Quick Play, Public Tables and Career all
+answered `409 SESSION_ALREADY_ACTIVE` **for ever**, with the buy-in stranded,
+while all three refusals advised the player to "leave that table first". Nothing
+marks a session abandoned, and a solo or career table carries no clocks on
+purpose, so `RESOLVE_TIMEOUT` cannot release the seat either. The data was
+readable the whole time — `game_session_seats` is selectable by its owner — and
+nothing asked. `public.my_active_session()` is the ask, and its predicate is
+`assertNoOtherLiveSeat`'s: the server suite asserts the two AGREE by provoking
+the refusal and checking the lookup names the same table, rather than by
+comparing two copies of a predicate.
+
+**AN IDEMPOTENCY KEY PROTECTS THE THING IT IS ON, AND NOTHING ELSE.** XP has no
+such key. `settleCareerReward`'s paying branch called `stampClaim` and discarded
+the answer, then granted XP unconditionally — safe only because locks in two
+OTHER files serialise the callers. The chips were never at risk: the ledger's
+unique key credits once. Anything alongside a keyed movement has to ride on the
+same marker.
+
+**A REPLAYED COMMAND'S PAYLOAD IS NOT BYTE-IDENTICAL.** It is served from
+`private.game_commands`, where the first result was stored as `jsonb` — and
+jsonb sorts keys by length then bytewise. Same value, different bytes. Assert
+the parsed body.
+
+**`LOCK_BET` CAN SETTLE THE HAND.** A natural, the player's or the dealer's,
+resolves inside the same cascade and lands on HAND_COMPLETE, so a test asserting
+PLAYER_TURNS after locking passes roughly fifteen times in sixteen and fails the
+rest — an intermittent that looks like a phase bug. Deal again rather than
+retrying the assertion; the dealer is fair, which is the whole point.
+
 **`supabase functions serve` ACCUMULATES, and `docker restart` KILLS IT.** Two
 server-suite failures in phase 3 were the local edge runtime, not the product:
 one file failed to COLLECT because the stack guard's 5 s probe landed inside a

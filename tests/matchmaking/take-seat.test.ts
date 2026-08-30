@@ -79,7 +79,16 @@ describe("taking a matched seat", () => {
     expect(seat).toBeNull();
     const { notice, status } = useMatchmakingStore.getState();
     expect(notice).toMatch(/already seated/i);
-    expect(notice).toMatch(/leave that table/i);
+    /*
+     * And it names something the player can actually DO.
+     *
+     * It used to say "leave that table first", which was unactionable: the game
+     * id reached the client once, in the reply to the buy-in being refused here,
+     * and nothing persisted it or asked for it back. `my_active_session()` and
+     * the resume card on Play are the way back, so the notice points at them.
+     */
+    expect(notice).toMatch(/return to it from play/i);
+    expect(notice).not.toMatch(/leave (that |it )?(table )?first/i);
     // And it does not invite a retry that would be refused identically.
     expect(notice).not.toMatch(/try again/i);
     // The match is over: the player must go to the table they are at.

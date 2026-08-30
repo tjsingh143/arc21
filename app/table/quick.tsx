@@ -42,6 +42,12 @@ import type { AssistanceMode } from "../../shared/contracts/index.js";
 import type { TierId } from "../../src/features/matchmaking";
 import { useQuickPlayStore, DEFAULT_SELECTION } from "../../src/features/quick-play";
 import {
+  describeActiveSession,
+  resumeTargetFor,
+  selectActiveSession,
+  useActiveSessionStore,
+} from "../../src/features/table";
+import {
   describeRecoveryGrant,
   formatTimeRemaining,
   selectBalance,
@@ -78,6 +84,9 @@ export default function QuickPlaySetup() {
   const level = useLevelStore((state) => state.record);
   const loadLevel = useLevelStore((state) => state.load);
 
+  const activeStatus = useActiveSessionStore((state) => state.status);
+  const refreshActive = useActiveSessionStore((state) => state.refresh);
+
   const remembered = useQuickPlayStore((state) => state.remembered);
   const opening = useQuickPlayStore((state) => state.opening);
   const notice = useQuickPlayStore((state) => state.notice);
@@ -105,7 +114,11 @@ export default function QuickPlaySetup() {
     void load();
     void refreshWallet();
     void loadLevel();
-  }, [load, refreshWallet, loadLevel]);
+    // Asked before the player can be refused, not only after. A seat held from
+    // a killed session is exactly the state in which the balance on this screen
+    // looks wrong, and it is the answer to why.
+    void refreshActive();
+  }, [load, refreshWallet, loadLevel, refreshActive]);
 
   // A ticking clock, so a cooldown countdown actually advances.
   useEffect(() => {
@@ -119,6 +132,15 @@ export default function QuickPlaySetup() {
    */
   const balance = useMemo(() => selectBalance(walletStatus), [walletStatus]);
   const grant = useMemo(() => selectRecoveryGrant(walletStatus, now), [walletStatus, now]);
+  /*
+   * The seat the player already holds, if any.
+   *
+   * `open()` refuses with SESSION_ALREADY_ACTIVE when one exists, and used to
+   * answer "leave that table first" — advice that could not be followed,
+   * because the game id had reached this client once and was gone. The chips
+   * were stranded for good. This is the way back.
+   */
+  const active = useMemo(() => selectActiveSession(activeStatus), [activeStatus]);
   const playerLevel = level?.level ?? 1;
 
   const selected = useMemo(
@@ -199,6 +221,24 @@ export default function QuickPlaySetup() {
             you leave. Nothing is spent by looking.
           </AppText>
         </SurfaceCard>
+
+        {/*
+          * Inert card, Button inside it: a labelled `Pressable` replaces the
+          * text of everything within it in the iOS accessibility tree.
+          */}
+        {active ? (
+          <SurfaceCard testID="quick-resume-card">
+            <AppText variant="sectionTitle">You are still at a table</AppText>
+            <AppText variant="body" color="textSecondary">
+              {describeActiveSession(active)}
+            </AppText>
+            <Button
+              label="Return to your table"
+              onPress={() => router.replace(resumeTargetFor(active) as never)}
+              testID="quick-resume"
+            />
+          </SurfaceCard>
+        ) : null}
 
         <AppText variant="sectionTitle">Stakes</AppText>
         {TABLE_TIERS.map((candidate) => {

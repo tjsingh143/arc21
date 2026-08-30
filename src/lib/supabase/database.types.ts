@@ -263,6 +263,17 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * Where the caller's own live seat is — a game id, a seat id and what kind
+       * of table it is. Argument-free like the wallet functions: the seat comes
+       * from `auth.uid()`, so there is no spelling of this that asks about
+       * anybody else. It names an address, never a stack or a card, which is why
+       * it can be a plain read rather than an Edge Function.
+       */
+      my_active_session: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
        * The Sprint Tournament's read side. `sprint_format` is the configuration a
        * player sees BEFORE paying an entry fee, read from the server so it cannot
        * drift from what is enforced.

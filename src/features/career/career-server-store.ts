@@ -183,7 +183,7 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
       set({
         notice:
           rejection?.code === "SESSION_ALREADY_ACTIVE"
-            ? "You are already seated at a table. Leave it first — nothing has been charged for this."
+            ? "You are already seated at a table. Return to it from Play and leave it there — nothing has been charged for this."
             : (rejection?.message ?? UNREACHABLE),
       });
       return null;

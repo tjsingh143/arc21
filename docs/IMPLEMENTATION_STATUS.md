@@ -659,6 +659,7 @@ The three items left behind when this phase was first marked done:
 | **Recovery Grant** | Done. `claim_recovery_grant()` restores a wallet under 2,000 **to** 5,000, once per 12 hours, deciding everything server-side from a locked balance |
 | **XP / levels** | Done. Awarded in the settlement transaction, under the 300/day UTC cap |
 | **Delete account** | Done. `delete_own_account()` plus a two-step confirmation in Settings → Account |
+| **Reconnectable active game** | Done, in phase 4. `public.my_active_session()` names the caller's own live seat — game id, seat id, mode, tier, start time — and a "Return to your table" card renders on Play and Quick Play. Before it, a killed app meant every online mode answered `SESSION_ALREADY_ACTIVE` for ever with the buy-in stranded |
 
 **XP is deliberately inert.** `shared/progression/` implements the curve
 (`100 + 25 × (L-1)`, cap 50, 300/day repeatable cap) at 98% coverage, but no
