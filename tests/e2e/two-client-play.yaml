@@ -1,0 +1,82 @@
+# Arc 21 — TWO CLIENTS, step 6: a wager placed and a hand played, from a device.
+#
+#   maestro test --device <A> tests/e2e/two-client-play.yaml
+#   maestro test --device <B> tests/e2e/two-client-play.yaml
+#
+# `online-table.yaml` proves a bet can be placed at a SOLO server table, which is
+# the only one account can reach alone. This proves it at a SHARED one — a table
+# whose other seat belongs to a different account on a different simulator, whose
+# turn this client must wait for, and whose cards this client never chose.
+#
+# Every state is handled at the TOP level of the iteration. `career-node.yaml`
+# deadlocked for a year of runs because its only progress branch was nested
+# inside the betting state, so an iteration arriving at a settled hand skipped
+# the whole body — and so did every one after it. A shared table makes that
+# worse, not better: this client can arrive at any point in someone else's turn.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "table-countdown"
+    timeout: 90000
+
+- repeat:
+    times: 14
+    while:
+      notVisible: ".*Bet 100.*"
+    commands:
+      # Insurance. Unreachable at every server table for a whole phase — the
+      # screen had no branch for it and fell through to "Waiting for the next
+      # hand." until the deadline expired and the server declined.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+      # A hundred, so the assertion above distinguishes THIS client's deliberate
+      # wager from the twenty the server stakes for an absent seat.
+      - runFlow:
+          when:
+            visible:
+              id: "chip-100"
+          commands:
+            - tapOn:
+                id: "chip-100"
+            - tapOn:
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                id: "action-stand"
+
+# THE WAGER THIS CLIENT CHOSE, on the felt. Twenty is what the server stakes for
+# a seat that says nothing; a hundred can only be here because a person pressed
+# Deal at a shared table and the server accepted it.
+- assertVisible: ".*Bet 100.*"
+- assertVisible:
+    id: "table-countdown"

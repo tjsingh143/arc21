@@ -163,3 +163,48 @@ export function describeInviteUnavailable(
       return "Your table is no longer taking anyone new.";
   }
 }
+
+/**
+ * Whether the lobby may replace itself with the table `dealt` names.
+ *
+ * THE DEFECT THIS CLOSES, photographed twice on two different devices at the
+ * end of phase 6.
+ *
+ * `dealt` is a module-level store value, so it OUTLIVES the screen that set it
+ * — and the screen that consumes it is the one that navigated away. A player
+ * who cashed out at the table left `dealt` pointing at a seat the server had
+ * just settled; `CASH_OUT` never touches the rooms store, so nothing local
+ * contradicted it. Opening `arc21://table/lobby` then mounted the lobby, whose
+ * navigation effect fires on the FIRST render, and it replaced them straight
+ * back onto a table where every command answers `SESSION_CLOSED`. The only
+ * control there is "Leave table", which cashes out an already-settled seat and
+ * returns to the lobby — which bounces again. Killing the app was the only way
+ * out, and `arc21://table/lobby` reported COMPLETED while changing nothing.
+ *
+ * WHY `restore()` ALONE COULD NOT FIX IT, which is the part that cost a run.
+ * `restore()` asks the server on mount and clears `dealt` when the answer is
+ * "you are a member of no room" — correct, and necessary, and it LOSES THE
+ * RACE. It is asynchronous; the navigation effect is not. Both are mount
+ * effects, so the effect has already read the stale value and dispatched by the
+ * time the lookup resolves. Clearing the value earlier does not help either:
+ * effects in one commit run against the render that scheduled them, so a `set`
+ * from the effect above cannot change what this one sees.
+ *
+ * So the rule is about ORDER, not about the value: a pointer that has not been
+ * checked against the server ON THIS MOUNT is not a pointer to navigate on.
+ * `checked` is component state rather than store state for exactly the reason
+ * the bug exists — anything module-level would arrive already true, carried
+ * over from the mount before.
+ *
+ * Proved on a device in both directions: with `checked` ignored, a departed
+ * player is bounced onto the dead table; with it honoured, the same player gets
+ * the create/join screen, and a player who genuinely still holds a seat is
+ * still carried to their table (device B, `two-client-guest-table`).
+ */
+export function mayOpenDealtTable(input: {
+  /** Whether `restore()` has answered for this mount of the lobby. */
+  readonly checked: boolean;
+  readonly dealt: { readonly gameId: string; readonly seatId: string } | null;
+}): boolean {
+  return input.checked && input.dealt !== null;
+}

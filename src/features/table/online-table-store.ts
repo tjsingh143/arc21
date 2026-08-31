@@ -35,10 +35,12 @@ import { getSupabase } from "../../lib/supabase/client.js";
 import {
   createSupabaseTableGateway,
   createUnconfiguredTableGateway,
+  seqRangeOf,
   type TableEvents,
   type TableFailure,
   type TableGateway,
 } from "./online-table-gateway.js";
+import { shouldRequestTimeoutResolution } from "./table-deadline.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
 
 /**
@@ -108,6 +110,27 @@ export interface OnlineTableStoreState {
   readonly lastBet: number;
   readonly notice: string | null;
   /**
+   * The highest event sequence this client has applied, or 0 before any.
+   *
+   * The specification's Realtime rule, which nothing implemented: ignore
+   * `seq <= lastAppliedSeq`, apply `seq == lastAppliedSeq + 1`, and fetch an
+   * authoritative snapshot on a gap. `version` alone cannot do it — a command's
+   * own reply and the broadcast that follows it carry the SAME version, so
+   * deduping on version let every action play its cards and its outcome twice.
+   */
+  readonly lastAppliedSeq: number;
+  /**
+   * The version this client last asked the server to time out, and when.
+   *
+   * The version alone would deadlock: an ask that goes unanswered leaves the
+   * version where it was, so "already asked at 28" would block every later
+   * attempt at 28 and freeze the table for this client with the deadline
+   * permanently expired. Seen on a two-simulator run. The pair bounds the RATE
+   * instead — see `TIMEOUT_RETRY_MS`.
+   */
+  readonly timeoutAskedForVersion: number | null;
+  readonly timeoutAskedAt: number | null;
+  /**
    * What the server said happened, most recently.
    *
    * Kept so sound and haptics describe the server's account of the hand rather
@@ -160,6 +183,26 @@ export interface OnlineTableStoreState {
    * predicted locally — the round has not begun until the server says so.
    */
   nextHand: () => Promise<void>;
+  /**
+   * Ask the server to apply its own timeout defaults to an expired deadline.
+   *
+   * ARC 21 HAS NO LONG-LIVED GAME PROCESS. A deadline is a stored
+   * `deadline_at`, and the specification's mechanism for reaching it is that
+   * "when a deadline is visually reached, any connected client may request
+   * RESOLVE_TIMEOUT" — which the server honours only if its OWN clock has
+   * passed it. Nothing in this app ever sent one: the single call site was
+   * `TableGateway.snapshot()`, pinned to `expectedVersion: 0` so that it can
+   * never apply, which makes it a read. So an absent player froze a shared
+   * table for everybody, indefinitely, with the fifteen-second timer that
+   * exists to prevent exactly that already long expired.
+   *
+   * Nothing is decided here. `DEADLINE_NOT_REACHED` is swallowed rather than
+   * shown, because a device whose clock ran a little ahead has not done
+   * anything a player needs telling about — and `stale` is the ordinary answer
+   * when another client got there first, which is the specification's
+   * "duplicates are harmless".
+   */
+  resolveTimeout: () => Promise<void>;
   /**
    * Close the seat, take the stack back, and drop the table.
    *
@@ -228,6 +271,58 @@ function afterFailure(failure: TableFailure): {
     : { connection: LIVE, notice: failure.message };
 }
 
+/**
+ * The two codes that mean THIS CLIENT NO LONGER HOLDS A SEAT HERE.
+ *
+ * `SESSION_CLOSED` for a seat that has been settled or a table that has ended;
+ * `NOT_A_PARTICIPANT` for a game this account is not in. Either way there is
+ * nothing at this table for this player any more.
+ */
+const CLOSED_CODES: ReadonlySet<string> = new Set(["SESSION_CLOSED", "NOT_A_PARTICIPANT"]);
+
+/**
+ * What a closed seat reads as.
+ *
+ * Deliberately says the chips are settled, because the case this is reached
+ * from is a cash-out whose REPLY was lost: the seat closed, the stack came back,
+ * and the client never heard. Telling the player only "this table has closed"
+ * would leave them wondering where their chips went.
+ */
+export const SEAT_CLOSED_MESSAGE =
+  "You are no longer at this table. Your seat is settled and anything it held has been returned.";
+
+/**
+ * Drops a table this client has no seat at, and reports whether it did.
+ *
+ * THE DEFECT, seen on a two-simulator run and photographed. A cash-out
+ * committed on the server and its reply was lost — the ordinary `unreachable`
+ * case, provoked here by a saturated local runtime. Every command afterwards
+ * was correctly refused `SESSION_CLOSED`, and the store rendered that as an
+ * ORDINARY NOTICE: the screen sat on a dead table showing other people's cards,
+ * a live countdown for a hand this player was not in, "Waiting for the next
+ * hand.", and, in the corner, "This table has closed. (ref bf302626-…)". The
+ * seat's own stack read 0.
+ *
+ * A refusal that says the seat is gone is not a notice to show beside the felt;
+ * it is the end of this screen's subject. `rooms-store` already draws exactly
+ * this line for a lobby ("drop to the entry screen rather than leaving a lobby
+ * on screen that is not yours any more") — this is the same rule one layer up.
+ */
+function dropIfSeatIsClosed(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  failure: TableFailure,
+): boolean {
+  if (failure.reason !== "refused" || failure.code === undefined) return false;
+  if (!CLOSED_CODES.has(failure.code)) return false;
+
+  // The channel belongs to a table this client is not at. Left subscribed it
+  // would keep pushing a stranger's hands at a screen that has moved on.
+  get().forgetTable();
+  set({ status: { kind: "unavailable", message: SEAT_CLOSED_MESSAGE } });
+  return true;
+}
+
 function statusForFailure(failure: TableFailure): OnlineTableStatus {
   switch (failure.reason) {
     case "not-configured":
@@ -246,6 +341,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   stagedBet: 0,
   lastBet: 0,
   notice: null,
+  lastAppliedSeq: 0,
+  timeoutAskedForVersion: null,
+  timeoutAskedAt: null,
   lastEvents: EMPTY_EVENTS,
 
   enter: async (gameId, seatId) => {
@@ -254,6 +352,11 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     set({ status: { kind: "loading" }, connection: LIVE, notice: null });
     const read = await activeTableGateway().snapshot(gameId);
     if (!read.ok) {
+      // A table this player has already left. Said in the app's own words, not
+      // the server's — "This table has closed. (ref f77e1b11-…)" is a developer
+      // message with a request reference in it, and a player who has just been
+      // paid out does not need to read either half.
+      if (dropIfSeatIsClosed(get, set, read)) return;
       set({ status: statusForFailure(read) });
       return;
     }
@@ -265,6 +368,11 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       // the server accepts a bet here.
       lastBet: 0,
       notice: null,
+      // A fresh table has no sequence history and no outstanding ask. The
+      // snapshot read carries no events, so this is 0 rather than a seq.
+      lastAppliedSeq: seqRangeOf(read.events)?.last ?? 0,
+      timeoutAskedForVersion: null,
+      timeoutAskedAt: null,
       lastEvents: read.events,
     });
 
@@ -276,16 +384,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
      */
     unsubscribe?.();
     unsubscribe = activeTableGateway().subscribe(gameId, (pushed, events) => {
-      const current = get().status;
-      if (current.kind !== "at-table" || current.state.gameId !== pushed.gameId) return;
-      // An out-of-order message is dropped rather than rewinding the table.
-      if (pushed.version < current.state.version) return;
-      set({
-        status: { kind: "at-table", state: pushed, seatId: current.seatId },
-        // A pushed batch describes somebody else's action as well as your own,
-        // which is exactly what should be heard at a shared table.
-        lastEvents: events,
-      });
+      applyPushedState(get, set, pushed, events);
     });
   },
 
@@ -298,6 +397,8 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     // at once against a server that is already struggling. See TableCallOptions.
     const read = await activeTableGateway().snapshot(current.state.gameId, { retry: false });
     if (!read.ok) {
+      // ...unless the seat itself is gone, which is not a transient.
+      if (dropIfSeatIsClosed(get, set, read)) return;
       // A failed poll is not a reason to tear the table down — the last known
       // snapshot stays on screen and the next poll tries again.
       const { connection, notice } = afterFailure(read);
@@ -375,6 +476,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { onRetry },
     );
     if (!placed.ok) {
+      if (dropIfSeatIsClosed(get, set, placed)) return;
       const { connection, notice } = afterFailure(placed);
       set({ pending: false, connection, notice });
       return;
@@ -386,6 +488,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { onRetry },
     );
     if (!locked.ok) {
+      if (dropIfSeatIsClosed(get, set, locked)) return;
       const { connection, notice } = afterFailure(locked);
       set({
         pending: false,
@@ -393,6 +496,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
         connection,
         status: { kind: "at-table", state: placed.state, seatId: current.seatId },
         notice,
+        lastAppliedSeq: seqRangeOf(placed.events)?.last ?? get().lastAppliedSeq,
         lastEvents: placed.events,
       });
       return;
@@ -406,6 +510,10 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       connection: LIVE,
       status: { kind: "at-table", state: locked.state, seatId: current.seatId },
       notice: null,
+      // The broadcast of this very command is about to arrive on the channel
+      // carrying the same events. Recording the sequence here is what makes it
+      // a duplicate rather than a second deal.
+      lastAppliedSeq: seqRangeOf(locked.events)?.last ?? get().lastAppliedSeq,
       lastEvents: locked.events,
     });
   },
@@ -434,6 +542,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     );
 
     if (!result.ok) {
+      if (dropIfSeatIsClosed(get, set, result)) return;
       const { connection, notice } = afterFailure(result);
       set({ pending: false, connection, notice });
       return;
@@ -443,6 +552,58 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       stagedBet: 0,
       connection: LIVE,
       status: { kind: "at-table", state: result.state, seatId: current.seatId },
+      lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
+      lastEvents: result.events,
+    });
+  },
+
+  resolveTimeout: async () => {
+    const current = get().status;
+    if (current.kind !== "at-table") return;
+    if (
+      !shouldRequestTimeoutResolution({
+        deadlineAt: current.state.deadlineAt,
+        version: current.state.version,
+        now: new Date(),
+        pending: get().pending,
+        connected: get().connection.kind === "live",
+        alreadyAskedForVersion: get().timeoutAskedForVersion,
+        lastAskedAt: get().timeoutAskedAt,
+      })
+    ) {
+      return;
+    }
+
+    // Recorded BEFORE the call, not after: the await is what a second render
+    // tick would race, and an ask that is in flight has already been made.
+    set({ timeoutAskedForVersion: current.state.version, timeoutAskedAt: Date.now() });
+
+    const result = await activeTableGateway().command(
+      current.state.gameId,
+      { type: "RESOLVE_TIMEOUT", expectedVersion: current.state.version, payload: {} },
+      // No backoff. If this one is lost the deadline is still expired, the
+      // version has not moved, and the next tick asks again.
+      { retry: false },
+    );
+
+    if (!result.ok) {
+      /*
+       * Silent, in both of the two ways this fails.
+       *
+       * DEADLINE_NOT_REACHED means this device's clock ran a little ahead of the
+       * server's — nothing a player did and nothing they can act on. Silence
+       * means the poll will find out what happened. Neither is a refusal of
+       * anything the player asked for, and a notice here would also buzz the
+       * rejection haptic for a request nobody made.
+       */
+      if (dropIfSeatIsClosed(get, set, result)) return;
+      if (result.reason === "unreachable") set({ connection: RECONNECTING });
+      return;
+    }
+    set({
+      connection: LIVE,
+      status: { kind: "at-table", state: result.state, seatId: current.seatId },
+      lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
       lastEvents: result.events,
     });
   },
@@ -491,10 +652,83 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       lastBet: 0,
       notice: null,
       pending: false,
+      lastAppliedSeq: 0,
+      timeoutAskedForVersion: null,
+      timeoutAskedAt: null,
       lastEvents: EMPTY_EVENTS,
     });
   },
 }));
+
+/**
+ * A pushed snapshot, applied under the specification's sequence rules.
+ *
+ * The three cases are the specification's own, verbatim:
+ *
+ *   seq <= lastAppliedSeq        ignore the duplicate
+ *   seq == lastAppliedSeq + 1    apply
+ *   seq >  lastAppliedSeq + 1    fetch the authoritative snapshot
+ *
+ * The first is the one that was doing damage. The store deduped on `version`,
+ * and a command's own reply and the broadcast the server fans out after
+ * committing it carry the SAME version — so every action at a server table
+ * applied its events twice, and `useTableFeedback` keys on array identity,
+ * which a second `set` changes. Every deal played its cards twice and every
+ * settled hand fired its outcome haptic and sting twice.
+ *
+ * The third is softened by one deliberate difference. Arc 21's broadcast is a
+ * FULL public state rather than a delta, so a gap loses events but never state:
+ * dropping the payload and waiting for the fetch would blank nothing but would
+ * delay a table the client already holds correctly. So the state is adopted, the
+ * incomplete event batch is NOT played, and an authoritative snapshot is fetched
+ * anyway — which is what makes the recovery real rather than assumed.
+ *
+ * A batch with no events at all (a competition closing) has no sequence to
+ * compare and falls back to the version, which is the only ordering it has.
+ */
+function applyPushedState(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  pushed: PublicGameState,
+  events: TableEvents,
+): void {
+  const current = get().status;
+  if (current.kind !== "at-table" || current.state.gameId !== pushed.gameId) return;
+
+  const seq = seqRangeOf(events);
+  const lastApplied = get().lastAppliedSeq;
+
+  if (seq === null) {
+    // No sequence to reason about. An equal or older version is a duplicate of
+    // something already on screen.
+    if (pushed.version <= current.state.version) return;
+    set({ status: { kind: "at-table", state: pushed, seatId: current.seatId } });
+    return;
+  }
+
+  // Already applied — this client's own command reply, or a redelivery.
+  if (seq.last <= lastApplied) return;
+
+  if (seq.first === lastApplied + 1 || lastApplied === 0) {
+    set({
+      status: { kind: "at-table", state: pushed, seatId: current.seatId },
+      lastAppliedSeq: seq.last,
+      // A pushed batch describes somebody else's action as well as your own,
+      // which is exactly what should be heard at a shared table.
+      lastEvents: events,
+    });
+    return;
+  }
+
+  // A gap. Adopt the state — it is authoritative and never older than what is
+  // held — but say nothing about a story with a hole in it, and go and ask.
+  set({
+    status: { kind: "at-table", state: pushed, seatId: current.seatId },
+    lastAppliedSeq: seq.last,
+    lastEvents: EMPTY_EVENTS,
+  });
+  void get().refresh();
+}
 
 /**
  * One command with an empty payload, sent and applied.
@@ -524,6 +758,7 @@ async function sendSimpleCommand(
   );
 
   if (!result.ok) {
+    if (dropIfSeatIsClosed(get, set, result)) return;
     const { connection, notice } = afterFailure(result);
     set({ pending: false, connection, notice });
     return;
@@ -532,6 +767,7 @@ async function sendSimpleCommand(
     pending: false,
     connection: LIVE,
     status: { kind: "at-table", state: result.state, seatId: current.seatId },
+    lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
     lastEvents: result.events,
   });
 }

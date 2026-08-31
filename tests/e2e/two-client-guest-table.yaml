@@ -1,0 +1,46 @@
+# Arc 21 — TWO CLIENTS, step 4: the guest reaches the table the host dealt.
+#
+#   maestro test --device <B> tests/e2e/two-client-guest-table.yaml
+#
+# THE REGRESSION THIS GUARDS. `dealt` — the state the lobby navigates on — was
+# once set only inside `startTable`, which only the host calls. A guest polled
+# every three seconds, watched the room's `gameSessionId` appear, and sat in the
+# lobby while the host played. Only the host could ever reach a private table,
+# and nothing noticed because no flow had ever run two clients.
+#
+# The app is relaunched first, which is also the backgrounding case: an online
+# game does not pause, the active room is restored, and the seat is resolved
+# from `game_session_seats` rather than from a reply this device never received.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+# No tap. The lobby resolves this client's OWN seat and follows the host in.
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+
+# "Leave table" is in the FRAME and renders while the screen still says "Reading
+# the table…", so it is not evidence that the snapshot arrived. The first
+# snapshot goes through the gateway's own backoff, and the LOCAL edge runtime is
+# load-gated — see CLAUDE.md — so this waits generously rather than calling a
+# slow environment a broken app.
+- extendedWaitUntil:
+    visible:
+      id: "table-countdown"
+    timeout: 90000

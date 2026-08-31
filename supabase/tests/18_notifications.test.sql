@@ -277,7 +277,9 @@ select set_config('request.jwt.claims',
 -- gets everywhere else in the friend graph, so a room cannot be used to probe.
 select throws_ok(
   $$ select public.invite_friend_to_room(gen_random_uuid(), '0e000000-0000-4000-8000-000000000002') $$,
-  'P0002',
+  -- PT404 so PostgREST answers 404 rather than 500. The MESSAGE is the point of
+  -- this assertion and is unchanged: a stranger and a block read identically.
+  'PT404',
   'no such player',
   'a stranger cannot be invited to a table'
 );

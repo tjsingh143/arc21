@@ -201,6 +201,59 @@ describe("following the host into a dealt table", () => {
     // One lookup, not one per three-second poll for as long as the table runs.
     expect(spy.findSeatCalls).toEqual([SESSION_ID]);
   });
+
+  /**
+   * THE MIRROR IMAGE OF THE DEFECT ABOVE, and seen on the same two simulators.
+   *
+   * Once a player left through the TABLE screen — which sends `CASH_OUT` and
+   * never touches this store — `dealt` still held the game they had just left.
+   * Coming back to the lobby, the navigation effect keyed on it fired and
+   * replaced them straight onto a table where every command answers
+   * `SESSION_CLOSED`. From there the only control is "Leave table", which cashes
+   * out an already-settled seat and comes back to the lobby: a loop.
+   */
+  it("forgets a dealt table when there is no open room to restore", async () => {
+    // The other half of the same defect, and the one that actually bit on a
+    // device: the player left through the TABLE screen, so this store was never
+    // told — and `restore()` finding nothing left `dealt` exactly where it was
+    // for the lobby's navigation effect to act on.
+    const spy = seatedGateway(SESSION_ID, { ok: true, seatId: SEAT_ID });
+    setRoomsGateway(spy);
+    await useRoomsStore.getState().refresh(ROOM_ID);
+    expect(useRoomsStore.getState().dealt).not.toBeNull();
+
+    setRoomsGateway(fakeGateway({ findOpenRoom: async () => ({ ok: true, room: null }) }));
+    // The status is left EXACTLY as the table screen left it — `seated`, from
+    // the mount before the deal. Resetting it to `idle` here, which this test
+    // used to do, stepped around the early return in `restore()` and so proved
+    // nothing about the path a device actually takes.
+    expect(useRoomsStore.getState().status.kind).toBe("seated");
+    await useRoomsStore.getState().restore();
+
+    expect(useRoomsStore.getState().dealt).toBeNull();
+  });
+
+  it("forgets a dealt table the player is no longer a member of", async () => {
+    const spy = seatedGateway(SESSION_ID, { ok: true, seatId: SEAT_ID });
+    setRoomsGateway(spy);
+    await useRoomsStore.getState().refresh(ROOM_ID);
+    expect(useRoomsStore.getState().dealt).not.toBeNull();
+
+    // The next poll: `get_room_state` refuses, because this player left.
+    setRoomsGateway(
+      fakeGateway({
+        read: async () => ({
+          ok: false,
+          reason: "refused",
+          message: "You are no longer at that table.",
+        }),
+      }),
+    );
+    await useRoomsStore.getState().refresh(ROOM_ID);
+
+    expect(useRoomsStore.getState().status.kind).toBe("idle");
+    expect(useRoomsStore.getState().dealt).toBeNull();
+  });
 });
 
 /**
@@ -277,9 +330,34 @@ describe("restoring the table this player is already at", () => {
     expect(useRoomsStore.getState().notice).toBeNull();
   });
 
-  it("does not overwrite a room already in hand", async () => {
+  /**
+   * THE DEVICE FAILURE THIS FILE EXISTS FOR, and the assertion here used to say
+   * the opposite.
+   *
+   * `restore()` began `if (get().status.kind === "seated") return;`, and a test
+   * named "does not overwrite a room already in hand" asserted that
+   * `findOpenRoom` was never called in that case. Both were wrong for the same
+   * reason: this runs on MOUNT, so a `seated` reading is one carried over from
+   * a previous mount — stale by construction, because `dealt` navigating to the
+   * table is what unmounted the lobby.
+   *
+   * Photographed at the end of phase 6: the player cashed out at the table,
+   * opened `arc21://table/lobby`, and was replaced straight back onto the table
+   * they had just left, which answered `SESSION_CLOSED` and offered no way off.
+   * The two fixes meant to prevent exactly that — the `room === null` branch
+   * below and `findSeat`'s `status <> 'left'` filter — were both already
+   * written and both unreachable behind that return.
+   *
+   * Note what the OLD test had to do to reach the code it covered: set the
+   * status to `idle` by hand first. A test that steps around a guard to test
+   * the code behind it is describing a guard that should not be there.
+   */
+  it("re-checks a room already in hand, because a seated reading is a mount old", async () => {
     const lookups: number[] = [];
-    useRoomsStore.setState({ status: { kind: "seated", state: roomState() } });
+    useRoomsStore.setState({
+      status: { kind: "seated", state: roomState() },
+      dealt: { gameId: "99999999-9999-4999-8999-999999999999", seatId: "seat-1" },
+    });
     setRoomsGateway(
       fakeGateway({
         findOpenRoom: async () => {
@@ -291,7 +369,50 @@ describe("restoring the table this player is already at", () => {
 
     await useRoomsStore.getState().restore();
 
-    expect(lookups).toHaveLength(0);
+    // Asked, rather than assumed.
+    expect(lookups).toHaveLength(1);
+    // And the answer acted on, in both halves: no dealt table to navigate to,
+    // and no stale lobby left on screen for a room this player has left.
+    expect(useRoomsStore.getState().dealt).toBeNull();
+    expect(useRoomsStore.getState().status.kind).toBe("idle");
+  });
+
+  /**
+   * The same reading, still true. Re-checking must not cost the player the
+   * lobby they are actually sitting in — the anti-flicker worry the old guard
+   * was written for is answered by re-reading the room, not by skipping it.
+   */
+  it("keeps the lobby when the server confirms the room is still theirs", async () => {
+    useRoomsStore.setState({ status: { kind: "seated", state: roomState() } });
+    setRoomsGateway(
+      fakeGateway({
+        findOpenRoom: async () => ({ ok: true, room: roomState().room }),
+        read: async () => ({ ok: true, state: roomState() }),
+      }),
+    );
+
+    await useRoomsStore.getState().restore();
+
+    const status = useRoomsStore.getState().status;
+    expect(status.kind).toBe("seated");
+    expect(status.kind === "seated" ? status.state.room.code : null).toBe("QRSTUV");
+  });
+
+  /**
+   * `dealt` POINTING AT A DIFFERENT ROOM'S TABLE, reached without a mount at
+   * all: leave a table, then join a new room by code. `joinRoom` calls
+   * `refresh` directly, the new room has not dealt, and the stale pointer used
+   * to survive because it was merely non-null.
+   */
+  it("drops a dealt table that is not the one this room is running", async () => {
+    useRoomsStore.setState({
+      dealt: { gameId: "99999999-9999-4999-8999-999999999999", seatId: "seat-1" },
+    });
+    setRoomsGateway(fakeGateway({ read: async () => ({ ok: true, state: roomState() }) }));
+
+    await useRoomsStore.getState().refresh(ROOM_ID);
+
+    expect(useRoomsStore.getState().dealt).toBeNull();
   });
 });
 

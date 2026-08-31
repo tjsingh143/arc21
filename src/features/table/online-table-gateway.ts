@@ -35,6 +35,7 @@ import {
   publicGameStateSchema,
   type ContractEngineEvent,
   type ContractPublicGameState,
+  type PublicGameEvent,
 } from "../../../shared/contracts/index.js";
 import type { PublicGameState } from "../../../shared/blackjack/index.js";
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
@@ -70,8 +71,38 @@ export interface TableFailure {
  * Carried alongside the state rather than derived from it. Feedback — a card
  * sound, a win haptic — must describe what the server said happened, and a diff
  * between two snapshots cannot tell a second card of a deal from a redraw.
+ *
+ * THE ORDERING ENVELOPE TRAVELS WITH THEM. This used to be
+ * `readonly ContractEngineEvent[]`, unwrapped here with the comment "the
+ * sequence numbers are the store's concern" — and the store never received one,
+ * because this is where they were thrown away. `publicGameEventSchema` has
+ * carried `seq` since the contract was written, and both it and
+ * `_shared/realtime-broadcast.ts` describe a client that "tracks lastAppliedSeq
+ * and refetches on a gap"; nothing did. The visible cost was a duplicate
+ * broadcast replaying the settlement: the store deduped on `version`, which is
+ * EQUAL for a command's own reply and the broadcast that follows it, so every
+ * action at a server table fired its cards and its outcome twice.
  */
-export type TableEvents = readonly ContractEngineEvent[];
+export type TableEvents = readonly PublicGameEvent[];
+
+/** The events of one batch, unwrapped for anything that only cares what happened. */
+export function engineEventsOf(events: TableEvents): readonly ContractEngineEvent[] {
+  return events.map((published) => published.event);
+}
+
+/**
+ * The sequence range a batch covers, or `null` when it carried no events.
+ *
+ * `null` is a real answer and not a missing one: a snapshot read carries no
+ * events by construction, and `closeCompetition` broadcasts an empty batch. A
+ * caller with no sequence to compare falls back to the state version.
+ */
+export function seqRangeOf(events: TableEvents): { first: number; last: number } | null {
+  const first = events[0];
+  const last = events[events.length - 1];
+  if (!first || !last) return null;
+  return { first: first.seq, last: last.seq };
+}
 
 export type TableSnapshotOutcome =
   | { readonly ok: true; readonly state: PublicGameState; readonly events: TableEvents }
@@ -196,9 +227,10 @@ function readState(
   // what proves the bytes matched it.
   return {
     state: parsed.data.publicState as ContractPublicGameState as PublicGameState,
-    // Unwrapped from their ordering envelope: feedback cares what happened, and
-    // the sequence numbers are the store's concern.
-    events: (parsed.data.events ?? []).map((published) => published.event),
+    // Kept IN their ordering envelope. The store dedupes on `seq`; unwrapping
+    // here is what left it with only `version` to compare, and a command's own
+    // reply and the broadcast that follows it share a version.
+    events: parsed.data.events ?? [],
   };
 }
 
@@ -399,13 +431,20 @@ export function createSupabaseTableGateway(
       onState: (state: PublicGameState, events: TableEvents) => void,
     ): () => void {
       const channel = client
-        .channel(`game:${gameId}`)
+        /*
+         * PRIVATE. A public topic delivered this table's state to anyone
+         * holding the anon key and accepted a forged `state` from any account
+         * — both measured against the running stack. Declaring it private makes
+         * Realtime check `realtime.messages`, where the policy requires a live
+         * seat at THIS game to read and grants no client the right to write.
+         */
+        .channel(`game:${gameId}`, { config: { private: true } })
         .on("broadcast", { event: "state" }, (message: { payload?: unknown }) => {
           const parsed = broadcastSchema.safeParse(message.payload);
           if (!parsed.success) return;
           onState(
             parsed.data.publicState as ContractPublicGameState as PublicGameState,
-            (parsed.data.events ?? []).map((published) => published.event),
+            parsed.data.events ?? [],
           );
         })
         .subscribe();

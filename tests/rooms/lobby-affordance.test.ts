@@ -24,6 +24,7 @@ import {
   inviteAffordance,
   isHost,
   isReady,
+  mayOpenDealtTable,
   shareMessage,
   type RoomState,
 } from "../../src/features/rooms/index.js";
@@ -220,5 +221,39 @@ describe("inviting a friend from their profile", () => {
       expect(inviteAffordance(room({ status }), HOST, STRANGER)).toEqual({ kind: "closed" });
     }
     expect(describeInviteUnavailable({ kind: "closed" }, "Ada")).toContain("no longer taking");
+  });
+});
+
+/**
+ * THE BOUNCE, and the reason the fix had to be about ORDER rather than about
+ * the value.
+ *
+ * `dealt` is module-level, so it survives the screen that set it. A player who
+ * cashed out at the table came back to a lobby holding a pointer at the seat
+ * the server had just settled, and the navigation effect — which fires on the
+ * first render — replaced them onto a table answering `SESSION_CLOSED`, whose
+ * only control returns to the lobby. Photographed on two devices.
+ *
+ * `restore()` clears the pointer, and cannot win: it is asynchronous and the
+ * effect is not.
+ */
+describe("navigating the lobby to a dealt table", () => {
+  const DEALT = { gameId: "33333333-3333-4333-8333-333333333333", seatId: "seat-1" };
+
+  it("waits for the server's answer before acting on a pointer", () => {
+    // The exact device state: a stale pointer, no answer yet.
+    expect(mayOpenDealtTable({ checked: false, dealt: DEALT })).toBe(false);
+  });
+
+  it("opens the table once the answer confirms the pointer", () => {
+    expect(mayOpenDealtTable({ checked: true, dealt: DEALT })).toBe(true);
+  });
+
+  it("stays on the create/join screen when the answer cleared the pointer", () => {
+    expect(mayOpenDealtTable({ checked: true, dealt: null })).toBe(false);
+  });
+
+  it("never navigates on nothing, answered or not", () => {
+    expect(mayOpenDealtTable({ checked: false, dealt: null })).toBe(false);
   });
 });

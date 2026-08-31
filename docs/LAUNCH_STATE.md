@@ -1,7 +1,7 @@
 # Arc 21 Launch State
 
-**Current Phase:** 6 — Social / Private Multiplayer (not started)
-**Last Completed Phase:** 5 — Mobile Product / Career / Stats (PASS, 2026-08-30)
+**Current Phase:** 7 — Public Multiplayer (not started)
+**Last Completed Phase:** 6 — Social / Private Multiplayer (PASS, 2026-08-31)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -19,7 +19,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 3 — Database / Auth | **PASS** | Seven defects fixed, each regression proved to fail without its fix; the account lifecycle run end to end against the real GoTrue. |
 | 4 — Economy / Server Solo | **PASS** | Three defects fixed, each regression proved to fail without its fix; every economic command replayed, every modified-client attack run against the live stack. |
 | 5 — Mobile Product / Career / Stats | **PASS** | Eight defects fixed, each regression proved to fail without its fix; the rename proved against the live stack, the last defect found only by looking at a rendered screen, and a guard that had stopped covering its own subject strengthened and proved to fail on three breaches. |
-| 6 — Social / Private Multiplayer | IN PROGRESS | Built; `private-lobby.yaml` passed 37 steps against a real server. |
+| 6 — Social / Private Multiplayer | **PASS** | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. |
 | 7 — Public Multiplayer | IN PROGRESS | Built; `online-table.yaml` RAN. |
 | 8 — Sprint Tournament | IN PROGRESS | Built; TESTED, with a documented pool-drain fix for a real flake. |
 | 9 — Daily / Leaderboards / Cosmetics | IN PROGRESS | Built; the daily-challenge intermittent is CLOSED (see below). |
@@ -52,6 +52,17 @@ off. Treat every one as unverified until its own phase runs.
   and you must add it to the others.
 - **`toPublicState()` is the only sanitisation boundary.** Undealt cards and the
   unrevealed hole card never leave the server.
+- **A REALTIME TOPIC IS PUBLIC UNTIL A CHANNEL SAYS OTHERWISE, and an empty
+  policy set does NOT mean deny.** `realtime.messages` had RLS enabled and no
+  policy for the whole life of the project, which meant Realtime never consulted
+  it: `game:<gameId>` was readable by anyone holding the ANON KEY and writable by
+  any account, so a stranger could watch a table and push a forged state onto a
+  player's screen. Both were measured, not inferred. Fixed in
+  `20260831120000_realtime_channel_authorization.sql`: both ends declare
+  `private: true`, reading a game topic needs a live seat at that game, and the
+  only topic a client may write is the presence roster. **A new channel needs a
+  policy the day it is added** — and `supabase/tests/20_authorization_surface.test.sql`
+  fails if the policy set changes shape.
 - **Integer chips only**; chips move only through `apply_wallet_delta`; identity
   comes from the verified JWT.
 - **Edge-function imports:** reaching into `shared/` uses `.js` specifiers
@@ -165,10 +176,38 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260830120000_active_session_lookup.sql`
-(45 migrations, all applied from scratch cleanly on 2026-08-30).
+`supabase/migrations/20260831120000_realtime_channel_authorization.sql`
+(48 migrations, all applied from scratch cleanly on 2026-08-31).
+
+Phase 6 added three:
+
+- `20260830130000_room_lifecycle_and_presence.sql` — a room now retires when its
+  session ends, a newcomer cannot join a table that has already dealt,
+  `release_room_seat` lets the server retire a seat on a player's behalf (host
+  migration included), and `touch_last_seen()` makes the presence fallback real.
+- `20260830140000_refusals_are_not_faults.sql` — five functions raised `P0002`,
+  which PostgREST renders as **HTTP 500**. `PT404` is the mapped code.
+- `20260831120000_realtime_channel_authorization.sql` — the policies
+  `realtime.messages` had never had. See "Architecture truths" below.
 
 ## Important contracts / interfaces
+
+- `mayOpenDealtTable({ checked, dealt })` in
+  `src/features/rooms/lobby-affordance.ts` — the lobby may replace itself with a
+  table only when the pointer has been checked against the server ON THIS MOUNT.
+  `dealt` is module-level and outlives the screen that set it, so a seat settled
+  at the table screen otherwise sends the player straight back onto it, for ever.
+  `checked` is component state deliberately: anything module-level arrives
+  already true, carried over from the mount before, which is the shape of the
+  bug. `restore()` clearing the value cannot substitute — it is asynchronous and
+  the navigation effect is not.
+- `src/features/table/table-deadline.ts` — the RN-free half of the server clock:
+  the countdown copy, the skew grace and the predicate for when a client may ask
+  the server to resolve a lapsed deadline. Arc 21 runs no game process, so a
+  connected client asking is the ONLY thing that moves an expired timer.
+- `public.release_room_seat(room_id, user_id)` — `leave_room`'s body with the
+  identity as a parameter, so an Edge Function can retire a seat for a player who
+  cashed out. Server-only; host migration lives here and touches no game state.
 
 - `shared/contracts` — wire schemas. Strict; a non-strict schema once silently
   DELETED `canStartNextHand` and stopped every online table after hand one.
@@ -239,27 +278,56 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-30 (end of phase 5)
+## Last known green verification — 2026-08-31 (end of phase 6)
 
 ```
 npx tsc --noEmit                    exit 0  (covers tests/ too — see below)
 npm run lint                        0 errors (37 warnings, unchanged)
 npm run check:functions             all 3 Edge Functions typecheck
-npm run test:unit                  112 files / 2,183 tests PASS  (phase 4: 105 / 2,052)
-npm run test:server                 17 files /   175 tests PASS  (phase 4:  16 /   167)
-                                    live stack, edge runtime at 9 CPU soft limits / 0 hard
-supabase test db                    25 files /   483 tests PASS
+npm run test:unit                  113 files / 2,239 tests PASS  (phase 5: 112 / 2,183)
+npm run test:server                 18 files /   194 tests PASS  (phase 5:  17 /   175)
+                                    live stack, against a freshly reset database
+supabase test db                    25 files /   494 tests PASS  (phase 5:  25 /   483)
 npm run contrast:check              46 pairings, 0 failing (+2 Increased-contrast substitutes)
+npm run test:coverage               per-area gates pass
+supabase db reset                   48 migrations applied from empty, exit 0
+
+Two iOS simulators, two accounts, one local backend (phase 6's multi-client proof):
+  iPhone 17 Pro + iPhone 17 Pro Max, e2e-lobby@ and e2e-guest@arc21.test
+  room created · code typed · both lobbies "2 of 2 seated" · host dealt ·
+  BOTH devices reached the table · both rendered the countdown ·
+  the table advanced unattended from hand 1 to hand 25 (client-driven
+  RESOLVE_TIMEOUT, over and over) · both placed deliberate 100-chip bets ·
+  after both left: room `closed`, session `completed`, 0 seats
+
+  Re-run END TO END on the build carrying the B14/B15 lobby fixes, room QW9RGX,
+  eight flows, every one exit 0 — host-open · guest-join · host-deal ·
+  guest-table · HOST LEAVES (lobby offers a new table) · play a deliberate
+  100-chip bet · unattended advance to a 20-chip default · GUEST LEAVES (last
+  seat out). The server was asked at both leave points rather than the
+  screenshots being trusted: after the host left, room `active`, session
+  `active`, host migrated to the guest, host seat `left` with stack 0 and
+  membership `left`, guest seat `active` on 5,040; after the guest left, room
+  `closed`, session `completed`, 0 held seats, 0 joined members.
+
+ONE UNEXPLAINED TRANSIENT, recorded rather than smoothed over. In the first of
+three `test:server` runs this session, `economy-authority.integration.test.ts`
+threw once inside the `reachPlayerTurns` helper — a `NEXT_HAND` that did not
+answer 200 — and the exact message was lost to a truncated capture. It did not
+recur: the file passed alone, and the full suite passed twice afterwards. The
+edge runtime logged 19 CPU soft-limit events in the failing run and 20 in the
+green one, so runtime pressure does not explain it, and the file imports nothing
+this session touched. Unreproduced, not diagnosed.
 
 Maestro, iPhone 17 Pro (iOS 26.5), dev build + Metro, stack live:
   practice-hand.yaml                exit 0, every step COMPLETED
   career-node.yaml                  exit 0, all 20 hand iterations, stars progressed
-  online-table.yaml                 exit 0 — updated for the new leave confirmation
+  online-table.yaml                 exit 0
   every-screen.yaml                 exit 0, with .env.local moved aside
 ```
 
-The database was NOT reset during phase 5; the migration head is unchanged from
-phase 4, which applied all 45 from empty.
+The database WAS reset during phase 6: all 48 migrations applied from empty,
+including the three this phase added.
 
 **`tsc` covers `tests/` and vitest does not typecheck.**
 `tests/table/split-hands.test.ts` built a `Card` with no `deckIndex` and ran

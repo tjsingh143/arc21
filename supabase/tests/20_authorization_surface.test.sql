@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(17);
+select plan(21);
 
 -- ---------------------------------------------------------------------------
 -- The gate, run as a test
@@ -250,6 +250,53 @@ select bag_eq(
   'every client-readable table is one the IDOR sweep classifies'
 );
 
+-- ---------------------------------------------------------------------------
+-- The Realtime channel surface
+--
+-- `realtime.messages` is where a subscription is authorised, and it had RLS
+-- enabled and NO POLICY — which does not mean "deny", it means the channels
+-- were never declared private and Realtime never consulted the table. Measured
+-- before the policies existed: a client holding only the anon key read a
+-- table's whole fan-out, and a second account broadcast a forged state onto the
+-- topic that a seated player's client accepted.
+--
+-- These assertions are deliberately about the SHAPE of the policy set rather
+-- than its text. A new policy here changes who can read another table's cards,
+-- so it should fail this file and be argued for, not slip in.
+-- ---------------------------------------------------------------------------
+
+select ok(
+  (select relrowsecurity from pg_class where oid = 'realtime.messages'::regclass),
+  'RLS is enabled on realtime.messages, which is what makes a private channel checkable'
+);
+
+select is(
+  (select count(*)::int from pg_policy where polrelid = 'realtime.messages'::regclass),
+  3,
+  'realtime.messages carries exactly the three Arc 21 channel policies'
+);
+
+-- polcmd: 'r' = SELECT, 'a' = INSERT. Exactly one write policy, and the read
+-- policies are the two topics the app subscribes to.
+select is(
+  (select count(*)::int from pg_policy
+   where polrelid = 'realtime.messages'::regclass and polcmd = 'a'),
+  1,
+  'a client may write to exactly one kind of topic'
+);
+
+-- The one write policy must be the presence roster. If a game topic ever
+-- becomes writable by a client, a player can push a forged table to the seat
+-- next to them, which is the injection this whole area exists to prevent.
+select ok(
+  (select pg_get_expr(polwithcheck, polrelid) like '%presence:players%'
+     and pg_get_expr(polwithcheck, polrelid) not like '%game_session_seats%'
+   from pg_policy
+   where polrelid = 'realtime.messages'::regclass and polcmd = 'a'),
+  'the only client-writable topic is the presence roster, never a game'
+);
+
 select * from finish();
+
 
 rollback;

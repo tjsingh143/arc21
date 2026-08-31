@@ -35,6 +35,7 @@ import {
   canStartTable,
   describeReadiness,
   isReady,
+  mayOpenDealtTable,
   ROOM_CODE_LENGTH,
   shareMessage,
   useRoomsStore,
@@ -93,6 +94,15 @@ export default function PrivateTableLobby() {
   );
 
   /*
+   * `checked` IS WHAT STOPS A STALE POINTER NAVIGATING — see
+   * `mayOpenDealtTable` for the two devices it was photographed on, and for why
+   * `restore()` alone could not do it. Component state on purpose: anything
+   * kept in the store would arrive here already true, carried over from the
+   * mount before, which is the very shape of the bug.
+   */
+  const [checked, setChecked] = useState(false);
+
+  /*
    * "Loading/reconnect must preserve room code."
    *
    * Asked once, on mount, before anything else. Without it a host who force-quit
@@ -101,7 +111,13 @@ export default function PrivateTableLobby() {
    * for the first to expire.
    */
   useEffect(() => {
-    void restore();
+    let live = true;
+    void restore().finally(() => {
+      if (live) setChecked(true);
+    });
+    return () => {
+      live = false;
+    };
   }, [restore]);
 
   // A lobby is a waiting room: other people arrive while you look at it.
@@ -176,12 +192,17 @@ export default function PrivateTableLobby() {
    * already in this project, roughly one launch in three.
    */
   useEffect(() => {
+    // A pointer is not enough on its own: it has to have been checked against
+    // the server on THIS mount. `dealt` outlives this screen, so without the
+    // second line a seat settled at the table sends the player straight back to
+    // it, for ever — see `mayOpenDealtTable`.
     if (!dealt) return;
+    if (!mayOpenDealtTable({ checked, dealt })) return;
     router.replace({
       pathname: "/table/[gameId]",
       params: { gameId: dealt.gameId, seatId: dealt.seatId },
     });
-  }, [dealt]);
+  }, [checked, dealt]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>

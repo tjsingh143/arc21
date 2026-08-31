@@ -1912,3 +1912,153 @@ suite("decisions and leaderboards", () => {
     expect(after.find((item) => item.cosmetic_id === owned?.cosmetic_id)?.equipped).toBe(true);
   }, 120_000);
 });
+
+/**
+ * WHO MOVES AN EXPIRED DEADLINE.
+ *
+ * Arc 21 runs no long-lived game process. A deadline is a stored `deadline_at`,
+ * and the specification's mechanism for reaching it is that "when a deadline is
+ * visually reached, any connected client may request RESOLVE_TIMEOUT", which the
+ * server honours only if its own clock agrees. So a CONNECTED CLIENT ASKING is
+ * the only thing in the entire system that moves a lapsed timer.
+ *
+ * Nothing asked. `deadlineAt` has been on every snapshot since the wire contract
+ * was written, under the comment "Clients render countdowns against server
+ * time", and no client code read it — while the app's single `RESOLVE_TIMEOUT`
+ * call site was `TableGateway.snapshot()`, deliberately pinned to
+ * `expectedVersion: 0` so that it can never apply. It is a read wearing a
+ * command's clothes. An absent player therefore froze a shared table for
+ * everybody, indefinitely, with the fifteen-second timer that exists to prevent
+ * exactly that already long expired.
+ *
+ * This asserts the DIFFERENCE, at the wire, in one run: the poll's command
+ * leaves the phase where it was, and the store's command advances it. The
+ * existing `your_turn` test sends the second one already — but it sends it as
+ * the server suite, not as the app, so it could never have caught that the app
+ * sent the first one and nothing else.
+ */
+suite("an expired deadline is resolved by a client asking", () => {
+  async function rpc(token: string, name: string, args: Record<string, unknown> = {}) {
+    const response = await fetch(`http://127.0.0.1:54321/rest/v1/rpc/${name}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: LOCAL_SERVICE_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(args),
+    });
+    const raw = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = raw;
+    }
+    return { status: response.status, body: parsed };
+  }
+
+  it("ignores the poll's version-0 command and applies the real one", async () => {
+    const host = signToken(await createUser());
+    const guest = signToken(await createUser());
+
+    const created = await rpc(host, "create_private_room", { p_max_seats: 2 });
+    const room = (Array.isArray(created.body) ? created.body[0] : created.body) as {
+      id: string;
+      code: string;
+    };
+    await rpc(guest, "join_private_room", { p_code: room.code });
+
+    const started = await call("create-session", host, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: new Date().toISOString(),
+    });
+    expect(started.status).toBe(200);
+    const table = started.body.publicState as { version: number; deadlineAt: string | null };
+    const gameId = started.body.gameId as string;
+
+    // A shared table states its clock. A solo table deliberately does not — see
+    // `PRIVATE_TIMING` in `create-session` — and this is what the client renders
+    // the countdown from.
+    expect(table.deadlineAt).not.toBeNull();
+    expect(Date.parse(table.deadlineAt as string)).toBeGreaterThan(Date.now());
+
+    // Fifteen seconds of real betting window, plus a second for the crossing.
+    await new Promise((resolve) => setTimeout(resolve, 16_000));
+
+    // EXACTLY what `TableGateway.snapshot()` sends, three times a second.
+    const poll = await call("game-command", host, {
+      gameId,
+      clientActionId: crypto.randomUUID(),
+      expectedVersion: 0,
+      type: "RESOLVE_TIMEOUT",
+      payload: {},
+      clientSentAt: new Date().toISOString(),
+    });
+    expect(poll.status).toBe(200);
+    expect(poll.body.status).toBe("stale");
+    const stalled = poll.body.publicState as { phase: string; version: number };
+    expect(stalled.phase).toBe("BETTING_OPEN");
+    expect(stalled.version).toBe(table.version);
+
+    // What `useOnlineTableStore.resolveTimeout()` sends: the CURRENT version.
+    const asked = await call("game-command", host, {
+      gameId,
+      clientActionId: crypto.randomUUID(),
+      expectedVersion: stalled.version,
+      type: "RESOLVE_TIMEOUT",
+      payload: {},
+      clientSentAt: new Date().toISOString(),
+    });
+    expect(asked.status).toBe(200);
+    expect(asked.body.status).toBe("accepted");
+    const moved = asked.body.publicState as { phase: string; version: number };
+    expect(moved.phase).toBe("PLAYER_TURNS");
+    expect(moved.version).toBeGreaterThan(stalled.version);
+
+    // The defaults are stated and dull, and the engine names each one it applied
+    // — never basic strategy played on an absent player's behalf.
+    const applied = (asked.body.events as Array<{ event: { type: string; appliedAction?: string } }>)
+      .filter((published) => published.event.type === "TIMEOUT_RESOLVED")
+      .map((published) => published.event.appliedAction);
+    expect(applied).toHaveLength(2);
+    for (const action of applied) expect(action).toMatch(/^BET_\d+$/);
+  }, 120_000);
+
+  it("refuses a client whose clock is ahead of the server's", async () => {
+    const host = signToken(await createUser());
+    const guest = signToken(await createUser());
+
+    const created = await rpc(host, "create_private_room", { p_max_seats: 2 });
+    const room = (Array.isArray(created.body) ? created.body[0] : created.body) as {
+      id: string;
+      code: string;
+    };
+    await rpc(guest, "join_private_room", { p_code: room.code });
+
+    const started = await call("create-session", host, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: new Date().toISOString(),
+    });
+    const table = started.body.publicState as { version: number };
+
+    // Asked immediately. The server checks ITS OWN clock — `clientSentAt` is
+    // never forwarded into the engine — so a device running fast can do no more
+    // than waste one round trip, which is why the store swallows this code
+    // rather than showing it.
+    const early = await call("game-command", host, {
+      gameId: started.body.gameId,
+      clientActionId: crypto.randomUUID(),
+      expectedVersion: table.version,
+      type: "RESOLVE_TIMEOUT",
+      payload: {},
+      clientSentAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    expect(early.status).toBe(422);
+    expect(early.body.code).toBe("DEADLINE_NOT_REACHED");
+  }, 60_000);
+});

@@ -1,0 +1,72 @@
+# Arc 21 — TWO CLIENTS, step 2: the guest types the code on a SECOND device.
+#
+# The code is passed in rather than read off the host's screen:
+#   CODE=$(npx tsx scripts/two-client-code.ts)
+#   maestro test --device <B> -e CODE=$CODE tests/e2e/two-client-guest-join.yaml
+#
+# THE ASSERTION THAT MATTERS is "2 of 2 seated" on the GUEST's device. It can
+# only be true if the guest's `join_private_room` reached the same room the host
+# created, and if `get_room_state` returned both members to a client that has
+# never seen the host's screen.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible:
+      id: "room-seats-2"
+    timeout: 45000
+
+# SCROLLED to, not merely tapped. `tapOn` does not scroll, and the join card sits
+# below the fold under the economics note and the create card — the first run of
+# this flow tapped an id that was in the accessibility tree and off the screen,
+# reported COMPLETED, typed into nothing, and failed two steps later on a count
+# that was correct. Confirmed from the failure screenshot, which showed the
+# create/join screen with the keyboard up and the join card never reached.
+- scrollUntilVisible:
+    element:
+      id: "room-code-input"
+    direction: DOWN
+    timeout: 20000
+
+# Typed, not pasted: six characters from an unambiguous alphabet is exactly the
+# case `inputText` handles, and the field is what a player uses. Asserted after,
+# because `inputText` drops characters on this simulator and a half-typed code
+# is refused in a way that reads as a broken join.
+- tapOn:
+    id: "room-code-input"
+- inputText: ${CODE}
+- assertVisible: ${CODE}
+
+# The keyboard covers the button. Hidden rather than scrolled past, so the tap
+# lands on the control and not on the keyboard's own row.
+- hideKeyboard
+- scrollUntilVisible:
+    element:
+      id: "room-join"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "room-join"
+
+- extendedWaitUntil:
+    visible: "2 of 2 seated"
+    timeout: 45000
+- assertVisible:
+    id: "room-code"
+    text: ${CODE}

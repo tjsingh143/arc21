@@ -51,6 +51,7 @@ export {
   inviteAffordance,
   isHost,
   isReady,
+  mayOpenDealtTable,
   shareMessage,
   type InviteAffordance,
 } from "./lobby-affordance.js";

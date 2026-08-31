@@ -9,16 +9,29 @@
 export {
   createSupabaseTableGateway,
   createUnconfiguredTableGateway,
+  engineEventsOf,
+  seqRangeOf,
   type TableCommand,
+  type TableEvents,
   type TableFailure,
   type TableGateway,
   type TableSnapshotOutcome,
 } from "./online-table-gateway.js";
 
 export {
+  COUNTDOWN_TICK_MS,
+  describeDeadline,
+  secondsUntilDeadline,
+  shouldRequestTimeoutResolution,
+  TIMEOUT_RESOLVE_GRACE_MS,
+  TIMEOUT_RETRY_MS,
+} from "./table-deadline.js";
+
+export {
   activeTableGateway,
   isMyTurn,
   ownSeat,
+  SEAT_CLOSED_MESSAGE,
   setTableGateway,
   useOnlineTableStore,
   type OnlineTableStatus,

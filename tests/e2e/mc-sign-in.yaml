@@ -1,0 +1,101 @@
+# Arc 21 — sign in as a NAMED account, for the two-client flows.
+#
+# `sign-in.yaml` is the single-device preamble and hard-codes
+# `e2e-lobby@arc21.test`, because until this phase every server-configured flow
+# involved exactly one account. A private table needs two, so this takes the
+# address as a parameter — and it FINISHES DIFFERENTLY, which is the part that
+# matters.
+#
+# THE FIRST VERSION OF THIS FLOW LOOPED UNTIL `home-practice` WAS VISIBLE AND
+# CALLED THAT SUCCESS. On a simulator that had been used before, the app
+# launched past onboarding straight to Home AS A GUEST: every branch was
+# SKIPPED, and the flow reported COMPLETED having signed nobody in. The scenario
+# failed two flows later on "2 of 2 seated", which reads like a broken join —
+# and the failure screenshot showed the lobby saying "Private tables need an
+# account". **Home is not evidence of an account.** `header-chips` is: the
+# header renders a balance for a signed-in player and the word GUEST otherwise,
+# so the loop below runs until a real session exists and can never mistake a
+# guest for one.
+#
+# Structured as ONE loop with every state checked at the TOP level, which is the
+# fix `career-node.yaml` needed for the same reason: a branch nested inside
+# another state deadlocks the moment an iteration arrives somewhere unexpected.
+#
+#   maestro test --device <udid> -e EMAIL=<address> tests/e2e/mc-sign-in.yaml
+#
+# The password IS the email — see `scripts/e2e-account.ts` for why.
+
+appId: com.arc21.app
+---
+# Launched here rather than by the caller: these flows are run one per `maestro
+# test` invocation, because the two-client scenario is sequential across two
+# simulators. `clearState: false` deliberately — the iOS keychain keeps the
+# session anyway (see `sign-in.yaml`), so wiping the container buys nothing.
+- launchApp:
+    clearState: false
+
+- repeat:
+    times: 8
+    while:
+      notVisible:
+        id: "header-chips"
+    commands:
+      # A leftover deep-link confirmation, and the system password sheet. Both
+      # sit OVER the app, and while either is up every assertion underneath it
+      # fails — which reads as a screen that did not render.
+      - runFlow:
+          when:
+            visible: "Open"
+          commands:
+            - tapOn: "Open"
+      - runFlow:
+          when:
+            visible: "Save Password?"
+          commands:
+            - tapOn: "Not Now"
+
+      # Not on the auth screen: go there. By deep link rather than through
+      # onboarding's button, because onboarding is not shown to an app that has
+      # been used before — which is exactly the state this flow found.
+      - runFlow:
+          when:
+            notVisible:
+              id: "auth-email"
+          commands:
+            - openLink: arc21://sign-in
+
+      # TYPED, not pasted. `sign-in.yaml` pastes because the CREATE-ACCOUNT
+      # screen's `textContentType="newPassword"` raises the strong-password
+      # overlay and swallows `inputText` entirely; this screen's plain
+      # `textContentType="password"` types fine, and the paste path proved
+      # unreliable on the second simulator — three taps on "Paste" reported
+      # COMPLETED and left both fields empty, which is the failure screenshot
+      # that sent this flow back to be rewritten.
+      #
+      # Erased first, so a retry after a dropped character retypes the field
+      # rather than appending to it.
+      - runFlow:
+          when:
+            visible:
+              id: "auth-email"
+          commands:
+            - tapOn:
+                id: "auth-email"
+            - eraseText
+            - inputText: ${EMAIL}
+            - tapOn:
+                id: "auth-password"
+            - eraseText
+            - inputText: ${EMAIL}
+            - tapOn:
+                id: "auth-submit"
+
+# THE PROOF. A balance in the header means the server answered for an account;
+# a guest gets the word GUEST and no number. The loop above cannot exit any
+# other way, and this states it once more for a reader of the log.
+- extendedWaitUntil:
+    visible:
+      id: "header-chips"
+    timeout: 60000
+- assertVisible:
+    id: "home-practice"

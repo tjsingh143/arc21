@@ -186,6 +186,15 @@ export interface Database {
        */
       list_blocked: { Args: Record<string, never>; Returns: unknown };
       /**
+       * Stamps the caller's own `profiles.last_seen_at`, and no argument names
+       * whose. The fallback beneath ephemeral presence: `list_friends` and
+       * `player_public_profile` both return that column and the app renders it
+       * through `describeLastSeen`, and until this existed nothing had ever
+       * written it after signup — so "last seen" was the account's creation
+       * date, for ever.
+       */
+      touch_last_seen: { Args: Record<string, never>; Returns: string };
+      /**
        * Public matchmaking. These allocate a SEAT and never a chip — the buy-in
        * is debited by the session function through `apply_wallet_delta`, which
        * is the only path that may move money.

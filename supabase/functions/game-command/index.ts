@@ -53,12 +53,14 @@ import { checkRateLimit, consumeRateLimit, OUTSIDE_GAME_ACTION } from "../_share
 import { withTransaction, type Tx } from "../_shared/postgres-client.ts";
 import {
   appendEvents,
+  closeRoomForSession,
   findAppliedCommand,
   findSeat,
   loadSession,
   lockEngineState,
   persistEngineState,
   recordAppliedCommand,
+  releaseRoomSeat,
   syncSeatRow,
   recordDecisions,
   recordCareerAttemptDecisions,
@@ -229,6 +231,9 @@ async function closeCompetition(
     // A closed economy owes no wallet anything, however large the stacks got.
     escrowChips: 0,
   });
+  // A tournament and the daily challenge have no room, so this updates nothing
+  // for them; a mode that grows one is retired without anybody remembering to.
+  await closeRoomForSession(tx, params.gameId);
 
   const seatState = closed.seats.find((candidate) => candidate.seatId === params.seatId);
   if (seatState) {
@@ -533,7 +538,14 @@ async function handle(
     endedAt: sessionEnded ? now : null,
     escrowChips: escrowFor(session.mode, nextState),
   });
+  // The TABLE ending — not this seat leaving — is what retires the room, so a
+  // five-seat table keeps its code while four people are still playing.
+  if (sessionEnded) await closeRoomForSession(tx, command.gameId);
   await syncSeatRow(tx, seat.id, seatState, closing ? { status: "left", leftAt: now } : {});
+  // A LEAVE that closed the seat ends the room membership too, migrating the
+  // host role if this player held it. Shared with the CASH_OUT route, down to
+  // the SQL function, so the two cannot disagree about who inherits a room.
+  if (closing) await releaseRoomSeat(tx, command.gameId, userId);
 
   await notifyTimedOutSeats(tx, command.gameId, events);
 

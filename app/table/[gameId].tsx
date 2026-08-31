@@ -10,7 +10,7 @@
  * this size showing five equal hands makes all five unreadable.
  */
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
@@ -39,10 +39,15 @@ import {
   LEAVE_TABLE_CONFIRM_TITLE,
   mayLeaveTable,
   shouldConfirmLeavingTable,
+  TABLE_EXIT_ROUTE,
+  tableExitSequence,
 } from "../../src/features/table/leave-guard";
 import { useSettings } from "../../src/features/settings/use-settings";
 import {
+  COUNTDOWN_TICK_MS,
+  describeDeadline,
   describeDealerUpCardForAnnouncement,
+  engineEventsOf,
   insuranceOffer,
   isMyTurn,
   ownSeat,
@@ -92,14 +97,22 @@ export default function SharedTable() {
   const nextHand = useOnlineTableStore((state) => state.nextHand);
   const setOwnPresence = usePresenceStore((state) => state.setOwnState);
   const lastEvents = useOnlineTableStore((state) => state.lastEvents);
+  const resolveTimeout = useOnlineTableStore((state) => state.resolveTimeout);
 
   /*
    * The same feedback the practice table uses, from the same kind of event
    * stream. A shared table is where sound matters most — you hear somebody
    * else's card land — and it is driven by what the SERVER said happened, never
    * by a diff between two snapshots.
+   *
+   * Unwrapped from the ordering envelope HERE rather than in the gateway, and
+   * memoised on the batch's identity so the array is stable for exactly as long
+   * as the batch is: `useTableFeedback` decides "already felt" by identity, and
+   * a fresh array per render would replay the last hand's outcome on every tick
+   * of the countdown below.
    */
-  useTableFeedback(lastEvents, notice);
+  const feedbackEvents = useMemo(() => engineEventsOf(lastEvents), [lastEvents]);
+  useTableFeedback(feedbackEvents, notice);
 
   useEffect(() => {
     if (!gameId || !seatId) return;
@@ -123,6 +136,79 @@ export default function SharedTable() {
     const timer = setInterval(() => void refresh(), POLL_MS);
     return () => clearInterval(timer);
   }, [status.kind, refresh]);
+
+  /*
+   * THE SERVER'S CLOCK, AND THE ASK THAT GOES WITH IT.
+   *
+   * `deadlineAt` has been on every snapshot since the wire contract was written,
+   * under the comment "Clients render countdowns against server time", and no
+   * client code read it. Two things were missing, and the second is the one that
+   * mattered: there was no countdown, and NOTHING EVER ASKED THE SERVER TO
+   * RESOLVE AN EXPIRED DEADLINE. Arc 21 runs no long-lived game process, so a
+   * connected client asking is the only thing that moves a lapsed timer — and
+   * the app's one `RESOLVE_TIMEOUT` call site is `snapshot()`, pinned to
+   * `expectedVersion: 0` so it can never apply. So an absent player froze a
+   * shared table for everybody, with the fifteen-second timer that exists to
+   * stop exactly that already long expired.
+   *
+   * The clock ticks only while there IS a deadline: a solo table and a career
+   * node carry none on purpose, and a screen that re-rendered every second to
+   * display nothing would be a battery cost for no one.
+   */
+  const deadlineAt = status.kind === "at-table" ? status.state.deadlineAt : null;
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    if (deadlineAt === null) return;
+    const timer = setInterval(() => setNow(new Date()), COUNTDOWN_TICK_MS);
+    return () => clearInterval(timer);
+  }, [deadlineAt]);
+
+  /*
+   * Asked on every tick, and refused by the store on all but one of them:
+   * `shouldRequestTimeoutResolution` requires the deadline to have passed, no
+   * command in flight, a live connection, and no ask already made at this
+   * version. The server checks its OWN clock again and answers
+   * DEADLINE_NOT_REACHED if it disagrees, so this can never do more than waste
+   * one round trip.
+   */
+  useEffect(() => {
+    void resolveTimeout();
+  }, [now, deadlineAt, resolveTimeout]);
+
+  /*
+   * WHO THE CLOCK IS FOR, derived from the server's snapshot.
+   *
+   * On a two-simulator run the host's screen read "10 seconds to act · you
+   * stand if you do not" while the OTHER seat was the one being waited on —
+   * wrong twice over, and invisible to every assertion about that string. The
+   * phase alone does not say whose deadline it is; the snapshot does.
+   */
+  const awaitingYou = useMemo(() => {
+    if (status.kind !== "at-table") return false;
+    const table = status.state;
+    const mine = table.seats.find((candidate) => candidate.seatId === status.seatId);
+    const mineLegal = table.legalActions[status.seatId];
+    switch (table.phase) {
+      case "BETTING_OPEN":
+        return mine ? !mine.betLocked && !mine.sittingOut : false;
+      case "INSURANCE_OFFER":
+        return Boolean(mineLegal?.canTakeInsurance || mineLegal?.canDeclineInsurance);
+      case "PLAYER_TURNS":
+        return table.activeSeatId === status.seatId;
+      default:
+        // HAND_COMPLETE waits on nobody in particular: whoever asks first
+        // starts the next round for everyone.
+        return true;
+    }
+  }, [status]);
+
+  const countdown = useMemo(
+    () =>
+      status.kind === "at-table"
+        ? describeDeadline({ deadlineAt, phase: status.state.phase, now, awaitingYou })
+        : null,
+    [status, deadlineAt, now, awaitingYou],
+  );
 
   /*
    * Derived with `useMemo` from subscribed state. Calling a Zustand getter
@@ -395,6 +481,25 @@ export default function SharedTable() {
         </AppText>
       ) : null}
 
+      {/*
+        Presentation only. The number comes from the server's `deadlineAt` and
+        the sentence beside it names the default that will be applied — the
+        specification's position on timeouts is that they are predictable and
+        STATED, and a bare number beside a button is a threat rather than a
+        statement.
+      */}
+      {countdown ? (
+        <AppText
+          variant="caption"
+          color="textSecondary"
+          align="center"
+          numeric
+          testID="table-countdown"
+        >
+          {countdown}
+        </AppText>
+      ) : null}
+
       {table.phase === "SESSION_COMPLETE" ? (
         <SurfaceCard>
           <AppText variant="bodyStrong" testID="table-complete">
@@ -530,6 +635,9 @@ function Frame({ children }: { children: React.ReactNode }) {
    */
   const leaving = useRef(false);
 
+  /** Whether a leave confirmation is already on screen. See `confirmThenLeave`. */
+  const confirming = useRef(false);
+
   /*
    * The stack this seat would be cashing out, from the server's snapshot and
    * nowhere else. Derived with `useMemo` on subscribed state rather than by
@@ -561,6 +669,32 @@ function Frame({ children }: { children: React.ReactNode }) {
    */
   const confirmThenLeave = useCallback(async (): Promise<boolean> => {
     if (!confirmFirst) return leaveTable();
+
+    /*
+     * ONE CONFIRMATION AT A TIME.
+     *
+     * `Alert.alert` is fire-and-forget: iOS presents at most one, and a second
+     * raised while the first is still dismissing is DROPPED — which leaves the
+     * promise below with no button left to settle it, so this call never
+     * returns. A caller awaiting it hangs, and `beforeRemove`'s caller has
+     * already cancelled the navigation by then, so the screen stops accepting
+     * any route away at all.
+     *
+     * Reached by tapping "Leave table" twice in quick succession while the
+     * server is refusing a mid-hand cash-out — which is exactly what a player
+     * does when the first tap appears to do nothing, and what the E2E flow does
+     * once a second. Refusing the second ask is the right answer anyway: there
+     * is one question on screen and it is already being asked.
+     */
+    if (confirming.current) return false;
+    confirming.current = true;
+    try {
+      return await askThenLeave();
+    } finally {
+      confirming.current = false;
+    }
+
+    async function askThenLeave(): Promise<boolean> {
     const agreed = await new Promise<boolean>((resolve) => {
       Alert.alert(LEAVE_TABLE_CONFIRM_TITLE, describeLeaveTableConfirmation(stack), [
         // `onDismiss` is Android-only and does not fire for a backdrop tap on
@@ -571,21 +705,61 @@ function Frame({ children }: { children: React.ReactNode }) {
     });
     if (!agreed) return false;
     return leaveTable();
+    }
   }, [confirmFirst, leaveTable, stack]);
+
+  /**
+   * Everything that must happen AFTER the server has settled the seat, for both
+   * of the two ways off this screen.
+   *
+   * IT EXISTS BECAUSE THE TWO PATHS DISAGREED, and the half that was missing was
+   * `leaving.current`. The `beforeRemove` listener set it; the back bar did not
+   * — so the back bar confirmed, cashed out, and then navigated, at which point
+   * `beforeRemove` fired with `alreadyLeaving: false`, cancelled the navigation,
+   * and **asked a second time whether to leave a table the player had already
+   * left**, quoting the stack the seat no longer holds. Photographed on the
+   * simulator: the dialog sitting over the screen's own
+   * "You are no longer at this table" notice. And because an `Alert` is modal,
+   * the app was then stuck — a deep link to the lobby COMPLETED and landed
+   * behind it.
+   *
+   * `replayBack` is the only thing the two callers do differently: the listener
+   * re-dispatches the action it cancelled, the back bar has none to re-dispatch.
+   * Everything else is here, once.
+   *
+   * REPLAYING IS NOT ENOUGH WHEN THERE IS NOTHING BEHIND THIS ROUTE. The table
+   * is reached by `router.replace` from the lobby, by `arc21://table/...`, by a
+   * notification and by the resume card on a cold launch — in every one of those
+   * a GO_BACK is an action no navigator can handle. Seen on a device: the
+   * cash-out committed, the seat settled, the chips came back, and the screen
+   * sat on "Reading the table…" with no way off it.
+   */
+  const finishLeaving = useCallback(
+    (replayBack: () => void) => {
+      for (const step of tableExitSequence(navigation.canGoBack())) {
+        if (step === "mark-leaving") leaving.current = true;
+        else if (step === "replay-back") replayBack();
+        else router.replace(TABLE_EXIT_ROUTE);
+      }
+    },
+    [navigation],
+  );
 
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (event) => {
-      if (mayLeaveTable({ alreadyLeaving: leaving.current, cashedOut: false })) return;
+      // `holdsSeat` FIRST: with no seat there is nothing to protect, and
+      // cancelling here is what wedged the screen — see `mayLeaveTable`.
+      const holdsSeat = useOnlineTableStore.getState().status.kind === "at-table";
+      if (mayLeaveTable({ alreadyLeaving: leaving.current, cashedOut: false, holdsSeat })) return;
       event.preventDefault();
       void (async () => {
         const cashedOut = await confirmThenLeave();
-        if (!mayLeaveTable({ alreadyLeaving: false, cashedOut })) return;
-        leaving.current = true;
-        navigation.dispatch(event.data.action);
+        if (!mayLeaveTable({ alreadyLeaving: false, cashedOut, holdsSeat: true })) return;
+        finishLeaving(() => navigation.dispatch(event.data.action));
       })();
     });
     return unsubscribe;
-  }, [navigation, confirmThenLeave]);
+  }, [navigation, confirmThenLeave, finishLeaving]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -597,7 +771,11 @@ function Frame({ children }: { children: React.ReactNode }) {
           label="Leave table"
           onPress={() => {
             void (async () => {
-              if (await confirmThenLeave()) router.back();
+              if (!(await confirmThenLeave())) return;
+              // The SAME exit as the `beforeRemove` listener, `leaving.current`
+              // included — see `finishLeaving` for what happened when this path
+              // had its own copy that left that one line out.
+              finishLeaving(() => router.back());
             })();
           }}
         />

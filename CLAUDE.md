@@ -702,6 +702,142 @@ file fails with a hook timeout that reads like a solver regression. Check
 `uptime` before believing one, exactly as `CLAUDE.md` already says for Maestro
 and the benchmark.
 
+**A LONG-LIVED METRO CAN SERVE A STALE BUNDLE, AND THE SECOND `expo start` SAYS
+SO IN A LINE NOBODY READS.** A dev server that has been up for hours can stop
+picking up edits, and starting another one does not replace it — `npx expo start`
+finds 8081 taken, cannot ask "Use port 8082 instead?" in a non-interactive shell,
+and prints **`› Skipping dev server`** before exiting quietly. The app then keeps
+loading from the ORIGINAL bundler, so `launchApp` and Fast Refresh both look
+normal and neither carries your change. This cost three device runs and two
+wrong diagnoses in phase 6: fixes with passing unit regressions appeared to have
+no effect, and the intermittent results were the OLD code taking different
+branches. **Before believing any device evidence about a change you just made,
+confirm the bundler that is serving 8081 is one you started after the edit** —
+`lsof -ti:8081` and `ps -o lstart=` on the pid. Restart with `--clear` when in
+doubt. This is the "a step that COMPLETED did not necessarily do anything" rule
+one level up: a build that looks live and is not.
+
+**`Alert.alert` IS FIRE-AND-FORGET, SO A PROMISE WRAPPED AROUND ONE CAN NEVER
+SETTLE.** iOS presents at most one alert, and a second raised while the first is
+still dismissing is DROPPED — no error, no callback. A
+`new Promise(resolve => Alert.alert(…, [{ onPress: () => resolve(…) }]))` then
+has no button left to settle it, and every caller awaiting it hangs for the life
+of the screen. On the online table that combined with the note below into a
+frozen screen, and it is INTERMITTENT: two consecutive runs of the same commit
+gave different answers. A player reaches it by tapping a control twice when the
+first tap appears to do nothing — which is exactly what a refused mid-hand
+cash-out looks like. Make any confirmation single-flight.
+
+**A `beforeRemove` GUARD THAT CANCELS FIRST AND ASKS SECOND CAN CANCEL FOR EVER.**
+The online table's listener protects an open escrow, and it called
+`event.preventDefault()` without checking whether the seat still existed. After a
+settled cash-out there was nothing to protect — but EVERY route away from the
+table fires that listener, so every route away was cancelled: the screen sat on
+its own "You are no longer at this table" notice with the table gone, and
+`arc21://table/lobby` reported **COMPLETED** and changed nothing. Only killing
+the app got the player out. `mayLeaveTable` now takes `holdsSeat` and checks it
+first. The general form: **a guard that protects a resource must ask whether the
+resource is still there** — the same lesson as the account-deletion guard that
+counted seats without asking what a seat's status meant, from the other
+direction. And note how it presents: not as an error, but as a screen that
+ignores you.
+
+**WHEN ONE SCREEN HAS TWO WAYS OUT, A STEP PRESENT IN ONLY ONE OF THEM IS A STEP
+THAT IS MISSING.** The online table has a back-bar control and a `beforeRemove`
+listener (Android back, a stack-resetting deep link), and each carried its own
+copy of the leave sequence. One copy omitted the line that records the screen is
+leaving — so the back bar confirmed, cashed out, and navigated; the listener then
+fired with `alreadyLeaving: false`, cancelled the navigation and **asked a second
+time whether to leave a table already left**, quoting a stack the seat no longer
+held. An `Alert` is modal, so the app was then stuck behind it: a deep link to
+the lobby reported COMPLETED and landed underneath. Both paths now run
+`tableExitSequence()`, which returns the ordered steps so neither caller can drop
+one. Same shape as the three-tables note above — touch one path, check the other.
+
+**A REALTIME TOPIC IS PUBLIC UNTIL A CHANNEL DECLARES ITSELF PRIVATE, AND AN
+EMPTY POLICY SET IS NOT "DENY".** `realtime.messages` had RLS enabled and no
+policy for the whole life of the project, which reads as locked down and means
+the opposite: nothing was private, so Realtime never consulted the table.
+`game:<gameId>` was open in BOTH directions, and both were measured rather than
+reasoned about — a client holding nothing but the ANON KEY subscribed and
+received a live table's whole fan-out (every seat's display name, user id, stack
+and posted bet, going around `game_session_seats`' participant-only RLS), and a
+second account broadcast a forged `state` onto the topic that a seated player's
+client accepted and applied. The second is the worse one: `subscribe()` parses
+whatever arrives and hands it to `applyPushedState`, so that is a client-supplied
+game state rendered as authoritative, which invariant 6 exists to forbid by a
+route the verified-JWT check on a command never sees. The fix needs BOTH ends —
+`client.channel(topic, { config: { private: true } })` and `private: true` on the
+broadcast message — plus policies on `realtime.messages`. **Miss it on the server
+and the broadcast API still answers 202 while delivering to nobody**, so there is
+no failed request to notice. Write the read policy by building the expected topic
+string FROM the row (`realtime.topic() = 'game:' || s.game_session_id::text`)
+rather than parsing the topic: a `substring(...)::uuid` raises on a malformed
+topic and takes the subscription down with an error instead of a refusal.
+
+**A HAND-SIGNED JWT IS NOT A SESSION, AND ON REALTIME THE DIFFERENCE IS INVISIBLE
+UNTIL THE SECOND MESSAGE.** A client built by `createClient` with no session runs
+its own auth listener and sets the socket's token back to the anon key shortly
+after start-up — AFTER an explicit `realtime.setAuth()`. A private channel
+therefore JOINS as the user and is refused as `anon` when Realtime re-checks it in
+order to deliver, so the symptom is `SUBSCRIBED`, then exactly one message, then
+silence — never a subscribe error. This cost most of an afternoon of "the Edge
+Function's broadcast is never delivered", with four plausible and entirely
+irrelevant leads on the way (payload double-encoding, `SET LOCAL realtime.topic`,
+message size, replication-slot lag), each of which was a REAL difference that did
+not matter. What settled it was running the existing integration test, which
+holds a genuine `signInWithPassword` session and passed. `accessToken` alone does
+not fix it either — that is what the SDK uses for PostgREST and it never reaches
+the socket; a non-session test client needs BOTH `accessToken` and
+`realtime.setAuth`. This is the "mirror the real client's auth options" note
+above, one layer down.
+
+**`realtime.send()` CANNOT FAIL.** Its body wraps the insert in
+`EXCEPTION WHEN OTHERS THEN RAISE WARNING`, and `postgres-client.ts` sets
+`onnotice: () => {}` so a NOTICE cannot carry row values into a log. A broken
+call through it returns cleanly, logs nothing and delivers nothing.
+
+**A FIX PLACED BEHIND AN EARLY RETURN IS NOT A FIX, AND THE TEST THAT PROVES IT
+WILL HAVE HAD TO DISARM THE GUARD TO GET THERE.** `restore()` opened with
+`if (get().status.kind === "seated") return;` — "never over a room already in
+hand". It runs on MOUNT, where a `seated` reading is by definition carried over
+from a previous mount, because navigating to the table is what unmounted the
+lobby. So the one case it skipped was the only case that mattered: a player who
+left through the table screen, whose store still said `seated` because
+`CASH_OUT` never touches it. TWO fixes written specifically for that player sat
+below the return and never ran once. The tell was in the test file — the
+regression for the lower branch had to `setState({ status: { kind: "idle" } })`
+by hand before calling `restore()`. **When a test has to step around a guard to
+reach the code it covers, the guard is the bug.** Same family as the
+`beforeRemove` listener that cancelled before asking: a guard has to ask whether
+its premise is still true, not merely whether it was once.
+
+**AN ASYNCHRONOUS CHECK CANNOT DEFEND A SYNCHRONOUS EFFECT, AND CLEARING THE
+VALUE EARLIER DOES NOT HELP.** The lobby verifies `dealt` against the server on
+mount and navigates on it in another mount effect. Both are mount effects, so
+the navigation had already read the stale pointer and dispatched
+`router.replace` by the time the lookup resolved — a player who had cashed out
+was thrown straight back onto a table answering `SESSION_CLOSED`, whose only
+control returns to the lobby, which bounces again. Moving the `set` to the top
+of the async function changes nothing: effects in one commit run against the
+render that scheduled them, so a `set` from the effect above cannot change what
+the one below sees. **The fix is about ORDER: gate the action on "the answer has
+come back", in COMPONENT state.** Anything module-level arrives already true,
+carried over from the mount before, which is the very shape of the bug —
+`mayOpenDealtTable` in `src/features/rooms/lobby-affordance.ts`.
+
+**A FAILURE THAT REPRODUCES IN THE SAME PLACE IS NOT A FLAKE.**
+`two-client-leave` failed four times across two sessions and three of those were
+read as harness trouble — a tap racing the cash-out, a dropped view hierarchy, a
+loaded machine. Two of those were real and were fixed, which is what made the
+survivor so easy to keep mis-reading. Two runs seventeen minutes apart stopped
+at the SAME assertion with the same screenshot, and a timing failure does not
+stop in the same place twice. Compare the failure ARTEFACTS across runs before
+reaching for load. And when a fix does not take, **re-run with only that fix in
+place before adding a second** — that is what separated two defects here that
+looked like one, and it is the only way the first would not have been recorded
+as the fix for something it does not fix.
+
 ---
 
 ## Product rules that are easy to get wrong

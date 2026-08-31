@@ -284,6 +284,64 @@ export async function syncSessionRow(
   `;
 }
 
+/**
+ * Retires the room a finished session was played in.
+ *
+ * A ROOM WAS NEVER CLOSED WHEN ITS GAME ENDED, and `leave_room` — reachable
+ * only from the lobby — is the sole other thing in the schema that ever writes
+ * `status = 'closed'`. Once the host deals, every client is on
+ * `/table/[gameId]` and leaving there sends `CASH_OUT`, which settles the seat
+ * and ends the session without touching the room. So a played-out private table
+ * sat at `active` for ever, holding its six-character code, and its host was
+ * refused every subsequent `create_private_room` with "you already have a table
+ * open" — permanently. Measured against the running stack before this existed.
+ *
+ * Called in the SAME transaction as the settlement that ended the session, so a
+ * rolled-back closure cannot retire a room that is still being played in. The
+ * `expire_stale_rooms()` sweep is the backstop for the sessions that end by some
+ * other route; this is the prompt answer that releases the code immediately.
+ *
+ * Deliberately keyed on `game_session_id` rather than taking a room id: a
+ * tournament and a daily challenge have no room at all, so this updates nothing
+ * for them and needs no caller to know which modes do.
+ */
+export async function closeRoomForSession(tx: Tx, gameId: string): Promise<void> {
+  await tx`
+    update public.rooms
+    set status = 'closed'
+    where game_session_id = ${gameId}::uuid
+      and status <> 'closed'
+  `;
+}
+
+/**
+ * Ends this player's membership of the room the table is being played in.
+ *
+ * LEAVING A TABLE THAT HAS DEALT DOES NOT GO THROUGH THE LOBBY. "Leave table"
+ * sends `CASH_OUT`, which settled the seat and returned the stack and never
+ * touched `room_members` — so a departed player stayed a `joined` member and,
+ * if they were the host, stayed the host. Measured: after a host cashed out of
+ * a three-seat table the other two kept playing, the app's own restore query
+ * still returned that room to the departed host, and `create_private_room`
+ * answered them "you already have a table open" for as long as strangers kept
+ * playing.
+ *
+ * `public.release_room_seat` is `leave_room`'s body with the identity as a
+ * parameter, so host migration has ONE implementation rather than a copy here.
+ * It is server-only for the obvious reason: an argument naming whose seat to
+ * release must never be client-callable.
+ *
+ * Keyed on `game_session_id`, so it does nothing at all for a mode with no room
+ * — solo, career, the daily challenge and a tournament all reach this path.
+ */
+export async function releaseRoomSeat(tx: Tx, gameId: string, userId: string): Promise<void> {
+  await tx`
+    select public.release_room_seat(r.id, ${userId}::uuid)
+    from public.rooms r
+    where r.game_session_id = ${gameId}::uuid
+  `;
+}
+
 export interface SeatPatch {
   status?: SeatRow["status"];
   leftAt?: string | null;

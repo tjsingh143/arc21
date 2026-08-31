@@ -23,6 +23,7 @@ import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
+import { callFunction } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 import { OPEN_ROOM_FILTER } from "../../src/features/rooms/rooms-gateway.js";
 
@@ -254,7 +255,7 @@ suite("ready states round-trip through the RPCs the lobby calls", () => {
     const stranger = await createPlayer();
 
     const set = await rpc(stranger, "set_room_ready", { p_room_id: room.id, p_ready: true });
-    // P0002 → PostgREST 404. The point is that it is refused, not the number.
+    // PT404 → PostgREST 404. The point is that it is refused, not the number.
     expect(set.status).toBeGreaterThanOrEqual(400);
   }, 30_000);
 });
@@ -478,4 +479,401 @@ suite("finding the table a player is already at", () => {
     expect(found.rows).toHaveLength(1);
     expect((found.rows[0] as { status: string }).status).toBe("active");
   }, 30_000);
+});
+
+/**
+ * A ROOM ENDS WHEN ITS GAME DOES.
+ *
+ * THE DEFECT, measured against this stack before the fix existed: `leave_room`
+ * is the only thing in the whole schema that had ever written
+ * `rooms.status = 'closed'`, and it is reachable from the LOBBY only. The moment
+ * the host deals, every client is on `/table/[gameId]`, and leaving there sends
+ * `CASH_OUT` to `create-session` — which settled the seat, ended the session and
+ * never touched the room. `expire_stale_rooms()` could not help either: it only
+ * looked at `status = 'lobby'`.
+ *
+ *     start                200 private_table_started
+ *     both players CASH_OUT 200 cashed_out   (game_sessions.status = completed)
+ *     rooms row            status = active, code still held
+ *     create_private_room  400 P0001 "you already have a table open"
+ *
+ * That last line was PERMANENT: one private table per account, for the lifetime
+ * of the account, and the six-character code never came back.
+ *
+ * The third case below is the one that keeps the fix honest. A SEAT closing and
+ * a TABLE closing are different events — the same distinction `settleTableClosure`
+ * already draws — so one player leaving a three-seat table must leave the room
+ * exactly where it was for the two still playing.
+ */
+suite("a room's life ends with its game", () => {
+  const iso = () => new Date().toISOString();
+
+  async function dealtTable(seats = 2): Promise<{
+    host: Player;
+    guest: Player;
+    room: RoomRow;
+    gameId: string;
+  }> {
+    const { host, guest, room } = await openRoomWithGuest(seats);
+    const started = await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+    expect(started.status).toBe(200);
+    const gameId = started.body.gameId;
+    if (typeof gameId !== "string") throw new Error(`no gameId: ${started.raw}`);
+    return { host, guest, room, gameId };
+  }
+
+  async function cashOut(player: Player, gameId: string): Promise<void> {
+    const out = await callFunction("create-session", player.token, {
+      action: "CASH_OUT",
+      clientRequestId: crypto.randomUUID(),
+      gameId,
+      clientSentAt: iso(),
+    });
+    expect(out.status).toBe(200);
+    expect(out.body.status).toBe("cashed_out");
+  }
+
+  /**
+   * `public.rooms` grants nothing to `service_role` — chip-adjacent tables
+   * deliberately do not — and the host stops being able to read the row through
+   * PostgREST the moment it closes, because `rooms_select_member` is scoped to
+   * the room and the SELECT still works but the app has moved on. Reading it
+   * straight from the database is the only way to assert on a row whose whole
+   * point is that no client should be looking at it any more.
+   */
+  function roomStatus(roomId: string): string {
+    const container = execFileSync(
+      "docker",
+      ["ps", "--filter", "name=supabase_db_", "--format", "{{.Names}}"],
+      { encoding: "utf8" },
+    )
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)[0];
+    if (!container) throw new Error("no supabase_db_* container is running");
+    return execFileSync(
+      "docker",
+      [
+        "exec",
+        container,
+        "psql",
+        "-U",
+        "postgres",
+        "-d",
+        "postgres",
+        "-tAc",
+        `select status from public.rooms where id = '${roomId}'`,
+      ],
+      { encoding: "utf8" },
+    ).trim();
+  }
+
+  it("retires the room when the last player cashes out", async () => {
+    const { host, guest, room, gameId } = await dealtTable();
+    expect(roomStatus(room.id)).toBe("active");
+
+    await cashOut(host, gameId);
+    await cashOut(guest, gameId);
+
+    expect(roomStatus(room.id)).toBe("closed");
+  }, 60_000);
+
+  it("lets the host open another table afterwards, which it never did", async () => {
+    const { host, guest, gameId } = await dealtTable();
+    await cashOut(host, gameId);
+    await cashOut(guest, gameId);
+
+    const again = await rpc(host, "create_private_room", { p_max_seats: 5 });
+    // Was `400 P0001 "you already have a table open"` — for ever.
+    expect(again.status).toBe(200);
+    expect(asRoom(again).code).toMatch(/^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}$/);
+  }, 60_000);
+
+  it("keeps the room open while other seats are still playing", async () => {
+    const { host, guest, room, gameId } = await dealtTable(3);
+    const third = await createPlayer();
+    // The third player joins the LOBBY before the deal in `dealtTable`? No — the
+    // table has already dealt, so this proves the other half at the same time:
+    // a newcomer is refused, and the room is unaffected by the refusal.
+    expect(refusedJoin(await rpc(third, "join_private_room", { p_code: room.code }))).toBe(true);
+
+    await cashOut(guest, gameId);
+
+    // One seat left. The table did not.
+    expect(roomStatus(room.id)).toBe("active");
+
+    await cashOut(host, gameId);
+    expect(roomStatus(room.id)).toBe("closed");
+  }, 60_000);
+});
+
+/**
+ * ONCE THE TABLE HAS DEALT, THE SERVER OWNS THE GAME.
+ *
+ * `join_private_room` admits `status in ('lobby', 'active')`, which is right for
+ * the case it was written for — rejoining IS how reconnection works. It did not
+ * distinguish a returning player from a stranger, and seats are fixed when the
+ * host deals. Measured before the fix: a third player joined a playing room with
+ * HTTP 200, `get_room_state` listed them as a member, and their
+ * `game_session_seats` query returned `[]` — so the lobby, which resolves its own
+ * seat from that table, polled for one for ever with nothing on screen to say
+ * why, while the other two played.
+ */
+suite("joining a table that has already dealt", () => {
+  const iso = () => new Date().toISOString();
+
+  it("refuses a newcomer, in the same words as every other refusal", async () => {
+    const { host, room } = await openRoomWithGuest(5);
+    await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+
+    const stranger = await createPlayer();
+    const attempt = await rpc(stranger, "join_private_room", { p_code: room.code });
+
+    // No row: the same answer an unknown code, an expired table, a block and a
+    // full table all give, so a code-guesser learns nothing from the difference.
+    expect(refusedJoin(attempt)).toBe(true);
+    // And nothing was written. A member row with no seat is the stranding.
+    const seen = await rpc(stranger, "get_room_state", { p_room_id: room.id });
+    expect(seen.status).toBe(404);
+  }, 60_000);
+
+  it("still lets a player already at the table rejoin, which is reconnection", async () => {
+    const { host, guest, room } = await openRoomWithGuest(5);
+    await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+
+    const back = await rpc(guest, "join_private_room", { p_code: room.code });
+    expect(asRoom(back).id).toBe(room.id);
+  }, 60_000);
+});
+
+/**
+ * A REFUSAL IS NOT A SERVER FAULT.
+ *
+ * `CLAUDE.md` already carries this lesson — "PostgREST maps SQLSTATE `PTnnn` to
+ * HTTP nnn… the username limit raised `55000`, which PostgREST renders as HTTP
+ * 500" — and every deliberate refusal in the friend graph and the lobby raised
+ * `P0002`, which PostgREST has no mapping for either. Measured on this stack:
+ * four refusals answering 500 beside two `P0001` refusals answering 400.
+ *
+ * The client already keyed on the SQLSTATE in the body rather than the status,
+ * which is exactly why it survived: the wording a player saw was right. What it
+ * broke is everything that reads a status — a 5xx rate is the standard signal
+ * that a service is unhealthy, and ordinary play emitted server errors.
+ */
+suite("refusals answer with a client-error status", () => {
+  it("answers 404, not 500, for every deliberate refusal", async () => {
+    const player = await createPlayer();
+    const other = await createPlayer();
+
+    const cases: Array<[string, RpcResult]> = [
+      ["send_friend_request to nobody", await rpc(player, "send_friend_request", { p_to: crypto.randomUUID() })],
+      ["accept nothing pending", await rpc(player, "accept_friend_request", { p_from: other.id })],
+      ["get_room_state elsewhere", await rpc(player, "get_room_state", { p_room_id: crypto.randomUUID() })],
+      ["set_room_ready elsewhere", await rpc(player, "set_room_ready", { p_room_id: crypto.randomUUID(), p_ready: true })],
+      ["invite a stranger", await rpc(player, "invite_friend_to_room", { p_room_id: crypto.randomUUID(), p_friend: other.id })],
+    ];
+
+    for (const [label, result] of cases) {
+      expect(`${label}: ${result.status}`).toBe(`${label}: 404`);
+      expect((result.body as { code?: string }).code).toBe("PT404");
+    }
+  }, 30_000);
+
+  it("still answers 400 for the refusals that were already right", async () => {
+    const player = await createPlayer();
+    const mine = await rpc(player, "send_friend_request", { p_to: player.id });
+    expect(mine.status).toBe(400);
+    const seats = await rpc(player, "create_private_room", { p_max_seats: 9 });
+    expect(seats.status).toBe(400);
+  }, 30_000);
+});
+
+/**
+ * "Last seen" is a time somebody was seen.
+ *
+ * The specification asks for ephemeral Realtime presence and to "persist only
+ * last_seen_at for fallback". The column exists, `list_friends()` returns it,
+ * `player_public_profile()` returns it, and the app renders it through
+ * `describeLastSeen` — whose own doc comment says the value is "written at some
+ * unstated moment in the past". It was written at exactly one moment, the
+ * INSERT in `handle_new_user`, and never again. So the fallback beneath presence
+ * was the account's creation date presented as a fact about when somebody was
+ * last around.
+ */
+suite("last seen", () => {
+  it("moves when the caller publishes presence, and names nobody else", async () => {
+    const player = await createPlayer();
+    const friend = await createPlayer();
+
+    const before = await rpc(player, "touch_last_seen");
+    expect(before.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const after = await rpc(player, "touch_last_seen");
+    expect(after.status).toBe(200);
+    expect(Date.parse(after.body as string)).toBeGreaterThan(Date.parse(before.body as string));
+
+    // No argument names whose row to stamp, so a modified client cannot date a
+    // stranger's presence. PostgREST rejects the unknown parameter outright.
+    const forged = await rpc(player, "touch_last_seen", { p_user_id: friend.id });
+    expect(forged.status).toBeGreaterThanOrEqual(400);
+  }, 30_000);
+});
+
+/**
+ * LEAVING A TABLE THAT HAS DEALT IS ALSO LEAVING THE ROOM.
+ *
+ * `leave_room` derives its caller from `auth.uid()` and is the only thing that
+ * ends a membership or migrates the host role — and it is reachable from the
+ * LOBBY only. Once the host deals, "Leave table" sends `CASH_OUT`, which settled
+ * the seat, returned the stack, and never touched `room_members`.
+ *
+ * Measured before the fix, with a host leaving a three-seat table the other two
+ * kept playing:
+ *
+ *     rooms.host_user_id = the departed host   t
+ *     room_members.status for them             joined
+ *     the app's own restore() query            returned the room
+ *     create_private_room                      400 "you already have a table open"
+ *
+ * So the departed player was put back into the lobby of a table they had cashed
+ * out of — and from there the lobby resolves their now-`left` seat and walks
+ * them to a table where every command answers SESSION_CLOSED — could not open
+ * another private table until strangers finished playing, and the host role
+ * never migrated at all. The specification's "if host leaves, transfer the
+ * social host role to the longest-connected eligible user" held only in the
+ * lobby, which is the one place a host leaving matters least.
+ */
+suite("a host who leaves a running table", () => {
+  const iso = () => new Date().toISOString();
+
+  it("hands the room over, keeps the game running, and is free to open another", async () => {
+    const { host, guest, room } = await openRoomWithGuest(3);
+    const third = await createPlayer();
+    expect(asRoom(await rpc(third, "join_private_room", { p_code: room.code })).id).toBe(room.id);
+
+    const started = await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+    expect(started.status).toBe(200);
+    const gameId = started.body.gameId as string;
+    expect((started.body.publicState as { seats: unknown[] }).seats).toHaveLength(3);
+
+    const left = await callFunction("create-session", host.token, {
+      action: "CASH_OUT",
+      clientRequestId: crypto.randomUUID(),
+      gameId,
+      clientSentAt: iso(),
+    });
+    expect(left.status).toBe(200);
+
+    // THE SHOE IS NOT DESTROYED. Two players are still at the table and the
+    // session is untouched — the host owns the invite and the lobby, never the
+    // dealer. `get_room_state` is readable by a remaining member, and reading it
+    // as one of THEM is the only way to see the room after the host has left it.
+    const seen = await readRoom(guest, room.id);
+    expect(seen).toHaveLength(2);
+    expect(seen.map((member) => member.member_user_id).sort()).toEqual(
+      [guest.id, third.id].sort(),
+    );
+
+    // The longest-connected remaining member inherits, which is the guest.
+    const nowHost = seen.find((member) => member.member_is_host);
+    expect(nowHost?.member_user_id).toBe(guest.id);
+
+    // The departed host is off the room entirely, so the app's restore query —
+    // the one that decides whether to put somebody back in a lobby — is empty
+    // for them. It used to return this very room.
+    expect((await restQuery(host, openRoomPath())).rows).toHaveLength(0);
+    const refusedRead = await rpc(host, "get_room_state", { p_room_id: room.id });
+    expect(refusedRead.status).toBe(404);
+
+    // And they may open another table immediately, rather than waiting for
+    // strangers to finish.
+    expect(asRoom(await rpc(host, "create_private_room", { p_max_seats: 2 })).id).not.toBe(room.id);
+  }, 90_000);
+
+  it("cannot walk back in with the same code once they have cashed out", async () => {
+    const { host, room } = await openRoomWithGuest(3);
+    const started = await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+    const gameId = started.body.gameId as string;
+
+    await callFunction("create-session", host.token, {
+      action: "CASH_OUT",
+      clientRequestId: crypto.randomUUID(),
+      gameId,
+      clientSentAt: iso(),
+    });
+
+    // A SETTLED seat is not a reconnection. The rejoin bypass exists for a
+    // player whose seat is still live; letting a cashed-out player back in as a
+    // room member with no live game seat is the same stranding as a newcomer's.
+    expect(refusedJoin(await rpc(host, "join_private_room", { p_code: room.code }))).toBe(true);
+  }, 90_000);
+});
+
+/**
+ * TWO PEOPLE TAKING THE LAST SEAT.
+ *
+ * `join_private_room` takes `for update` on the room before it counts the seats,
+ * which is what makes "is there room" and "sit down" one decision rather than
+ * two. Without the lock both callers read the same count under READ COMMITTED
+ * and both insert — and the partial unique index on `(room_id, seat_index)`
+ * would then turn the loser's join into a 409 naming a constraint, which is a
+ * refusal that leaks and reads as a bug.
+ *
+ * Asserted by racing four strangers at one free seat, not by reading the lock.
+ */
+suite("the last seat", () => {
+  it("is taken by exactly one of four simultaneous joins", async () => {
+    const host = await createPlayer();
+    const room = asRoom(await rpc(host, "create_private_room", { p_max_seats: 2 }));
+
+    const contenders = await Promise.all([
+      createPlayer(),
+      createPlayer(),
+      createPlayer(),
+      createPlayer(),
+    ]);
+    const results = await Promise.all(
+      contenders.map((player) => rpc(player, "join_private_room", { p_code: room.code })),
+    );
+
+    const seated = results.filter((result) => !refusedJoin(result));
+    expect(seated).toHaveLength(1);
+
+    // The three who missed out got the ordinary silent refusal, not an error
+    // and certainly not a constraint name.
+    for (const result of results) {
+      expect(result.status).toBe(200);
+      expect(JSON.stringify(result.body)).not.toMatch(/23505|constraint|duplicate/i);
+    }
+
+    // And the room really does hold two people, not three.
+    const members = await readRoom(host, room.id);
+    expect(members).toHaveLength(2);
+    expect(new Set(members.map((member) => member.member_seat_index)).size).toBe(2);
+  }, 60_000);
 });

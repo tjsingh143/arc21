@@ -42,11 +42,65 @@ export const TABLE_SCREEN_OPTIONS = { gestureEnabled: false } as const;
  * derived from `gameId:seatId`), but a loop that relies on idempotency to
  * terminate is still a loop.
  */
+/**
+ * Where a player goes once their seat is settled.
+ *
+ * THE DEAD END THIS CLOSES, photographed on a device. Leaving replays the
+ * navigation action that was cancelled — a GO_BACK — and the table route is
+ * often the BOTTOM of the stack: it is reached by `router.replace` from the
+ * lobby, by `arc21://table/...`, by a notification, and by the resume card on a
+ * cold launch. With nothing beneath it, GO_BACK is not handled at all. The
+ * cash-out had committed, the seat was settled, the chips were back — and the
+ * screen sat on "Reading the table…" with a dev-build banner reading "The
+ * action 'GO_BACK' was not handled by any navigator", and no way off it: the
+ * only control is "Leave table", which cashes out an already-settled seat and
+ * dispatches the same unhandled GO_BACK again.
+ *
+ * So the exit is a DESTINATION when there is no history, not a direction. Home
+ * rather than the lobby: a player whose table has ended is not necessarily
+ * looking for another one, and Home is the only route that is always there.
+ */
+export const TABLE_EXIT_ROUTE = "/(tabs)/home";
+
+/**
+ * `"back"` when the stack has somewhere to return to, and the exit route when
+ * it does not.
+ *
+ * Takes the answer rather than asking the navigator, so the rule is testable
+ * without React Navigation — the same reason `shouldConfirmLeavingTable` takes
+ * the preference rather than reading it.
+ */
+export function tableExitDestination(canGoBack: boolean): "back" | typeof TABLE_EXIT_ROUTE {
+  return canGoBack ? "back" : TABLE_EXIT_ROUTE;
+}
+
+/**
+ * `holdsSeat` IS THE ONE THAT WEDGED THE APP, and it is the first thing checked
+ * on purpose.
+ *
+ * `beforeRemove` exists to stop an accidental exit from a table whose escrow is
+ * still open. When the seat is already gone there is nothing to protect — and
+ * asking anyway is not merely redundant, it is a trap. Photographed on a
+ * device, twice: after a settled cash-out the listener cancelled the navigation
+ * and asked again about a seat that no longer existed, so the screen sat on its
+ * own "You are no longer at this table" notice with the table gone and NO WAY
+ * OFF IT — `arc21://table/lobby` reported COMPLETED and changed nothing, because
+ * every navigation away fires this listener and every firing cancelled it. Only
+ * killing the app got the player out. (The first photograph caught the
+ * intermediate state: a second confirmation dialog, modal, sitting over that
+ * notice.)
+ *
+ * The store's own status is the source: `at-table` or not. Passed in rather
+ * than read here, like every other input, so the rule stays testable without
+ * React Native.
+ */
 export function mayLeaveTable(input: {
   alreadyLeaving: boolean;
   cashedOut: boolean;
+  /** Whether the player still holds a live seat at this table. */
+  holdsSeat: boolean;
 }): boolean {
-  return input.alreadyLeaving || input.cashedOut;
+  return !input.holdsSeat || input.alreadyLeaving || input.cashedOut;
 }
 
 /**
@@ -91,4 +145,37 @@ export function describeLeaveTableConfirmation(stack: number): string {
     `Your seat closes and ${formatChips(stack)} chips return to your balance. ` +
     "You cannot rejoin this table afterwards."
   );
+}
+
+/**
+ * One step of leaving a table, once the server has settled the seat.
+ *
+ * `mark-leaving` records that this screen is on its way out; the second step is
+ * how it actually goes.
+ */
+export type TableExitStep = "mark-leaving" | "replay-back" | "replace";
+
+/**
+ * The whole exit, in order, for both of the two ways off a table.
+ *
+ * THE DEFECT THIS CLOSES IS AN ASYMMETRY, not a wrong answer. The screen had two
+ * leave paths — the back bar's control and the `beforeRemove` listener that
+ * catches Android back and a stack-resetting deep link — and each carried its
+ * own copy of these steps. One copy left out `mark-leaving`. So the back bar
+ * confirmed, cashed out, and navigated; `beforeRemove` then fired with
+ * `alreadyLeaving: false`, cancelled the navigation and **asked a second time
+ * whether to leave a table the player had already left**, quoting a stack the
+ * seat no longer held. An `Alert` is modal, so the app was stuck behind it — a
+ * deep link to the lobby reported COMPLETED and landed underneath.
+ *
+ * Photographed on the simulator, over the screen's own "You are no longer at
+ * this table. Your seat is settled and anything it held has been returned."
+ *
+ * The point of returning a SEQUENCE rather than just the destination is that
+ * `mark-leaving` is then part of the answer instead of something each caller has
+ * to remember. `tests/table/leave-guard.test.ts` asserts it comes first whether
+ * there is a route behind this one or not, which is the case that differed.
+ */
+export function tableExitSequence(canGoBack: boolean): readonly TableExitStep[] {
+  return ["mark-leaving", tableExitDestination(canGoBack) === "back" ? "replay-back" : "replace"];
 }

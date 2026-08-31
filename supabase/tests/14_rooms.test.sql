@@ -12,7 +12,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(21);
+select plan(28);
 
 select has_table('public', 'rooms', 'rooms exist');
 select has_table('public', 'room_members', 'seats at a room exist');
@@ -270,6 +270,88 @@ select is(
      and user_id = '0f000000-0000-4000-8000-00000000000e'),
   'joined',
   'and their seat, with its chips, is untouched'
+);
+
+-- --------------------------------------------------------------------------
+-- A room's life ends with its game
+-- --------------------------------------------------------------------------
+--
+-- `leave_room` was the ONLY thing in the schema that had ever written
+-- `status = 'closed'`, and it is reachable from the lobby only: once the host
+-- deals, every client is at `/table/[gameId]` and leaves by CASH_OUT, which
+-- settles the seat and ends the session without touching the room. So a
+-- played-out room sat at `active` for ever, holding its six-character code,
+-- and `create_private_room` answered its host "you already have a table open"
+-- permanently. `expire_stale_rooms()` could not help: it only looked at
+-- `status = 'lobby'`.
+--
+-- The three assertions below are the whole rule. A finished table's room is
+-- retired; a room whose session is STILL RUNNING is not, however long ago
+-- anybody looked at it; and a room whose seats have not all settled is not
+-- either, because retiring one out from under unreconciled escrow is chips
+-- nobody can reach.
+
+-- The room above is `active` with a live session. Nothing should touch it.
+select is(
+  (select status::text from public.rooms
+   where id = '0f000000-0000-4000-8000-0000000fffff'),
+  'active',
+  'a room whose session is still running is left alone by the sweep'
+);
+
+select lives_ok(
+  $$ select public.expire_stale_rooms() $$,
+  'the sweep runs against a live table without raising'
+);
+
+select is(
+  (select status::text from public.rooms
+   where id = '0f000000-0000-4000-8000-0000000fffff'),
+  'active',
+  'and it is STILL active afterwards — a running game keeps its room'
+);
+
+-- Now end the session, but leave one seat unsettled. Escrow, in the general
+-- case, is exactly what must stop a room being retired.
+insert into public.game_session_seats
+  (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
+values
+  ('0f000000-0000-4000-8000-0000000eeeee', 0,
+   '0f000000-0000-4000-8000-00000000000d', 'Kick host', 5000, 0, 'active');
+
+update public.game_sessions
+set status = 'completed', ended_at = now()
+where id = '0f000000-0000-4000-8000-0000000eeeee';
+
+select is(
+  (select public.expire_stale_rooms()),
+  0,
+  'a completed session with a seat still held retires nothing'
+);
+
+select is(
+  (select status::text from public.rooms
+   where id = '0f000000-0000-4000-8000-0000000fffff'),
+  'active',
+  'and the room stays open while a seat is unsettled'
+);
+
+-- Settle it, exactly as `settleTableClosure` does.
+update public.game_session_seats
+set status = 'left', left_at = now(), stack = 0
+where game_session_id = '0f000000-0000-4000-8000-0000000eeeee';
+
+select is(
+  (select public.expire_stale_rooms()),
+  1,
+  'a finished table with every seat settled retires exactly one room'
+);
+
+select is(
+  (select status::text from public.rooms
+   where id = '0f000000-0000-4000-8000-0000000fffff'),
+  'closed',
+  'and the room is closed, so its code returns to the pool'
 );
 
 select * from finish();

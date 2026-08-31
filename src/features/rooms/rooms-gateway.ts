@@ -123,15 +123,23 @@ const SIGNED_OUT =
 /**
  * What being removed reads as.
  *
- * `get_room_state` raises P0002 for a player who is not a joined member, which
+ * `get_room_state` raises PT404 for a player who is not a joined member, which
  * is the same answer for "the host removed you", "you left on another device"
  * and "the room closed". The player is off the table either way, and this is
  * the sentence that says so — the server's own lower-case wording is a
  * developer message, not a player one.
  */
 const NO_LONGER_SEATED = "You are no longer at that table.";
-/** PostgreSQL `no_data_found`; PostgREST renders it as HTTP 404. */
-const NOT_A_MEMBER = "P0002";
+/**
+ * The SQLSTATE the room functions raise when the caller is not a member.
+ *
+ * `PT404`, because PostgREST maps `PTnnn` to HTTP nnn and has no mapping for
+ * anything else — this used to be `P0002` under a comment claiming PostgREST
+ * rendered it as 404, and it rendered as **500**. Measured, not reasoned about.
+ * The status is what monitoring reads; this constant is what the client reads,
+ * and both should agree that being removed from a lobby is not a server fault.
+ */
+const NOT_A_MEMBER = "PT404";
 
 /**
  * The restore filter, as one exported string.
@@ -363,6 +371,18 @@ export function createSupabaseRoomsGateway(
           .select("id")
           .eq("game_session_id", gameSessionId)
           .eq("user_id", userId)
+          /*
+           * A SETTLED SEAT IS NOT A SEAT TO OPEN A TABLE WITH.
+           *
+           * Without this the lobby walks a player straight back into a table
+           * they have just cashed out of: `status = 'left'` is written by
+           * `settleTableClosure`, the row stays for the history, and this
+           * lookup returned it happily. Seen on a device — leaving from the
+           * table screen, deep-linking to the lobby, and being replaced onto
+           * `/table/[gameId]` again, where every command answers
+           * `SESSION_CLOSED`. The seat this asks for is a LIVE one.
+           */
+          .neq("status", "left")
           .maybeSingle(),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };

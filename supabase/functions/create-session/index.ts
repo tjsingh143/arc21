@@ -75,10 +75,12 @@ import {
   appendEvents,
   applyWalletDelta,
   buyInKey,
+  closeRoomForSession,
   findLedgerEntry,
   findSeat,
   insertEngineState,
   loadSession,
+  releaseRoomSeat,
   lockEngineState,
   persistEngineState,
   syncSeatRow,
@@ -872,6 +874,16 @@ async function cashOut(
   const seatState = state.seats.find((candidate) => candidate.seatId === seat.id);
   if (!seatState) throw new CommandError("INTERNAL", "seat missing from engine state");
   await syncSeatRow(tx, seat.id, seatState, { status: "left", leftAt: now });
+  // The player has left the ROOM as well as the table. This migrates the host
+  // role if they held it, and closes the room when it empties — the same rule
+  // `leave_room` applies in the lobby, from its own implementation.
+  await releaseRoomSeat(tx, command.gameId, userId);
+  // And the room retires with the TABLE, not with this seat: a five-seat private
+  // table keeps its code while the other four are still playing. This is the
+  // path a player actually takes out of a private table — "Leave table" sends
+  // CASH_OUT — and nothing here had ever touched the room, so a played-out room
+  // sat at `active` for ever and locked its host out of opening another.
+  if (closure.sessionEnded) await closeRoomForSession(tx, command.gameId);
   await appendEvents(tx, command.gameId, events, state);
 
   log.stateVersion = state.version;
