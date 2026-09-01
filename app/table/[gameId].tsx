@@ -11,7 +11,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, ScrollView, StyleSheet, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams, useNavigation } from "expo-router";
 
@@ -37,7 +37,9 @@ import type { PublicGameState } from "../../shared/blackjack/index.js";
 import {
   describeLeaveTableConfirmation,
   LEAVE_TABLE_CONFIRM_TITLE,
+  LEAVING_AT_BOUNDARY_NOTICE,
   mayLeaveTable,
+  STAY_AT_TABLE_LABEL,
   shouldConfirmLeavingTable,
   TABLE_EXIT_ROUTE,
   tableExitSequence,
@@ -91,6 +93,16 @@ export default function SharedTable() {
   const pending = useOnlineTableStore((state) => state.pending);
   const stagedBet = useOnlineTableStore((state) => state.stagedBet);
   const notice = useOnlineTableStore((state) => state.notice);
+  /*
+   * A leave the server refused mid-hand, still outstanding.
+   *
+   * Rendered from the STORE rather than from `notice`, because a poll clears
+   * the notice three seconds later — so the refusal's own promise ("your chips
+   * come back as soon as it settles") disappeared while the thing it promised
+   * had not happened yet and, before `leavingWhenSafe` existed, never would.
+   */
+  const leavingWhenSafe = useOnlineTableStore((state) => state.leavingWhenSafe);
+  const stayAtTable = useOnlineTableStore((state) => state.stayAtTable);
   const enter = useOnlineTableStore((state) => state.enter);
   const refresh = useOnlineTableStore((state) => state.refresh);
   const addChip = useOnlineTableStore((state) => state.addChip);
@@ -579,6 +591,29 @@ export default function SharedTable() {
         <AppText variant="body" color="warning" testID="table-reconnecting">
           {connection.message}
         </AppText>
+      ) : leavingWhenSafe ? (
+        /*
+         * A STATE, not a one-off message, so it stays on screen for as long as
+         * it is true — and carries the way back out of itself. A player who
+         * asked to leave and then decided to play on can also just bet: staking
+         * chips cancels the intent, because that is what changing your mind
+         * looks like.
+         */
+        <View style={styles.leaving}>
+          <AppText variant="body" color="warning" testID="table-leaving">
+            {LEAVING_AT_BOUNDARY_NOTICE}
+          </AppText>
+          <Pressable
+            accessibilityRole="button"
+            onPress={stayAtTable}
+            style={styles.stayButton}
+            testID="table-stay"
+          >
+            <AppText variant="caption" color="accent">
+              {STAY_AT_TABLE_LABEL}
+            </AppText>
+          </Pressable>
+        </View>
       ) : notice ? (
         <AppText variant="body" color="warning" testID="table-notice">
           {notice}
@@ -977,6 +1012,17 @@ const styles = StyleSheet.create({
     maxWidth: layout.maxTableWidth,
     width: "100%",
     alignSelf: "center",
+  },
+  leaving: { alignItems: "center", gap: spacing.xs },
+  /*
+   * A tap target, not a line of text. The accessibility switches taught this
+   * the expensive way: a label inside a plain `View` is matched, tapped and
+   * does nothing, and every tap reports success.
+   */
+  stayButton: {
+    minHeight: layout.minTouchTarget,
+    justifyContent: "center",
+    paddingHorizontal: spacing.md,
   },
   tableInfo: { alignItems: "center", gap: spacing.xs },
   dealer: { alignItems: "center", gap: spacing.sm },

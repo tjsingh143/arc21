@@ -1,9 +1,8 @@
 # Arc 21 Launch State
 
-**Current Phase:** 7 — Public Multiplayer (not started)
-**Last Completed Phase:** 6 — Social / Private Multiplayer
-(**PASS, 2026-08-31 — independently reverified the same day**;
-see `docs/phase-reports/phase-06-verification.md`)
+**Current Phase:** 8 — Sprint Tournament (not started)
+**Last Completed Phase:** 7 — Public Multiplayer
+(**PASS, 2026-09-01**; see `docs/phase-reports/phase-07.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -22,7 +21,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 4 — Economy / Server Solo | **PASS** | Three defects fixed, each regression proved to fail without its fix; every economic command replayed, every modified-client attack run against the live stack. |
 | 5 — Mobile Product / Career / Stats | **PASS** | Eight defects fixed, each regression proved to fail without its fix; the rename proved against the live stack, the last defect found only by looking at a rendered screen, and a guard that had stopped covering its own subject strengthened and proved to fail on three breaches. |
 | 6 — Social / Private Multiplayer | **PASS** (reverified) | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. **An independent pass then re-proved every B14/B15 regression by reverting its fix, found three further defects, and re-walked the lifecycle on a freshly reset database** — `phase-06-verification.md`. |
-| 7 — Public Multiplayer | IN PROGRESS | Built; `online-table.yaml` RAN. |
+| 7 — Public Multiplayer | **PASS** | Eight defects fixed, each regression proved to fail without its fix by reverting it in the running system. A public table did not take a second player at all; nobody ever observed `waiting`, so three specified controls were unreachable; a public room's code admitted anyone; its accidental host could kick strangers; a leave racing a join deadlocked. Two TEST defects were hiding real ones. |
 | 8 — Sprint Tournament | IN PROGRESS | Built; TESTED, with a documented pool-drain fix for a real flake. |
 | 9 — Daily / Leaderboards / Cosmetics | IN PROGRESS | Built; the daily-challenge intermittent is CLOSED (see below). |
 | 10 — Backend/API Security | IN PROGRESS | Built; IDOR sweep over 32 tables with two real JWTs. |
@@ -81,6 +80,50 @@ off. Treat every one as unverified until its own phase runs.
   seat, with `checked` in COMPONENT state — the `mayOpenDealtTable` rule again.
   Without it the one message written to bring an absent player back opened a
   screen saying "This screen needs a table to open".
+- **A PUBLIC TABLE KEEPS TAKING PLAYERS, AND A LONE PLAYER WAITS.** Two rules
+  that phase 7 had to add before public multiplayer existed at all.
+  `poll_matchmaking` considered only rooms at `status = 'lobby'`, and the buy-in
+  sets a room `active` — so two people who both chose Casual ten seconds apart
+  were sent to two different tables, and `joinPublicTable`'s mid-shoe branch was
+  unreachable. It also opened a table for a lone player on their FIRST poll, so
+  `waiting` never lasted long enough to be seen and the twenty-second Keep
+  Waiting / Play Solo / Cancel offer could not be reached by anybody. A
+  candidate room must now be `lobby` or `active`, have somebody in it
+  (`seats.taken > 0` — an emptied leftover is not a table) and have room; and a
+  new one is opened only when another live enrolment exists at that tier.
+- **THE ROOM ROW IS LOCKED BEFORE THE ENGINE STATE, ALWAYS.**
+  `JOIN_PUBLIC_TABLE` took rooms → engine → wallet and `CASH_OUT` took engine →
+  wallet → rooms, which became reachable the moment a running table started
+  taking players: one player leaving as another sits down deadlocked, and the
+  loser got HTTP 500 for an ordinary leave. `lockRoomForSession` fixes the ORDER
+  rather than the odds. `tests/contracts/room-lock-order.test.ts` holds the
+  allowlist of every function that may touch a room row, so a sixth one fails a
+  test instead of a race.
+- **A PUBLIC ROOM IS NOT A PRIVATE ONE THAT HAPPENS TO BE LISTED.** Its code is
+  shown to matched players, and `join_private_room` did not check `visibility` —
+  so a shared code seated a stranger past the queue, the tier and the
+  one-live-seat guard. `remove_room_member` likewise let whoever arrived first
+  at a tier (the host by accident, not by choice) kick players matchmaking had
+  seated. Both refuse for public rooms now.
+- **`SESSION_BUSY` IS A "NOT YET", AND WAS RENDERED AS A "NO".** A mid-hand
+  cash-out is correctly refused, and the screen promised the chips came back
+  when the hand settled — while nothing made that happen. A player who tapped
+  leave and stopped watching stayed seated, stood in by the action timer hand
+  after hand, buy-in in escrow. The intent is now held in `leavingWhenSafe` and
+  completed at the first safe boundary; staking chips cancels it. The phase test
+  is `canCloseSeat` in `shared/blackjack/table-closure.ts`, which the SERVER
+  refuses with too — one implementation, so the client cannot ask every three
+  seconds for something about to be refused.
+- **`SPLIT` CAN SETTLE THE HAND**, like `LOCK_BET`. A split pair of aces takes
+  one card each and stands both, so a seat splitting aces as the last actor runs
+  the dealer and settles inside its own command. Assert the ACCOUNTING (the
+  debit plus whatever the hand returned), never the debit alone.
+- **A TEST HELPER THAT RETRIES A 5xx CAN HIDE A DETERMINISTIC SERVER FAULT.**
+  `call-function.ts` replayed the deadlock's own `{"status":"rejected",
+  "code":"INTERNAL"}` envelope and the race test passed three times out of
+  three. A 5xx carrying our rejection envelope is a VERDICT — the handler
+  answered — and is no longer retried, which is exactly what
+  `online-table-gateway.ts` already did.
 - **THE CASCADE AFTER BETTING CLOSES STOPS IN THREE PLACES.** PLAYER_TURNS,
   HAND_COMPLETE on a natural, and **INSURANCE_OFFER on a dealer ace** — about
   one hand in thirteen. That is the whole of the `reachPlayerTurns` failure
@@ -204,8 +247,22 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260831120000_realtime_channel_authorization.sql`
-(48 migrations, all applied from scratch cleanly on 2026-08-31).
+`supabase/migrations/20260901120000_public_tables_keep_taking_players.sql`
+(49 migrations, all applied from scratch cleanly on 2026-09-01).
+
+Phase 7 added one:
+
+- `20260901120000_public_tables_keep_taking_players.sql` — `poll_matchmaking`
+  finds a running table and opens a new one only when somebody is waiting to
+  share it, and reports `others_waiting` truthfully from every branch;
+  `retire_empty_lobby_room` closes a lobby nobody is in;
+  `expire_stale_queue_entries` releases a matched-but-unfunded reservation after
+  two minutes; `join_private_room` and `remove_room_member` refuse public rooms;
+  the already-seated refusal is `PT409` rather than a 500.
+
+  Note it redefines five functions, three of which had been redefined by LATER
+  migrations than the ones that introduced them — each body was taken from the
+  LAST file that defined it, per the `create or replace` rule in `CLAUDE.md`.
 
 Phase 6 added three:
 
@@ -244,7 +301,23 @@ Phase 6 added three:
 - `_shared/session-boundary.ts` — competition shape; never touches a card.
 - `_shared/decision-grading.ts` — `ACCURACY_ELIGIBLE_MODES` allowlist.
 - `tests/server/call-function.ts` — the ONE way a server test calls a function.
-  Replays a 5xx with a byte-identical body (same idempotency key).
+  Replays a 5xx with a byte-identical body (same idempotency key) — UNLESS the
+  body is our own `{"status":"rejected","code":…}` envelope, which is the
+  handler answering rather than a lost reply, and is returned as the verdict it
+  is. Retrying it hid a deterministic deadlock for a whole phase.
+- `tests/server/public-seat.ts` — the ONE way a server test gets a public seat.
+  Two accounts minimum, because a table is opened only when there is somebody to
+  share it with; it mints a further partner if one of them is absorbed into
+  another suite's table, which allocation being global makes ordinary.
+- `shared/blackjack/table-closure.ts` — `canCloseSeat`, the single answer to
+  "may this seat leave with its chips right now". The server refuses with it
+  (`canCloseSession`) and the client waits on it (`shouldCompleteLeave`).
+- `src/features/table/leave-guard.ts` — every rule about leaving a table, on the
+  testable side of the React Native wall: the screen options, `mayLeaveTable`,
+  `shouldConfirmLeavingTable`, `tableExitSequence` and `shouldCompleteLeave`.
+- `tests/contracts/room-lock-order.test.ts` — the allowlist of functions that
+  may touch a room row, and the assertion that each takes the room lock before
+  the engine lock.
 - `tests/server/stack-guard.ts` — the ONE probe deciding whether server tests
   run. Requires a 401 AND a sub-500 answer to a real command.
 - `public.my_active_session()` — where the caller's own chips are. Argument-free,
@@ -306,7 +379,44 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-08-31 (end of phase 6)
+## Last known green verification — 2026-09-01 (end of phase 7)
+
+```
+npx tsc --noEmit                    exit 0
+npm run lint                        0 errors, 37 warnings (unchanged)
+npm run check:functions             all 3 Edge Functions typecheck
+npm run test:unit                 116 files / 2,299 tests PASS  (phase 6: 115 / 2,280)
+npm run test:server                19 files /   223 tests PASS  (phase 6:  18 /   199)
+                                    live stack, against a freshly reset database
+supabase test db                   25 files /   513 tests PASS  (phase 6:  25 /   494)
+npm run contrast:check             46 pairings, 0 failing (+2 Increased-contrast substitutes)
+npm run test:coverage              per-area gates pass, exit 0
+supabase db reset                  49 migrations applied from empty, exit 0
+
+Maestro, iPhone 17 Pro (iOS 26.5), dev build, Metro restarted with `--clear`
+AFTER the client edits and confirmed by its pid's start time — CLAUDE.md's
+stale-bundle rule:
+  online-table.yaml                 exit 0, 44 steps COMPLETED
+  public-matchmaking.yaml           exit 0, 31 steps COMPLETED  (new this phase)
+
+`public-matchmaking.yaml` is the first time the twenty-second Keep Waiting /
+Play Solo / Cancel offer has been on a screen: before this phase no player ever
+observed `waiting`. It REQUIRES a database reset first, and its header says why
+— a public table left open by `tests/server` is one this account is correctly
+matched into, and the first run was answered "Seat found — 4 already seated",
+which is the phase's own fix working and makes the lone-player path
+unobservable. Same class as `every-screen.yaml` needing `.env.local` moved
+aside.
+```
+
+Each of phase 7's fixes was re-proved by REVERTING it in the running system:
+removing the `v_waiting = 0` guard, removing `seats.taken > 0` with
+`retire_empty_lobby_room` no-opped and a leftover room built through the public
+API, removing `lockRoomForSession` from `cashOut`, and inverting the lock order
+in `create-session` — each fails the named test, and the failure messages name
+the defect rather than a symptom.
+
+## Previous green verification — 2026-08-31 (end of phase 6)
 
 ```
 npx tsc --noEmit                    exit 0  (covers tests/ too — see below)

@@ -33,6 +33,7 @@ import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { callFunction as call } from "./call-function.js";
+import { matchIntoAPublicRoom } from "./public-seat.js";
 import { stackUp } from "./stack-guard.js";
 
 const REST = "http://127.0.0.1:54321/rest/v1";
@@ -170,13 +171,20 @@ async function liveSeats(token: string, userId: string): Promise<{ game_session_
 
 const iso = () => new Date().toISOString();
 
-/** Queue, poll, and return the room the player was allocated. */
-async function matchIntoARoom(token: string): Promise<string | null> {
-  await rpc(token, "join_matchmaking", { p_tier: "casual" });
-  const polled = await rpc(token, "poll_matchmaking");
-  const rows = polled.body as { status?: string; room_id?: string }[] | null;
-  const matched = Array.isArray(rows) ? rows.find((row) => row.status === "matched") : undefined;
-  return matched?.room_id ?? null;
+/**
+ * Queue, poll, and return the room this player was allocated.
+ *
+ * A SECOND ACCOUNT IS PART OF THE ANSWER NOW, not scaffolding around it. A
+ * public table is opened only when somebody is there to share it with, so a
+ * lone caller waits — which is the whole of the specification's Keep Waiting /
+ * Play Solo / Cancel offer being reachable at all. The partner is a throwaway
+ * that never buys in; it exists to make the queue do what the queue does.
+ */
+async function matchIntoARoom(token: string): Promise<string> {
+  const partner = signToken(await createUser());
+  return await matchIntoAPublicRoom(rpc, [token, partner], "casual", async () =>
+    signToken(await createUser()),
+  );
 }
 
 const suite = stackUp ? describe : describe.skip;

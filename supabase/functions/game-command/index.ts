@@ -58,6 +58,7 @@ import {
   findSeat,
   loadSession,
   lockEngineState,
+  lockRoomForSession,
   persistEngineState,
   recordAppliedCommand,
   releaseRoomSeat,
@@ -308,6 +309,19 @@ async function handle(
   command: GameCommandRequest,
   log: LogFields,
 ): Promise<HandledCommand> {
+  /*
+   * --- The room lock, for the one command that will need it ----------------
+   *
+   * `LEAVE` ends with `release_room_seat`, which takes the room row `for
+   * update` — and `JOIN_PUBLIC_TABLE` takes that row FIRST and the engine state
+   * second. Taking them in the other order here is the lock inversion that
+   * produced `deadlock detected` between a leave and a join at the same public
+   * table, so the order is made the same rather than the collision made rarer.
+   * Only for LEAVE: every other command touches no room at all, and a lock
+   * taken for nothing would serialise ordinary play against the lobby.
+   */
+  if (command.type === "LEAVE") await lockRoomForSession(tx, command.gameId);
+
   // --- The write lock ------------------------------------------------------
   // Taken before anything else is read, exactly as apply_wallet_delta takes the
   // wallet lock before consulting its idempotency key: under READ COMMITTED two

@@ -685,7 +685,37 @@ suite("every action a multi-seat table offers", () => {
             );
             expect(splitPair).toHaveLength(2);
             for (const hand of splitPair) expect(hand.wager).toBe(wagerBefore);
-            expect(after?.stack).toBe(stackBefore - wagerBefore);
+            /*
+             * SPLIT CAN SETTLE THE HAND, which is why the debit is asserted
+             * with the settlement rather than on its own.
+             *
+             * `CLAUDE.md` records that `LOCK_BET` can, and that the cascade
+             * after betting closes stops in three places. This is a fourth: a
+             * pair of ACES splits to one card each and stands both, so if the
+             * splitter is the last seat with a hand to play, the same command
+             * runs the dealer, settles, and lands on HAND_COMPLETE. The stack
+             * then holds the debit AND the credits, and `stackBefore -
+             * wagerBefore` is no longer a claim about anything.
+             *
+             * Reproduced deliberately over a seeded shoe rather than retried,
+             * exactly as the sibling assertion below was: one seat holding
+             * `A,A` against a dealer 10/6 that draws to 26 answers
+             * `stack 10200, debitOnly 9800` — the shape of the failure seen
+             * once in a full `test:server` run whose other 221 tests passed.
+             *
+             * Asserting the accounting covers BOTH cases and is stronger than
+             * the debit alone: it proves the split took its stake from the
+             * stack and that everything the hand returned came back.
+             */
+            const credited = (after?.hands ?? []).reduce(
+              (total, hand) => total + (hand.outcome?.credit ?? 0),
+              0,
+            );
+            expect(after?.stack).toBe(stackBefore - wagerBefore + credited);
+            if (table.phase === "PLAYER_TURNS") {
+              // Nothing has settled, so the credit above must be nothing.
+              expect(credited).toBe(0);
+            }
             /*
              * SEQUENTIAL INSIDE THE SEAT, stated as the rule rather than as an
              * observation of the common case.

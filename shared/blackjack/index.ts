@@ -16,3 +16,4 @@ export * from "./legal-actions.js";
 export * from "./settlement.js";
 export * from "./reducer.js";
 export * from "./public-state.js";
+export * from "./table-closure.js";

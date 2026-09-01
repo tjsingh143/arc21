@@ -23,6 +23,7 @@ import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { callFunction as call } from "./call-function.js";
+import { matchIntoAPublicRoom } from "./public-seat.js";
 import { stackUp } from "./stack-guard.js";
 
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
@@ -603,13 +604,20 @@ suite("public tables", () => {
     return { status: response.status, body: parsed };
   }
 
-  async function seatedAt(token: string) {
-    await rpc(token, "join_matchmaking", { p_tier: "casual" });
-    const polled = await rpc(token, "poll_matchmaking");
-    const row = (Array.isArray(polled.body) ? polled.body[0] : polled.body) as {
-      room_id: string;
-    };
-    return row.room_id;
+  /**
+   * A seat at a public table, which now takes two accounts.
+   *
+   * `poll_matchmaking` opens a table only when another player is already
+   * waiting at the same stakes — a lone caller is told to wait, which is what
+   * makes the twenty-second Keep Waiting / Play Solo / Cancel offer reachable
+   * and what stops two people who both chose Casual from being sent to two
+   * different tables. The partner never buys in.
+   */
+  async function seatedAt(token: string): Promise<string> {
+    const partner = signToken(await createUser());
+    return await matchIntoAPublicRoom(rpc, [token, partner], "casual", async () =>
+      signToken(await createUser()),
+    );
   }
 
   it("debits the buy-in once and conserves every chip", async () => {

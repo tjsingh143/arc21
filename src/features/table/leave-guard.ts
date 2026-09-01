@@ -19,6 +19,7 @@
  * "do not remove this option" is a comment; a failing test is a guard.
  */
 
+import { canCloseSeat, type ClosableTable } from "../../../shared/blackjack/table-closure.js";
 import { formatChips } from "../../design/format-chips.js";
 
 /**
@@ -140,6 +141,21 @@ export function shouldConfirmLeavingTable(input: {
 /** The dialog's own words, here so the test can assert them and the screen cannot drift. */
 export const LEAVE_TABLE_CONFIRM_TITLE = "Leave this table?";
 
+/**
+ * What the table says while a refused leave is being held.
+ *
+ * It states the two things the player needs and nothing else: that they are
+ * still going, and that they do not have to do anything again. The refusal's
+ * own wording cannot carry this — `notice` is cleared by the next successful
+ * poll three seconds later, which is precisely why the promise it made went
+ * unkept.
+ */
+export const LEAVING_AT_BOUNDARY_NOTICE =
+  "Leaving when this hand ends. Your chips come back automatically.";
+
+/** The way back out of it, for a player who changes their mind. */
+export const STAY_AT_TABLE_LABEL = "Stay at the table";
+
 export function describeLeaveTableConfirmation(stack: number): string {
   return (
     `Your seat closes and ${formatChips(stack)} chips return to your balance. ` +
@@ -178,4 +194,44 @@ export type TableExitStep = "mark-leaving" | "replay-back" | "replace";
  */
 export function tableExitSequence(canGoBack: boolean): readonly TableExitStep[] {
   return ["mark-leaving", tableExitDestination(canGoBack) === "back" ? "replay-back" : "replace"];
+}
+
+/**
+ * WHETHER A LEAVE THAT THE SERVER REFUSED SHOULD NOW BE COMPLETED.
+ *
+ * THE GAP THIS CLOSES. A player who taps "Leave table" mid-hand is refused —
+ * correctly, because their wager is committed and "leaving is never a way to
+ * escape a committed wager". The screen said so ("This hand is still live. Your
+ * chips come back as soon as it settles") and then did nothing about it: the
+ * chips came back only if the player was still watching, remembered, and tapped
+ * the control a second time at the right moment. Somebody who taps leave and
+ * puts the phone down stays seated at a live public table, is stood in by the
+ * action timer hand after hand, and their buy-in sits in escrow — while every
+ * refusal they saw had promised the opposite.
+ *
+ * So the intent is REMEMBERED and honoured at the first safe boundary. The
+ * phase test is `canCloseSeat`, the engine's own — the same function the server
+ * refuses with — so the client cannot ask for something about to be refused,
+ * three seconds at a time.
+ *
+ * `pending` is what stops the poll firing a second cash-out over an unanswered
+ * one. That would be idempotent server-side (the key is derived from
+ * `gameId:seatId`), but a retry loop relying on idempotency to terminate is
+ * still a loop.
+ *
+ * Pure, and on the testable side of the React Native wall, like everything else
+ * in this file: the store owns the flag, the screen owns the wording, and this
+ * owns the rule.
+ */
+export function shouldCompleteLeave(input: {
+  /** Set when a cash-out was refused because the hand was still live. */
+  leavingWhenSafe: boolean;
+  /** A request is already in flight. */
+  pending: boolean;
+  /** The server's latest snapshot, or null before one has arrived. */
+  table: ClosableTable | null;
+  seatId: string;
+}): boolean {
+  if (!input.leavingWhenSafe || input.pending || !input.table) return false;
+  return canCloseSeat(input.table, input.seatId);
 }

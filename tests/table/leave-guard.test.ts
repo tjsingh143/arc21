@@ -29,7 +29,14 @@ import {
   TABLE_SCREEN_OPTIONS,
   tableExitDestination,
   tableExitSequence,
+  shouldCompleteLeave,
 } from "../../src/features/table/leave-guard.js";
+import {
+  ALL_GAME_PHASES,
+  canCloseSeat,
+  SAFE_TO_CLOSE_PHASES,
+  type GamePhase,
+} from "../../shared/blackjack/index.js";
 
 describe("the swipe-back gesture", () => {
   it("is off for the table route", () => {
@@ -145,5 +152,116 @@ describe("the exit both leave paths follow", () => {
       const steps = tableExitSequence(canGoBack);
       expect(steps.filter((step) => step !== "mark-leaving")).toHaveLength(1);
     }
+  });
+});
+
+/**
+ * A LEAVE THE SERVER REFUSED MID-HAND IS A "NOT YET", AND WAS RENDERED AS A "NO".
+ *
+ * The refusal itself is right — a committed wager must resolve before the stack
+ * can go anywhere — but the screen said "your chips come back as soon as it
+ * settles" and then did nothing at all about making that true. A player who
+ * tapped leave and put the phone down stayed seated at a live public table,
+ * stood in by the action timer hand after hand, buy-in in escrow.
+ *
+ * The phase test below is the ENGINE's own `canCloseSeat`, which is also what
+ * `cashOut` refuses with — one implementation, so the client cannot ask, three
+ * seconds at a time, for something about to be refused.
+ */
+describe("completing a leave the server held", () => {
+  const table = (
+    phase: GamePhase,
+    betLocked = false,
+  ): { phase: GamePhase; seats: { seatId: string; betLocked: boolean }[] } => ({
+    phase,
+    seats: [{ seatId: "seat-mine", betLocked }],
+  });
+
+  const ask = (over: Partial<Parameters<typeof shouldCompleteLeave>[0]> = {}) =>
+    shouldCompleteLeave({
+      leavingWhenSafe: true,
+      pending: false,
+      table: table("HAND_COMPLETE"),
+      seatId: "seat-mine",
+      ...over,
+    });
+
+  it("does nothing at all unless a leave is outstanding", () => {
+    expect(ask({ leavingWhenSafe: false })).toBe(false);
+  });
+
+  it("waits for the hand rather than asking for something about to be refused", () => {
+    const midHand: GamePhase[] = [
+      "BETTING_LOCKED",
+      "INITIAL_DEAL",
+      "INSURANCE_OFFER",
+      "DEALER_PEEK",
+      "PLAYER_TURNS",
+      "DEALER_REVEAL",
+      "DEALER_TURN",
+      "SETTLEMENT",
+    ];
+    for (const phase of midHand) {
+      expect(ask({ table: table(phase) }), phase).toBe(false);
+    }
+  });
+
+  it("goes at every boundary where no wager is committed", () => {
+    const safe: GamePhase[] = [
+      "SESSION_READY",
+      "BETTING_OPEN",
+      "HAND_COMPLETE",
+      "BETWEEN_HANDS",
+      "SESSION_COMPLETE",
+    ];
+    for (const phase of safe) {
+      expect(ask({ table: table(phase) }), phase).toBe(true);
+    }
+  });
+
+  /*
+   * BETTING_OPEN is the phase that needs the seat, not just the phase. Betting
+   * being open says nothing about whether THIS player has already pushed chips
+   * forward for the hand about to be dealt — and a seat that has is committed.
+   */
+  it("waits when this seat has already locked a bet, though betting is open", () => {
+    expect(ask({ table: table("BETTING_OPEN", true) })).toBe(false);
+    expect(ask({ table: table("BETTING_OPEN", false) })).toBe(true);
+  });
+
+  /*
+   * A retry loop that relies on server-side idempotency to terminate is still a
+   * loop. The cash-out key is derived from `gameId:seatId`, so a second request
+   * would be harmless — and the poll fires every three seconds.
+   */
+  it("does not stack a second request on an unanswered one", () => {
+    expect(ask({ pending: true })).toBe(false);
+  });
+
+  it("has nothing to decide before the first snapshot", () => {
+    expect(ask({ table: null })).toBe(false);
+  });
+});
+
+/**
+ * The rule the client and the server share, asserted directly.
+ *
+ * `canCloseSeat` moved into `shared/blackjack` this phase so that
+ * `engine-bridge.ts`'s `canCloseSession` and the client's held leave are one
+ * implementation. Every phase is named here, so a phase ADDED to the engine
+ * fails this rather than quietly defaulting to "unsafe" — or, worse, "safe".
+ */
+describe("the phases a seat may close in", () => {
+  it("accounts for every phase the engine can be in", () => {
+    const named = new Set<string>(SAFE_TO_CLOSE_PHASES);
+    for (const phase of ALL_GAME_PHASES) {
+      expect(
+        canCloseSeat({ phase, seats: [] }, "nobody"),
+        `${phase} is not accounted for`,
+      ).toBe(named.has(phase));
+    }
+    // Not vacuous in either direction.
+    expect(named.size).toBeGreaterThan(0);
+    expect(named.size).toBeLessThan(ALL_GAME_PHASES.length);
   });
 });

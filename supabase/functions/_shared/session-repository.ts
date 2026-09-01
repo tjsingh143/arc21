@@ -315,6 +315,36 @@ export async function closeRoomForSession(tx: Tx, gameId: string): Promise<void>
 }
 
 /**
+ * Takes the ROOM row's lock for a table, before anything else does.
+ *
+ * THE DEADLOCK THIS REMOVES, caught by the join-races-leave test and confirmed
+ * in the runtime log as `PostgresError: deadlock detected`:
+ *
+ *   JOIN_PUBLIC_TABLE   locks `rooms` (`for update` on the id it was given),
+ *                       then the engine state, then the wallet
+ *   CASH_OUT            locked the engine state, then the wallet, and only
+ *                       reached `rooms` at the end, inside `release_room_seat`
+ *
+ * A classic lock-order inversion, and it became reachable the moment a public
+ * table started taking players while it was running: one player leaving as
+ * another sits down is now an ordinary thing to happen rather than an
+ * impossible one. Postgres picks a victim and aborts it, so nothing is
+ * corrupted and no chips move — but the player who lost the toss is answered
+ * HTTP 500 "Something went wrong" for an ordinary leave.
+ *
+ * The fix is an ORDER, not a retry: every path that will end up touching both
+ * rows takes the room first. Solo, career, tournament and daily tables have no
+ * room at all, so this is a no-op for them.
+ */
+export async function lockRoomForSession(tx: Tx, gameId: string): Promise<void> {
+  await tx`
+    select id from public.rooms
+    where game_session_id = ${gameId}::uuid
+    for update
+  `;
+}
+
+/**
  * Ends this player's membership of the room the table is being played in.
  *
  * LEAVING A TABLE THAT HAS DEALT DOES NOT GO THROUGH THE LOBBY. "Leave table"

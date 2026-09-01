@@ -332,3 +332,69 @@ describe("the settlement table the app SHOWS agrees with what the engine PAYS", 
     expect(Number.isInteger(outcome.credit)).toBe(true);
   });
 });
+
+/**
+ * A SPLIT CAN SETTLE THE HAND, and the seat's stack then holds the debit AND
+ * the credits.
+ *
+ * `CLAUDE.md` already records that `LOCK_BET` can settle a hand, and that the
+ * cascade after betting closes stops in three places rather than two. This is
+ * the same shape from a different command: Arc Standard deals ONE card to each
+ * half of a split pair of aces and stands both, so a seat that splits aces
+ * while it is the last one with a hand to play finishes the round inside its
+ * own `SPLIT` — the dealer draws out and settlement runs, all in one command.
+ *
+ * It cost a run of `test:server`, where the two-client table asserted a split's
+ * debit as `stack === stackBefore - wager` and read `expected 10200 to be
+ * 9800`. That looked like a wager defect and is the engine being right: about
+ * one hand in a few hundred, so it survived many runs first.
+ */
+describe("a split that ends the round inside its own command", () => {
+  /*
+   * Deal order at one seat is player, dealer up, player, dealer hole, then the
+   * two split cards, then the dealer's draws.
+   *
+   *   AS 10C AD 6H   player A,A   dealer 10 over 6 = 16, must draw
+   *   9S 8S          the split hands -> soft 20 and soft 19, both stood
+   *   10D            the dealer draws to 26 and busts, so both hands win
+   */
+  const splitAcesToSettlement = () => {
+    let h = betAndDeal(
+      harness({
+        shoe: "AS 10C AD 6H 9S 8S 10D",
+        pad: Array.from({ length: 80 }, () => "2C").join(" "),
+      }),
+      100,
+    );
+    if (h.state.phase === "INSURANCE_OFFER") {
+      h = h.send({ type: "DECLINE_INSURANCE", seatId: "s1" });
+    }
+    return h;
+  };
+
+  it("lands on HAND_COMPLETE rather than leaving the turn with the splitter", () => {
+    const before = splitAcesToSettlement();
+    expect(before.state.phase).toBe("PLAYER_TURNS");
+
+    const after = before.send({ type: "SPLIT", seatId: "s1" });
+
+    expect(after.state.phase).toBe("HAND_COMPLETE");
+    expect(after.seat().hands.map((hand) => hand.status)).toEqual(["STOOD", "STOOD"]);
+  });
+
+  it("returns the credits into the stack the split had just been debited from", () => {
+    const before = splitAcesToSettlement();
+    const stackBefore = before.seat().stack;
+    const wager = before.hand().wager;
+
+    const after = before.send({ type: "SPLIT", seatId: "s1" });
+    const credited = after
+      .seat()
+      .hands.reduce((total, hand) => total + (hand.outcome?.credit ?? 0), 0);
+
+    // The debit alone would say 9,800 — which is what the server test asserted.
+    expect(after.seat().stack).toBe(stackBefore - wager + credited);
+    expect(credited).toBeGreaterThan(0);
+    expect(after.seat().stack).toBeGreaterThan(stackBefore - wager);
+  });
+});

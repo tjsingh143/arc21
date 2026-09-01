@@ -592,6 +592,121 @@ describe("leaving a table returns the stack", () => {
     expect(useOnlineTableStore.getState().notice).toMatch(/still live/);
   });
 
+  /*
+   * THE GAP THESE FOUR CLOSE. A refusal was the end of the story: the notice
+   * promised "your chips come back as soon as it settles" and nothing made that
+   * happen, so a player who tapped leave mid-hand and stopped watching stayed
+   * seated at a live public table, stood in by the action timer hand after
+   * hand, with their buy-in in escrow. The refusal was correct — the wager is
+   * committed — but "not yet" was being rendered as "no".
+   */
+  it("holds a leave the server refused mid-hand", async () => {
+    const spy = gateway([{ ok: true, state: tableState({ phase: "PLAYER_TURNS" }), events: [] }]);
+    setTableGateway({
+      ...spy,
+      cashOut: async () => ({
+        ok: false,
+        reason: "refused",
+        message: "This hand is still live. Your chips come back as soon as it settles.",
+        code: "SESSION_BUSY",
+      }),
+    });
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().leaveTable();
+
+    expect(useOnlineTableStore.getState().leavingWhenSafe).toBe(true);
+  });
+
+  /** Any OTHER refusal is a no, and holding it would retry it every three seconds. */
+  it("does not hold a refusal that is not about the hand", async () => {
+    const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
+    setTableGateway({
+      ...spy,
+      cashOut: async () => ({
+        ok: false,
+        reason: "refused",
+        message: "Rate limited.",
+        code: "RATE_LIMITED",
+      }),
+    });
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().leaveTable();
+
+    expect(useOnlineTableStore.getState().leavingWhenSafe).toBe(false);
+  });
+
+  it("completes the held leave at the first safe boundary", async () => {
+    const refused = {
+      ok: false as const,
+      reason: "refused" as const,
+      message: "This hand is still live.",
+      code: "SESSION_BUSY",
+    };
+    let busy = true;
+    const spy = gateway([
+      // enter(), then the poll that finds the hand settled.
+      { ok: true, state: tableState({ phase: "PLAYER_TURNS" }), events: [] },
+      { ok: true, state: tableState({ phase: "HAND_COMPLETE", version: 5 }), events: [] },
+    ]);
+    setTableGateway({
+      ...spy,
+      cashOut: async (gameId) => {
+        if (busy) return refused;
+        spy.recorded.cashOuts.push(gameId);
+        return { ok: true, walletBalance: 1_000 };
+      },
+    });
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().leaveTable();
+    expect(useOnlineTableStore.getState().leavingWhenSafe).toBe(true);
+    expect(spy.recorded.cashOuts).toEqual([]);
+
+    // The hand settles. The poll is the only thing still running for a player
+    // who is watching out a hand they are no longer part of.
+    busy = false;
+    await useOnlineTableStore.getState().refresh();
+    // `leaveTable` is fired without being awaited, exactly as the poll fires it.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(spy.recorded.cashOuts).toEqual(["game-1"]);
+    expect(useOnlineTableStore.getState().status.kind).toBe("idle");
+  });
+
+  /*
+   * Staking chips is how somebody says they have changed their mind. Without
+   * this, a player who asked to leave, was told to wait, and then decided to
+   * play the next hand would be cashed out from under their own staged wager
+   * the moment betting opened.
+   */
+  it("abandons the held leave when the player stakes a bet", async () => {
+    const spy = gateway([{ ok: true, state: tableState({ phase: "PLAYER_TURNS" }), events: [] }]);
+    setTableGateway({
+      ...spy,
+      cashOut: async () => ({
+        ok: false,
+        reason: "refused",
+        message: "This hand is still live.",
+        code: "SESSION_BUSY",
+      }),
+    });
+
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    await useOnlineTableStore.getState().leaveTable();
+    expect(useOnlineTableStore.getState().leavingWhenSafe).toBe(true);
+
+    useOnlineTableStore.setState({
+      status: { kind: "at-table", state: tableState(), seatId: SEAT },
+    });
+    useOnlineTableStore.getState().addChip(100);
+
+    expect(useOnlineTableStore.getState().stagedBet).toBe(100);
+    expect(useOnlineTableStore.getState().leavingWhenSafe).toBe(false);
+  });
+
   it("does not call the server when there is no seat to close", async () => {
     const spy = gateway([{ ok: true, state: tableState(), events: [] }]);
     setTableGateway(spy);

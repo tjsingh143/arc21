@@ -16,6 +16,7 @@
 
 import {
   assertNoHiddenCardLeak,
+  canCloseSeat,
   CryptoRandomSource,
   EngineError,
   getLegalActions,
@@ -226,25 +227,16 @@ export function assertCommandIsLegal(
   }
 }
 
-/** Phases in which no wager is committed, so a seat may safely cash out. */
-const SAFE_TO_CLOSE_PHASES = new Set([
-  "SESSION_READY",
-  "BETTING_OPEN",
-  "HAND_COMPLETE",
-  "BETWEEN_HANDS",
-  "SESSION_COMPLETE",
-]);
-
 /**
  * Whether the table can be closed and the stack returned right now.
  *
- * "Leaving is never a way to escape a committed wager" — SECURITY.md. A seat
- * mid-hand, or one that has locked a bet for a hand about to be dealt, must see
- * that hand resolve first.
+ * The rule itself is `canCloseSeat` in `shared/blackjack/table-closure.ts`,
+ * because the CLIENT needs the same answer: a player who taps "Leave table"
+ * mid-hand has their intent held until the table reaches a phase this permits,
+ * and a second copy of the phase list here would be a second answer to one
+ * question. This wrapper exists only to keep the server's call sites reading in
+ * the server's own vocabulary.
  */
 export function canCloseSession(state: EngineState, seatId: string): boolean {
-  if (!SAFE_TO_CLOSE_PHASES.has(state.phase)) return false;
-  if (state.phase !== "BETTING_OPEN") return true;
-  const seat = state.seats.find((candidate) => candidate.seatId === seatId);
-  return seat ? !seat.betLocked : true;
+  return canCloseSeat(state, seatId);
 }

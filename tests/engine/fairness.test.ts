@@ -465,6 +465,7 @@ describe("the engine's source carries no unsafe randomness and no hidden clock",
       "rules.ts",
       "settlement.ts",
       "shoe.ts",
+      "table-closure.ts",
       "types.ts",
     ]);
   });

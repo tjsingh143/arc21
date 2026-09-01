@@ -168,6 +168,64 @@ describe("callFunction", () => {
   });
 
   /**
+   * THE DEFECT THIS CLOSES, and it hid another one for a whole phase.
+   *
+   * A 500 carrying `{"status":"rejected","code":…}` is OUR HANDLER answering.
+   * The runtime did not lose the reply; the command ran and failed. Replaying
+   * it is a second attempt at something that just went wrong, and the second
+   * attempt often succeeds — which is precisely how this helper made the
+   * `CASH_OUT`/`JOIN_PUBLIC_TABLE` lock inversion invisible. That deadlock
+   * answered this exact envelope on three runs out of three and the race test
+   * PASSED all three, because by the time the body was replayed the other
+   * transaction had committed.
+   *
+   * It matches the app: `online-table-gateway.ts` reads a parseable rejection —
+   * INTERNAL included — as `refused`, and retries only an answer it could not
+   * read. And it cannot regress the intermittent this file exists for: a
+   * retired worker is answered by the gateway and never reaches the handler, so
+   * it cannot produce this envelope.
+   */
+  it("never retries the function's own rejection envelope, whatever the status", async () => {
+    open = await stubServer([
+      {
+        status: 500,
+        body: JSON.stringify({
+          status: "rejected",
+          code: "INTERNAL",
+          message: "Something went wrong. No chips were moved. (ref abc)",
+        }),
+      },
+      { status: 200, body: JSON.stringify({ status: "accepted" }) },
+    ]);
+
+    const result = await callFunctionAt(open.base, "create-session", "t", {}, collect);
+
+    expect(result.status).toBe(500);
+    expect(result.body.code).toBe("INTERNAL");
+    // Asked once. A second attempt would have been answered 200 and the caller
+    // would never have learnt the command failed.
+    expect(open.received).toHaveLength(1);
+    expect(warnings).toHaveLength(0);
+  });
+
+  /**
+   * The other side of the same line: a 5xx the handler did NOT write is still
+   * the retired-worker case, and is still replayed.
+   */
+  it("still replays a 5xx whose body is not a rejection envelope", async () => {
+    open = await stubServer([
+      { status: 500, body: JSON.stringify({ error: "worker has already retired" }) },
+      { status: 200, body: JSON.stringify({ status: "accepted" }) },
+    ]);
+
+    const result = await callFunctionAt(open.base, "game-command", "t", {}, collect);
+
+    expect(result.status).toBe(200);
+    expect(open.received).toHaveLength(2);
+    expect(warnings).toHaveLength(1);
+  });
+
+  /**
    * The line between "absorbed a blip" and "hid a broken function". A 5xx that
    * persists is RETURNED, with its body, so the test that provoked it fails on
    * the server's own words.

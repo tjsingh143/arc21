@@ -57,6 +57,7 @@ const MATCHED = {
       tier: "casual" as const,
       roomId: "room-1",
       seatedBefore: 0,
+      othersWaiting: 0,
       waitingSince: new Date(0),
     },
   },

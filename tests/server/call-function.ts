@@ -49,6 +49,20 @@
  *
  *   - a 4xx is the server's VERDICT — 401, 403, 409, 422, 429 are the contract,
  *     and retrying one would discard the answer the test is asking for;
+ *   - A 5xx CARRYING THE FUNCTION'S OWN REJECTION ENVELOPE is also a verdict.
+ *     `{"status":"rejected","code":"INTERNAL", …}` is our handler saying it
+ *     caught an error: the runtime did not lose the reply, the command failed.
+ *     Replaying that is not recovery, it is a second go at something that just
+ *     went wrong — and it is how this helper spent a phase making a REAL defect
+ *     invisible. The lock-order inversion between `CASH_OUT` and
+ *     `JOIN_PUBLIC_TABLE` answered `deadlock detected` as exactly this envelope
+ *     on every single run, and the race test PASSED all three times because the
+ *     replay succeeded once the other transaction had committed. The rule now
+ *     matches the app: `online-table-gateway.ts` reads a parseable rejection —
+ *     INTERNAL included — as `refused` and does not retry it, and retries only
+ *     an answer it could not read. A retired worker never reaches our handler,
+ *     so it cannot produce this envelope, and the intermittent this file exists
+ *     for is untouched;
  *   - a 5xx that persists is returned, on the last attempt, with its body
  *     intact, so a genuinely broken function fails the test that provoked it;
  *   - a fetch that keeps throwing raises, rather than being retried into a
@@ -83,6 +97,25 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** Straight to the descriptor — see the note on `silent: "passed-only"` above. */
 function warn(message: string): void {
   process.stderr.write(`[call-function] ${message}\n`);
+}
+
+/**
+ * Did the FUNCTION answer, or did the runtime?
+ *
+ * Only our handler writes `{"status":"rejected","code":…}`; a retired worker is
+ * answered by the gateway and never reaches it. So this is the line between a
+ * reply that was lost — retry it, byte for byte — and a reply that says the
+ * command failed, which is a verdict to be returned to the test that asked for
+ * it. Parsed rather than pattern-matched, because a `message` field could
+ * otherwise quote either string back.
+ */
+function isOurRejection(raw: string): boolean {
+  try {
+    const parsed = JSON.parse(raw) as { status?: unknown; code?: unknown };
+    return parsed.status === "rejected" && typeof parsed.code === "string";
+  } catch {
+    return false;
+  }
 }
 
 /** Every suite calls this; the local stack is the only base URL they use. */
@@ -131,7 +164,7 @@ export async function callFunctionAt(
       });
       const raw = await response.text();
 
-      if (response.status >= 500 && attempt < MAX_ATTEMPTS) {
+      if (response.status >= 500 && attempt < MAX_ATTEMPTS && !isOurRejection(raw)) {
         onRetry(
           `${fn} answered HTTP ${response.status} on attempt ${attempt}; ` +
             `replaying the identical body. ${raw.slice(0, 200)}`,

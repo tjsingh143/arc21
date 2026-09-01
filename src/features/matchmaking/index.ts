@@ -7,6 +7,7 @@
 
 export {
   OFFER_ALTERNATIVES_AFTER_MS,
+  describeOthersWaiting,
   describeWait,
   shouldOfferAlternatives,
   toQueuePlace,

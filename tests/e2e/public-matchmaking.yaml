@@ -1,0 +1,112 @@
+# Arc 21 — the PUBLIC matchmaking screen, on a device, against a real server.
+#
+# WHAT IT PROVES, and why none of it could be seen before phase 7.
+#
+# `poll_matchmaking` used to open a table for a lone player on their very FIRST
+# poll and answer `matched`, so `waiting` lasted a few milliseconds at most.
+# Every control the specification puts behind a twenty-second wait — Keep
+# Waiting, Play Solo, Cancel — was therefore unreachable by anybody, and the
+# card that offers them had never been rendered on a device. A room is now
+# opened only when there is somebody to share it with, which is what makes a
+# genuine wait possible and this flow able to exist at all.
+#
+# It also checks the tier gate. The specification's High table unlocks at level
+# 10; this screen used to offer all three regardless, so a new player could tap
+# a table the server would refuse.
+#
+# BEFORE RUNNING — and the database reset is NOT optional:
+#   supabase db reset            <- see below
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT
+#
+# THE RESET IS PART OF THE FLOW'S PREMISE, in the same way `every-screen.yaml`
+# only passes against an UNCONFIGURED build. Allocation is global, so a public
+# table left open by `tests/server` is a table this account is correctly matched
+# into: the first run of this flow after a server suite was answered "Seat
+# found — 4 already seated", which is the phase's central fix working exactly as
+# intended and makes the lone-player path below unobservable. Reset the database
+# first, or expect it.
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/public-matchmaking.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+appId: com.arc21.app
+---
+- launchApp:
+    appId: com.arc21.app
+    clearState: true
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- runFlow: sign-in.yaml
+
+# A DEEP LINK, not the tab bar: CLAUDE.md records several runs lost to
+# selectors that "COMPLETED" while the app sat on the wrong tab.
+- openLink: arc21://table/public
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+# --- The tiers, and the one that is not offered --------------------------
+- assertVisible:
+    id: "matchmaking-tier-casual"
+- assertVisible:
+    id: "matchmaking-tier-standard"
+- scrollUntilVisible:
+    element:
+      id: "matchmaking-tier-high"
+    direction: DOWN
+# Named, not hidden: a table you cannot open yet should say why rather than
+# vanish. Asserted on the RENDERED text, which is what a player reads.
+- assertVisible: ".*Unlocks at level 10.*"
+
+# --- Queueing, and actually waiting --------------------------------------
+- scrollUntilVisible:
+    element:
+      id: "matchmaking-tier-casual"
+    direction: UP
+- tapOn:
+    id: "matchmaking-tier-casual"
+
+# The wait is real, which is the whole point. Nobody else is queueing at these
+# stakes on a local stack, so this is the lone-player path.
+- assertVisible:
+    id: "matchmaking-wait"
+- assertVisible:
+    id: "matchmaking-others"
+- assertVisible:
+    id: "matchmaking-cancel"
+# Counted by the server rather than asserted by the screen. This line used to
+# claim "nobody else is queueing" without having asked.
+- assertVisible: ".*queueing for these stakes.*"
+
+# --- The twenty-second offer ---------------------------------------------
+# `OFFER_ALTERNATIVES_AFTER_MS` is 20s; the wait allows for a loaded host.
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-keep-waiting"
+    timeout: 45000
+- assertVisible:
+    id: "matchmaking-solo"
+
+# Keep Waiting holds the search open and puts the offer away for another window.
+- tapOn:
+    id: "matchmaking-keep-waiting"
+- assertVisible:
+    id: "matchmaking-wait"
+- assertNotVisible:
+    id: "matchmaking-keep-waiting"
+
+# --- Cancel leaves the queue and nothing has been charged ----------------
+- tapOn:
+    id: "matchmaking-cancel"
+- assertVisible:
+    id: "matchmaking-tier-casual"
+- assertNotVisible:
+    id: "matchmaking-wait"

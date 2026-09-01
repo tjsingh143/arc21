@@ -82,6 +82,7 @@ import {
   loadSession,
   releaseRoomSeat,
   lockEngineState,
+  lockRoomForSession,
   persistEngineState,
   syncSeatRow,
   syncSessionRow,
@@ -494,10 +495,30 @@ async function joinPublicTable(
     for update
   `;
   const room = rooms[0] as
-    | { id: string; tier: string | null; game_session_id: string | null; max_seats: number }
+    | {
+        id: string;
+        tier: string | null;
+        game_session_id: string | null;
+        status: string;
+        max_seats: number;
+      }
     | undefined;
   if (!room) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
   if (!room.tier) throw new CommandError("INTERNAL", "a public table with no stakes");
+
+  /*
+   * A room that is no longer open takes no more buy-ins.
+   *
+   * `matchmaking_queue.room_id` and an `expo-router` parameter both outlive the
+   * table they name, so a client can present a room id minutes after the room
+   * closed or aged out — and a `joined` membership row survives an expiry,
+   * because `expire_stale_rooms()` only touches the room. Without this the
+   * debit below would run and `rooms.status` would be set back to `active`,
+   * resurrecting an expired table around a fresh 2,000 chips.
+   */
+  if (room.status !== "lobby" && room.status !== "active") {
+    throw new CommandError("SESSION_CLOSED", `room ${room.status}`);
+  }
 
   const seated = await tx`
     select 1 from public.room_members
@@ -543,6 +564,27 @@ async function joinPublicTable(
   const existingSeat = await findSeat(tx, gameId, userId);
   let seatId = existingSeat?.id ?? null;
   if (!seatId) {
+    /*
+     * NEVER OVERFILL THE TABLE, and check it here rather than trusting the
+     * allocator.
+     *
+     * `poll_matchmaking` counts `room_members` under a per-tier advisory lock
+     * and will not hand out a seat past `max_seats`, which is the courtesy.
+     * This is the control: it stands beside the debit, it counts the seats the
+     * ENGINE will actually deal to, and it runs with the room row locked `for
+     * update` above — so two players presenting a matched room id at the same
+     * millisecond cannot both become the sixth seat. A membership row is not a
+     * seat: one survives a room expiring, and a client may present a room id
+     * long after the allocation that produced it.
+     */
+    const occupancy = await tx<{ taken: string }[]>`
+      select count(*) as taken from public.game_session_seats
+      where game_session_id = ${gameId}::uuid and status <> 'left'
+    `;
+    if (toInteger(occupancy[0]?.taken ?? 0, "seat occupancy") >= room.max_seats) {
+      throw new CommandError("TABLE_FULL", `${room.max_seats} seats taken`);
+    }
+
     const seatRows = await tx<{ id: string }[]>`
       insert into public.game_session_seats
         (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
@@ -837,6 +879,18 @@ async function cashOut(
   command: CashOutRequest,
   log: LogFields,
 ): Promise<SessionResponse> {
+  /*
+   * THE ROOM FIRST, and that ordering is the whole of a deadlock fix.
+   *
+   * `JOIN_PUBLIC_TABLE` locks the room row and then the engine state; this used
+   * to take them the other way round, reaching `rooms` only at the end inside
+   * `release_room_seat`. One player leaving while another sits down is an
+   * ordinary event at a public table now that a running table keeps taking
+   * players, and Postgres answered the loser `deadlock detected` — surfaced to
+   * that player as HTTP 500 on an ordinary leave.
+   */
+  await lockRoomForSession(tx, command.gameId);
+
   const locked = await lockEngineState(tx, command.gameId);
   const session = locked ? await loadSession(tx, command.gameId) : null;
   const seat = locked && session ? await findSeat(tx, command.gameId, userId) : null;

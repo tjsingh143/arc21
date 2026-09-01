@@ -40,6 +40,7 @@ import {
   type TableFailure,
   type TableGateway,
 } from "./online-table-gateway.js";
+import { shouldCompleteLeave } from "./leave-guard.js";
 import { shouldRequestTimeoutResolution } from "./table-deadline.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
 
@@ -131,6 +132,19 @@ export interface OnlineTableStoreState {
   readonly timeoutAskedForVersion: number | null;
   readonly timeoutAskedAt: number | null;
   /**
+   * This player has asked to leave and the server said the hand was still live.
+   *
+   * A refused cash-out used to be the end of it: the notice said the chips came
+   * back when the hand settled, and nothing made that happen. Somebody who taps
+   * leave and puts the phone down stayed seated at a live public table, stood
+   * in by the action timer hand after hand, with their buy-in in escrow. The
+   * flag is the INTENT, held until `shouldCompleteLeave` says the table has
+   * reached a phase the server will accept — and cleared the moment the player
+   * stakes something, because betting is how somebody says they have changed
+   * their mind.
+   */
+  readonly leavingWhenSafe: boolean;
+  /**
    * What the server said happened, most recently.
    *
    * Kept so sound and haptics describe the server's account of the hand rather
@@ -218,6 +232,8 @@ export interface OnlineTableStoreState {
    * call that makes that sentence true.
    */
   leaveTable: () => Promise<boolean>;
+  /** Abandons a leave the player asked for and has since thought better of. */
+  stayAtTable: () => void;
   /**
    * Take a free reset back to the private table's fixed stack.
    *
@@ -360,6 +376,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   lastAppliedSeq: 0,
   timeoutAskedForVersion: null,
   timeoutAskedAt: null,
+  leavingWhenSafe: false,
   lastEvents: EMPTY_EVENTS,
 
   enter: async (gameId, seatId) => {
@@ -389,6 +406,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       lastAppliedSeq: seqRangeOf(read.events)?.last ?? 0,
       timeoutAskedForVersion: null,
       timeoutAskedAt: null,
+      // A different table. An intent to leave the last one is not one to leave
+      // this one.
+      leavingWhenSafe: false,
       lastEvents: read.events,
     });
 
@@ -439,6 +459,26 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
        */
       lastEvents: EMPTY_EVENTS,
     });
+
+    /*
+     * A leave the server refused mid-hand, completed now that it cannot be.
+     *
+     * The poll is the right driver: it is the only thing that keeps running
+     * while a player watches out a hand they are no longer part of. The phase
+     * test is the ENGINE's — `canCloseSeat`, the same function `cashOut`
+     * refuses with — so this cannot ask, three seconds at a time, for something
+     * that is about to be refused. `void` because a poll must not wait on it.
+     */
+    if (
+      shouldCompleteLeave({
+        leavingWhenSafe: get().leavingWhenSafe,
+        pending: get().pending,
+        table: read.state,
+        seatId: current.seatId,
+      })
+    ) {
+      void get().leaveTable();
+    }
   },
 
   addChip: (amount) => {
@@ -453,9 +493,22 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     // checks both again; this only stops the UI staging an impossible bet.
     const next = Math.min(get().stagedBet + amount, legal.betBounds.max, seat.stack);
     set({ stagedBet: next, notice: null });
+    get().stayAtTable();
   },
 
   clearBet: () => set({ stagedBet: 0, notice: null }),
+
+  /*
+   * Betting is how a player says they have changed their mind.
+   *
+   * Without this, somebody who tapped leave mid-hand, was told to wait and then
+   * decided to play the next one would be cashed out from under their own
+   * staged wager the moment betting opened. A held intent that outlives the
+   * intention is worse than no intent at all.
+   */
+  stayAtTable: () => {
+    if (get().leavingWhenSafe) set({ leavingWhenSafe: false, notice: null });
+  },
 
   repeatBet: () => {
     const previous = get().lastBet;
@@ -641,8 +694,15 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
        * Stay at the table. Walking away from a refused cash-out is exactly the
        * bug this replaced: the chips are still in escrow and the player has no
        * other route back to them.
+       *
+       * SESSION_BUSY is the one refusal that is a "not yet" rather than a "no",
+       * so the ask is HELD and completed at the first safe boundary. Without
+       * that the notice below was a promise the app did not keep: a player who
+       * tapped leave mid-hand and stopped watching stayed seated, was stood in
+       * by the action timer every hand, and their buy-in stayed in escrow.
        */
-      set({ notice: outcome.message });
+      const holding = outcome.reason === "refused" && outcome.code === "SESSION_BUSY";
+      set({ notice: outcome.message, leavingWhenSafe: holding });
       return false;
     }
 
@@ -709,6 +769,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       lastAppliedSeq: 0,
       timeoutAskedForVersion: null,
       timeoutAskedAt: null,
+      leavingWhenSafe: false,
       lastEvents: EMPTY_EVENTS,
     });
   },

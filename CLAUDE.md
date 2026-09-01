@@ -878,6 +878,46 @@ all three** — or answer the offer, which is what the absent-player default doe
 anyway. And when a helper throws, make it NAME the state it was in: the first
 version of this one did not, which is why the failure was read as a flake.
 
+**A TEST HELPER THAT RETRIES A 5xx HIDES A DETERMINISTIC SERVER FAULT, AND
+`call-function.ts` DID FOR A WHOLE PHASE.** Replaying a lost reply byte for byte
+is right for the retired-worker case that file was written for — but
+`{"status":"rejected","code":"INTERNAL", …}` is OUR HANDLER answering: the reply
+was not lost, the command failed, and replaying it is a second go at something
+that just went wrong. The `CASH_OUT`/`JOIN_PUBLIC_TABLE` lock inversion answered
+exactly that envelope on three runs out of three and the race test **passed all
+three**, because by the time the body was replayed the other transaction had
+committed. The rule now matches the app: `online-table-gateway.ts` reads a
+parseable rejection — INTERNAL included — as `refused` and retries only an
+answer it could not read. A retired worker never reaches the handler, so it
+cannot produce that envelope and the intermittent is untouched.
+
+**LOCK ORDER IS A PROPERTY OF EVERY PATH, NOT OF THE TWO THAT COLLIDED.**
+`JOIN_PUBLIC_TABLE` took rooms → engine → wallet; `CASH_OUT` took engine →
+wallet → rooms, reaching `rooms` only inside `release_room_seat`. Harmless until
+a public table started taking players while running, at which point one player
+leaving as another sits down is ordinary and Postgres answers the loser
+`deadlock detected` — surfaced as HTTP 500 on an ordinary leave. Fix the ORDER,
+not the odds: `lockRoomForSession` first on every path that touches both. Then
+check the paths you did NOT change — `closeRoomForSession` and
+`releaseRoomSeat` are reachable from `game-command`'s `handle` only for `LEAVE`
+(`sessionEnded` is set inside `if (closing)`, and `closing` requires `LEAVE`),
+and from `closeCompetition`, which runs only for modes that have no room.
+`tests/contracts/room-lock-order.test.ts` holds that as an ALLOWLIST so a sixth
+function fails a test rather than a race.
+
+**AND `SPLIT` CAN SETTLE THE HAND TOO, WHICH MAKES THE STACK HOLD BOTH THE
+DEBIT AND THE CREDITS.** Arc Standard deals ONE card to each half of a split
+pair of aces and stands both, so a seat that splits aces while it is the last
+one with a hand to play runs the dealer and settles inside its own `SPLIT`
+command. `two-client-table` asserted the debit alone —
+`stack === stackBefore - wager` — and read `expected 10200 to be 9800` once in a
+`test:server` run whose other 221 tests passed, which looks exactly like a wager
+defect. Reproduced deliberately over a seeded shoe (`AS 10C AD 6H 9S 8S 10D`:
+dealer 16 draws to 26, both split hands win) rather than retried, and pinned in
+`tests/engine/split-settlement.test.ts`. Assert the ACCOUNTING — the debit plus
+whatever the hand returned — rather than the debit, which is both correct in
+each case and stronger than what it replaced.
+
 ---
 
 ## Product rules that are easy to get wrong

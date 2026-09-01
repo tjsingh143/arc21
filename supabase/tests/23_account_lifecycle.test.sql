@@ -140,12 +140,34 @@ values (:session, :leaver, 'f0000000-0000-4000-8000-00000000000f', 'NEXT_HAND', 
 
 -- A PUBLIC table this account hosts by accident of arriving first, with the
 -- other player matched into it. This is the shape that could not be deleted.
+--
+-- BOTH PLAYERS ENROL BEFORE EITHER POLLS, and the order is the fixture. A
+-- public table is opened only when there is somebody to share it with, so a
+-- poll by :leaver while alone answers `waiting` and hosts nothing — which is
+-- how this fixture first broke, and the precondition below is what said so
+-- rather than letting the sweep pass over an empty table. :leaver polls first,
+-- so :leaver opens the room and is its accidental host; :stayer's poll then
+-- finds it.
+--
+-- Scoped to what this file owns, like every other fixture here: a joinable
+-- public room left behind by anything else would take :leaver's poll into
+-- somebody else's table, and a stray waiting enrolment would change who opens
+-- what. Both are cleared inside the transaction and come back on rollback.
+delete from public.matchmaking_queue
+where user_id in (:leaver, :stayer);
+update public.rooms set status = 'closed'
+where visibility = 'public' and mode = 'public_table' and status in ('lobby', 'active');
+update public.matchmaking_queue set status = 'cancelled'
+where status = 'waiting' and user_id not in (:leaver, :stayer);
+
 set local role authenticated;
 set local request.jwt.claims to '{"sub":"a0000000-0000-4000-8000-00000000000a","role":"authenticated"}';
 select public.join_matchmaking('casual');
-select public.poll_matchmaking();
 set local request.jwt.claims to '{"sub":"b0000000-0000-4000-8000-00000000000b","role":"authenticated"}';
 select public.join_matchmaking('casual');
+set local request.jwt.claims to '{"sub":"a0000000-0000-4000-8000-00000000000a","role":"authenticated"}';
+select public.poll_matchmaking();
+set local request.jwt.claims to '{"sub":"b0000000-0000-4000-8000-00000000000b","role":"authenticated"}';
 select public.poll_matchmaking();
 set local role postgres;
 

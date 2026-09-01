@@ -12,7 +12,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(28);
+select plan(32);
 
 select has_table('public', 'rooms', 'rooms exist');
 select has_table('public', 'room_members', 'seats at a room exist');
@@ -354,5 +354,77 @@ select is(
   'and the room is closed, so its code returns to the pool'
 );
 
+-- --------------------------------------------------------------------------
+-- A PUBLIC TABLE'S SEATS BELONG TO THE QUEUE
+-- --------------------------------------------------------------------------
+-- Two ways into a public room that went around `poll_matchmaking` entirely.
+-- Neither is an economic hole — every buy-in guard is downstream of both — but
+-- both decide WHO SITS WITH WHOM at the tables the specification calls matched
+-- play, and that decision belongs to the queue.
+
+reset role;
+
+insert into auth.users (id, email, aud, role) values
+  ('20000000-0000-4000-8000-000000000001', 'pubroom-host@arc21.test', 'authenticated', 'authenticated'),
+  ('20000000-0000-4000-8000-000000000002', 'pubroom-friend@arc21.test', 'authenticated', 'authenticated'),
+  ('20000000-0000-4000-8000-000000000003', 'pubroom-matched@arc21.test', 'authenticated', 'authenticated');
+
+-- A public room exactly as `poll_matchmaking` opens one: the "host" is whoever
+-- the allocator happened to seat first.
+insert into public.rooms (id, code, host_user_id, visibility, mode, max_seats, tier, status)
+values ('20000000-0000-4000-8000-00000000aaa1', 'PUBQUE',
+        '20000000-0000-4000-8000-000000000001', 'public', 'public_table', 5, 'casual', 'lobby');
+insert into public.room_members (room_id, user_id, seat_index) values
+  ('20000000-0000-4000-8000-00000000aaa1', '20000000-0000-4000-8000-000000000001', 0),
+  ('20000000-0000-4000-8000-00000000aaa1', '20000000-0000-4000-8000-000000000003', 1);
+
+-- THE CODE. `poll_matchmaking` hands a matched player the room's six characters
+-- along with its id, and `join_private_room` had never looked at `visibility` —
+-- so passing that code to a friend seated the two of them together at a public
+-- table, ahead of whoever the queue would have matched.
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"20000000-0000-4000-8000-000000000002","role":"authenticated"}';
+
+select is(
+  (select id from public.join_private_room('PUBQUE')),
+  null,
+  'a public table''s room code does not admit anybody: the queue decides'
+);
+
+reset role;
+select is(
+  (select count(*)::int from public.room_members
+   where room_id = '20000000-0000-4000-8000-00000000aaa1'
+     and user_id = '20000000-0000-4000-8000-000000000002'),
+  0,
+  'and no membership was created by the attempt'
+);
+
+-- THE HOST. `rooms.host_user_id` at a public table is an accident of arrival
+-- order — "the host owns nothing but the lobby" — and `remove_room_member`
+-- never asked, so that accidental host could kick the strangers the allocator
+-- had just placed beside them, one at a time, before anybody bought in.
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"20000000-0000-4000-8000-000000000001","role":"authenticated"}';
+
+select is(
+  (select public.remove_room_member('20000000-0000-4000-8000-00000000aaa1',
+                                    '20000000-0000-4000-8000-000000000003')),
+  false,
+  'nobody hosts a public table, so nobody may be removed from one'
+);
+
+reset role;
+select is(
+  (select status::text from public.room_members
+   where room_id = '20000000-0000-4000-8000-00000000aaa1'
+     and user_id = '20000000-0000-4000-8000-000000000003'),
+  'joined',
+  'and the player the queue matched keeps their seat'
+);
+
 select * from finish();
 rollback;
+
