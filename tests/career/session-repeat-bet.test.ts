@@ -72,8 +72,24 @@ describe("after a hand is dealt", () => {
     store.addChip(50);
     store.lockBet();
 
-    // Play the hand out and start the next one. STAND settles this seat; the
-    // dealer then plays, so the hand reaches HAND_COMPLETE either way.
+    /*
+     * Play the hand out and start the next one.
+     *
+     * ANSWERING THE INSURANCE OFFER IS NOT OPTIONAL HERE. `lockBet` completes
+     * the betting round, so its cascade deals — and when the dealer's upcard is
+     * an ACE it stops at INSURANCE_OFFER, because only a player can answer
+     * that. The first version of this went straight to STAND, which the engine
+     * correctly refused at that phase, and `nextHand` was refused after it: the
+     * assertion below then read `expected 'INSURANCE_OFFER' to be
+     * 'BETTING_OPEN'` about one run in thirteen. Declining is what the absent
+     * player's default does anyway.
+     *
+     * After that, STAND settles this seat and the dealer plays, so the hand
+     * reaches HAND_COMPLETE either way.
+     */
+    if (useCareerSessionStore.getState().game?.phase === "INSURANCE_OFFER") {
+      useCareerSessionStore.getState().declineInsurance();
+    }
     useCareerSessionStore.getState().act("STAND");
     useCareerSessionStore.getState().nextHand();
 
@@ -94,6 +110,11 @@ describe("after a hand is dealt", () => {
     store.start(SLUG);
     store.addChip(50);
     store.lockBet();
+    // Same three-way cascade as above: a dealer ace parks at INSURANCE_OFFER,
+    // where STAND and NEXT_HAND are both refused.
+    if (useCareerSessionStore.getState().game?.phase === "INSURANCE_OFFER") {
+      useCareerSessionStore.getState().declineInsurance();
+    }
     useCareerSessionStore.getState().act("STAND");
     useCareerSessionStore.getState().nextHand();
 

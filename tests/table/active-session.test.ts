@@ -23,6 +23,7 @@ import {
   ACTIVE_SESSION_ROUTE,
   canResume,
   describeActiveSession,
+  resolveTableSeat,
   describeActiveSessionMode,
   parseActiveSession,
   parseActiveSessionRows,
@@ -240,5 +241,78 @@ describe("the store", () => {
     await useActiveSessionStore.getState().refresh();
     useActiveSessionStore.getState().clear();
     expect(selectActiveSession(useActiveSessionStore.getState().status)).toBeNull();
+  });
+});
+
+/**
+ * THE ONE ROUTE THAT CANNOT CARRY A SEAT ID.
+ *
+ * `/table/[gameId]` needs both ids, and every in-app route supplies both —
+ * except the `your_turn` notification. `notifications.data` may hold only a
+ * fixed set of short scalars by CHECK constraint (so a seed, a shoe or a hole
+ * card cannot ride out through a push), `notifyTurnPlayedByTimeout` writes
+ * `game_id` alone, and `destinationFor` maps the kind to `/table/<gameId>`.
+ *
+ * So the one message written specifically to bring an absent player back —
+ * *"A hand was played for you. You are still seated at a table."* — opened a
+ * screen answering *"This screen needs a table to open. Start or join one from
+ * Social."* Both sentences were true of their own half and they contradict each
+ * other, which is the shape this project keeps finding: a mechanism complete on
+ * one side of a boundary and absent on the other.
+ */
+describe("resolving the seat when the route did not name one", () => {
+  it("uses the route's own seat id whenever there is one", () => {
+    expect(
+      resolveTableSeat({ gameId: GAME, paramSeatId: SEAT, checked: false, session: null }),
+    ).toEqual({ kind: "known", seatId: SEAT });
+  });
+
+  it("falls back to the server's answer for THIS game", () => {
+    expect(
+      resolveTableSeat({
+        gameId: GAME,
+        paramSeatId: null,
+        checked: true,
+        session: session(),
+      }),
+    ).toEqual({ kind: "known", seatId: SEAT });
+  });
+
+  /**
+   * `checked` is the same rule as `mayOpenDealtTable`'s, one screen along: the
+   * store behind this lookup is a module-level cache the Play screen also
+   * fills, so a `ready` reading can arrive already carried over. Announcing
+   * "you have no table" before this mount's own ask has answered is the dead
+   * end, one beat earlier.
+   */
+  it("says it is still checking rather than refusing early", () => {
+    expect(
+      resolveTableSeat({ gameId: GAME, paramSeatId: null, checked: false, session: null }),
+    ).toEqual({ kind: "checking" });
+  });
+
+  it("refuses once the server has answered with nothing", () => {
+    expect(
+      resolveTableSeat({ gameId: GAME, paramSeatId: null, checked: true, session: null }),
+    ).toEqual({ kind: "unknown" });
+  });
+
+  it("never borrows a seat from a DIFFERENT table", () => {
+    // One live seat per player is an invariant, not a guarantee. A session
+    // naming another game is an answer about another game.
+    const elsewhere = session({ gameId: "99999999-9999-4999-8999-999999999999" });
+    expect(
+      resolveTableSeat({ gameId: GAME, paramSeatId: null, checked: true, session: elsewhere }),
+    ).toEqual({ kind: "unknown" });
+    // And while unchecked it is still "checking", not a borrowed seat.
+    expect(
+      resolveTableSeat({ gameId: GAME, paramSeatId: null, checked: false, session: elsewhere }),
+    ).toEqual({ kind: "checking" });
+  });
+
+  it("cannot resolve anything without a game either", () => {
+    expect(
+      resolveTableSeat({ gameId: null, paramSeatId: null, checked: true, session: session() }),
+    ).toEqual({ kind: "unknown" });
   });
 });

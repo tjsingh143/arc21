@@ -175,3 +175,49 @@ export function describeActiveSession(session: ActiveSession): string {
 export function canResume(session: ActiveSession | null): session is ActiveSession {
   return session !== null;
 }
+
+/**
+ * Which seat this screen is opening, when the route did not say.
+ *
+ * THE DEAD END THIS CLOSES. `/table/[gameId]` needs BOTH a game id and a seat
+ * id, and every in-app route supplies both — but one route does not, and it is
+ * the one whose whole purpose is bringing an absent player back.
+ * `notifyTurnPlayedByTimeout` writes a `your_turn` notification carrying
+ * `game_id` and nothing else (a notification's `data` may hold only a fixed set
+ * of short scalars, by CHECK constraint), `destinationFor` maps it to
+ * `/table/<gameId>`, and the screen answered *"This screen needs a table to
+ * open. Start or join one from Social."* — telling a player who is still
+ * seated, in reply to a message saying they are still seated, that they are
+ * not.
+ *
+ * The seat is not guessed. `my_active_session()` derives the caller's own live
+ * seat server-side from the verified JWT, and the answer is only used when it
+ * names THIS game.
+ *
+ * `checked` exists for the reason `mayOpenDealtTable`'s does: the lookup's
+ * store is a module-level cache shared with the Play screen, so a `ready`
+ * reading can arrive already filled from a previous screen. Until this mount's
+ * own ask has answered, the honest state is "checking" — and rendering the
+ * dead-end note during it would be the same defect one beat earlier.
+ */
+export type TableSeatResolution =
+  | { readonly kind: "known"; readonly seatId: string }
+  /** The lookup has not answered yet. Show a loading state, not a refusal. */
+  | { readonly kind: "checking" }
+  | { readonly kind: "unknown" };
+
+export function resolveTableSeat(input: {
+  readonly gameId: string | null;
+  /** The route parameter, when there was one. */
+  readonly paramSeatId: string | null;
+  /** Whether `my_active_session()` has answered for THIS mount. */
+  readonly checked: boolean;
+  readonly session: ActiveSession | null;
+}): TableSeatResolution {
+  if (input.paramSeatId !== null) return { kind: "known", seatId: input.paramSeatId };
+  if (input.gameId === null) return { kind: "unknown" };
+  if (input.session && input.session.gameId === input.gameId) {
+    return { kind: "known", seatId: input.session.seatId };
+  }
+  return input.checked ? { kind: "unknown" } : { kind: "checking" };
+}

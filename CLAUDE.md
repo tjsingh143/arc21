@@ -838,6 +838,46 @@ place before adding a second** — that is what separated two defects here that
 looked like one, and it is the only way the first would not have been recorded
 as the fix for something it does not fix.
 
+**AN ACTION IN THE WIRE CONTRACT WITH NO CLIENT CALLER IS A FEATURE THAT DOES
+NOT EXIST, AND IT IS THE ONE SHAPE NOTHING IN THE BUILD NOTICES.**
+`RESET_PRIVATE_STACK` was in `shared/contracts/session-command.ts`, handled by
+`create-session` behind three correct guards, given its own `structured-log`
+status, and covered by a server test asserting its refusal — and no line of
+`src`, `app` or `scripts` had ever sent it. It is the specification's answer to
+a private player running out of chips ("permit a free reset to 5,000 between
+hands"), so a seat that could not cover the 20-chip minimum was sat out by
+`openBetting`, `getLegalActions` answered NO_ACTIONS, and the table screen fell
+through to **"Waiting for the next hand."** for the life of the table. No error,
+no disabled control, no empty state. `tsc` cannot see an action nobody
+dispatches and the server suite reaches the handler directly over HTTP.
+`tests/contracts/every-command-has-a-caller.test.ts` reads the action names out
+of the contract FILE and scans the client for each; its `SERVER_ONLY` allowlist
+exists and is empty, which says more than the test passing does. Two related
+notes: the client half of a mechanism like this is not only the request — the
+reset also had to clear `sittingOut`, because `openBetting` clears it at the
+START of a hand and a refilled seat would otherwise still be sat out of the
+window it was looking at, so a successful reset looked exactly like a failed
+one. And **the specification's own text IS in this repository**, extracted, at
+`.spec-extracted.txt` and `.spec-partB.txt` (gitignored); the phase 6 report
+states it is "not present … anywhere on this machine", which is how that line
+went unread.
+
+**THE CASCADE AFTER BETTING CLOSES STOPS IN THREE PLACES, NOT TWO.** CLAUDE.md
+already records that `LOCK_BET` CAN SETTLE THE HAND; the third destination is
+`INSURANCE_OFFER`, reached whenever the dealer's upcard is an ACE, because the
+cascade returns while any seat's insurance decision is `PENDING`. That is about
+one hand in thirteen, and it was the whole of the `reachPlayerTurns` failure
+phase 6 recorded as "unreproduced, not diagnosed": the helper handled
+PLAYER_TURNS and HAND_COMPLETE, sent `NEXT_HAND` at a table in INSURANCE_OFFER,
+and the server correctly answered WRONG_PHASE. Twenty runs of that file on a
+quiet host: 16 pass, 4 fail; twenty-five after the fix: all pass. The same
+assumption failed a second test in the same session
+(`expected 'INSURANCE_OFFER' to be 'PLAYER_TURNS'` after a betting deadline
+resolved). **Any test that closes betting and then asserts a phase must accept
+all three** — or answer the offer, which is what the absent-player default does
+anyway. And when a helper throws, make it NAME the state it was in: the first
+version of this one did not, which is why the failure was read as a flake.
+
 ---
 
 ## Product rules that are easy to get wrong

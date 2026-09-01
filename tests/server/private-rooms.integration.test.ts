@@ -877,3 +877,223 @@ suite("the last seat", () => {
     expect(new Set(members.map((member) => member.member_seat_index)).size).toBe(2);
   }, 60_000);
 });
+
+/**
+ * THE FREE RESET A BROKE PRIVATE PLAYER IS OWED.
+ *
+ * The specification's rule is one sentence: *"if a private player reaches zero
+ * session chips, permit a free reset to 5,000 between hands; private mode is
+ * unranked."* `RESET_PRIVATE_STACK` implemented it, correctly, and **no client
+ * had ever sent it** — it was the only action of the nine in the session
+ * contract with no caller in `src`, `app` or `scripts`. The cost was silent: a
+ * seat that cannot cover the 20-chip minimum is sat out by `openBetting`,
+ * `getLegalActions` answers NO_ACTIONS for a seat that is sitting out, and the
+ * table screen falls through to "Waiting for the next hand." — hand after hand,
+ * for the life of the table.
+ *
+ * The stack is arranged in the database rather than lost at the table. Playing
+ * 5,000 chips away 500 at a time against a fair dealer is a random walk with no
+ * bound on how long it takes, and the thing under test is what happens ONCE a
+ * seat is broke. Everything either side of the fixture goes through the real
+ * HTTP boundary as the real player.
+ */
+suite("a private seat with nothing left", () => {
+  const iso = () => new Date().toISOString();
+
+  /** A single scalar out of the database, for a row no client may read. */
+  function readDatabase(sql: string): string {
+    const container = execFileSync(
+      "docker",
+      ["ps", "--filter", "name=supabase_db_", "--format", "{{.Names}}"],
+      { encoding: "utf8" },
+    )
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)[0];
+    if (!container) throw new Error("no supabase_db_* container is running");
+    return execFileSync(
+      "docker",
+      ["exec", container, "psql", "-U", "postgres", "-d", "postgres", "-tAc", sql],
+      { encoding: "utf8" },
+    ).trim();
+  }
+
+  async function dealtPrivateTable(): Promise<{
+    host: Player;
+    guest: Player;
+    gameId: string;
+    seatId: string;
+  }> {
+    const { host, guest, room } = await openRoomWithGuest(2);
+    const started = await callFunction("create-session", host.token, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: iso(),
+    });
+    expect(started.status).toBe(200);
+    const gameId = started.body.gameId;
+    const seatId = started.body.seatId;
+    if (typeof gameId !== "string" || typeof seatId !== "string") {
+      throw new Error(`no table: ${started.raw}`);
+    }
+    return { host, guest, gameId, seatId };
+  }
+
+  /**
+   * Leave the seat exactly as a lost last hand leaves it: a stack below the
+   * table minimum, and `sittingOut` set — which is what `openBetting` does at
+   * the top of the next hand and is the state the player is actually stuck in.
+   */
+  function bustSeat(gameId: string, seatId: string): void {
+    inDatabase(`
+      update private.game_state_private g
+      set engine_state = jsonb_set(
+        jsonb_set(g.engine_state, array['seats', idx.n::text, 'stack'], to_jsonb(10)),
+        array['seats', idx.n::text, 'sittingOut'], to_jsonb(true))
+      from (
+        select (s.ord - 1) as n
+        from private.game_state_private inner_state,
+             jsonb_array_elements(inner_state.engine_state->'seats')
+               with ordinality as s(seat, ord)
+        where inner_state.game_session_id = '${gameId}'
+          and s.seat->>'seatId' = '${seatId}'
+      ) idx
+      where g.game_session_id = '${gameId}';
+      update public.game_session_seats set stack = 10 where id = '${seatId}';
+    `);
+    // The fixture must actually have taken. A silent no-op here would turn
+    // "the reset refused, correctly, because the seat was never broke" into a
+    // passing test about nothing.
+    expect(readDatabase(`select stack from public.game_session_seats where id = '${seatId}'`)).toBe(
+      "10",
+    );
+  }
+
+  async function reset(player: Player, gameId: string) {
+    return await callFunction("create-session", player.token, {
+      action: "RESET_PRIVATE_STACK",
+      clientRequestId: crypto.randomUUID(),
+      gameId,
+      clientSentAt: iso(),
+    });
+  }
+
+  async function walletBalance(player: Player): Promise<number> {
+    // `user_id=eq.` on purpose. A read through RLS is scoped to what the POLICY
+    // permits, not to "your own rows" — CLAUDE.md carries two instances of that
+    // mistake, and one of them read another player's number as this one's.
+    const { rows } = await restQuery(player, `wallets?select=balance&user_id=eq.${player.id}`);
+    const row = rows[0] as { balance?: number } | undefined;
+    if (typeof row?.balance !== "number") {
+      throw new Error(`no wallet row for ${player.id}: ${JSON.stringify(rows)}`);
+    }
+    return row.balance;
+  }
+
+  it("puts the seat back on the table's fixed stack, and back in the game", async () => {
+    const { host, gameId, seatId } = await dealtPrivateTable();
+    bustSeat(gameId, seatId);
+
+    const done = await reset(host, gameId);
+
+    expect(done.status).toBe(200);
+    expect(done.body.status).toBe("private_stack_reset");
+    expect(done.body.stack).toBe(5_000);
+
+    const state = done.body.publicState as {
+      seats: Array<{ seatId: string; stack: number; sittingOut: boolean }>;
+    };
+    const seat = state.seats.find((candidate) => candidate.seatId === seatId);
+    expect(seat?.stack).toBe(5_000);
+    /*
+     * REINSTATED, not merely refilled. `openBetting` clears `sittingOut` only at
+     * the START of a hand, so a reset that moved chips alone would have answered
+     * the player with the same "waiting" they were already looking at — the
+     * chips would have been unusable until the next hand opened.
+     */
+    expect(seat?.sittingOut).toBe(false);
+
+    // The public mirror agrees, which is what every other client reads.
+    expect(readDatabase(`select stack from public.game_session_seats where id = '${seatId}'`)).toBe(
+      "5000",
+    );
+  }, 60_000);
+
+  it("takes nothing from the wallet and writes no ledger row", async () => {
+    const { host, gameId, seatId } = await dealtPrivateTable();
+    const before = await walletBalance(host);
+    bustSeat(gameId, seatId);
+
+    expect((await reset(host, gameId)).status).toBe(200);
+
+    // The anti-collusion rule, from the other direction: 5,000 chips appeared
+    // at the table and no wallet anywhere moved. They are the TABLE's.
+    expect(await walletBalance(host)).toBe(before);
+    expect(
+      readDatabase(
+        `select count(*) from public.wallet_ledger where user_id = '${host.id}' and reason <> 'initial_grant'`,
+      ),
+    ).toBe("0");
+  }, 60_000);
+
+  it("refuses a seat that can still cover the minimum", async () => {
+    const { host, gameId, seatId } = await dealtPrivateTable();
+
+    const refused = await reset(host, gameId);
+
+    // Otherwise this is a "refill to full" button that erases every loss.
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe("ILLEGAL_ACTION");
+    /*
+     * Asserted on the EFFECT rather than the prose. The wire carries the public
+     * wording for the CODE — "That action is not legal for this hand." — and the
+     * sentence naming the minimum stays in the server's log, which is the right
+     * split and means a message assertion here would be testing the code table.
+     */
+    expect(readDatabase(`select stack from public.game_session_seats where id = '${seatId}'`)).toBe(
+      "5000",
+    );
+  }, 60_000);
+
+  it("refuses a WALLET-BACKED table, where it would mint chips", async () => {
+    const player = await createPlayer();
+    const opened = await callFunction("create-session", player.token, {
+      action: "OPEN",
+      clientRequestId: crypto.randomUUID(),
+      tier: "casual",
+      clientSentAt: iso(),
+    });
+    expect(opened.status).toBe(200);
+    const gameId = opened.body.gameId;
+    const seatId = opened.body.seatId;
+    if (typeof gameId !== "string" || typeof seatId !== "string") {
+      throw new Error(`no solo table: ${opened.raw}`);
+    }
+    // Broke in exactly the same way, so the ONLY thing separating this case from
+    // the passing one above is the session's mode.
+    bustSeat(gameId, seatId);
+
+    const refused = await reset(player, gameId);
+
+    expect(refused.status).toBe(422);
+    expect(refused.body.code).toBe("ILLEGAL_ACTION");
+    // Refused on the SESSION'S OWN MODE, read from the row rather than taken
+    // from the request: the seat is just as broke as the private one above and
+    // the only difference is where its chips came from.
+    expect(readDatabase(`select stack from public.game_session_seats where id = '${seatId}'`)).toBe(
+      "10",
+    );
+  }, 60_000);
+
+  it("refuses a player who is not at the table", async () => {
+    const { gameId, seatId } = await dealtPrivateTable();
+    bustSeat(gameId, seatId);
+    const stranger = await createPlayer();
+
+    const refused = await reset(stranger, gameId);
+
+    expect(refused.status).toBe(403);
+    expect(refused.body.code).toBe("NOT_A_PARTICIPANT");
+  }, 60_000);
+});

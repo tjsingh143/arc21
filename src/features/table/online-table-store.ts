@@ -218,6 +218,22 @@ export interface OnlineTableStoreState {
    * call that makes that sentence true.
    */
   leaveTable: () => Promise<boolean>;
+  /**
+   * Take a free reset back to the private table's fixed stack.
+   *
+   * THE OTHER HALF OF A MECHANISM THAT ONLY EVER HAD ONE. The server has
+   * accepted `RESET_PRIVATE_STACK` since private tables were built and no
+   * client had ever sent it, so the specification's *"if a private player
+   * reaches zero session chips, permit a free reset to 5,000 between hands"*
+   * was a rule with no way to invoke it: a player who busted sat out every
+   * remaining hand of the table.
+   *
+   * Nothing is decided here. The amount, the mode check, the between-hands
+   * check and the actually-broke check are all the server's; this sends the
+   * game id and adopts the snapshot that comes back. See `mayResetPrivateStack`
+   * for what an honest client offers it against.
+   */
+  resetStack: () => Promise<void>;
   /** Drops the table locally without cashing out. For a seat already closed. */
   forgetTable: () => void;
 }
@@ -640,6 +656,44 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
 
     get().forgetTable();
     return true;
+  },
+
+  resetStack: async () => {
+    const current = get().status;
+    if (current.kind !== "at-table" || get().pending) return;
+
+    set({ pending: true, notice: null });
+    const outcome = await activeTableGateway().resetPrivateStack(current.state.gameId);
+
+    if (!outcome.ok) {
+      // A seat that closed under this player is the one failure worth leaving
+      // the table for; everything else is a notice beside a table they are
+      // still at, exactly as it is for a command.
+      if (dropIfSeatIsClosed(get, set, outcome)) return;
+      const { connection, notice } = afterFailure(outcome);
+      set({ pending: false, connection, notice });
+      return;
+    }
+
+    /*
+     * The snapshot replaces what was here, like every other server answer.
+     *
+     * `lastEvents` is NOT touched and `lastAppliedSeq` is left alone: a reset
+     * emits no engine event, so there is nothing to hear and no sequence to
+     * advance. Clearing the last batch would be wrong in the other direction —
+     * the identity is what `useTableFeedback` keys on, and a fresh empty array
+     * reads as a new batch.
+     */
+    set({
+      pending: false,
+      connection: LIVE,
+      status: { kind: "at-table", state: outcome.state, seatId: current.seatId },
+      // A different stack is a different set of affordable bets, and the wager
+      // this seat last had accepted was made against chips it no longer has.
+      stagedBet: 0,
+      lastBet: 0,
+      notice: null,
+    });
   },
 
   forgetTable: () => {

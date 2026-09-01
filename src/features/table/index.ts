@@ -16,7 +16,16 @@ export {
   type TableFailure,
   type TableGateway,
   type TableSnapshotOutcome,
+  type TableStackResetOutcome,
 } from "./online-table-gateway.js";
+
+export {
+  BROKE_AT_PRIVATE_TABLE_BODY,
+  BROKE_AT_PRIVATE_TABLE_TITLE,
+  mayResetPrivateStack,
+  RESET_PRIVATE_STACK_LABEL,
+  type BrokeSeatView,
+} from "./broke-affordance.js";
 
 export {
   COUNTDOWN_TICK_MS,
@@ -48,10 +57,12 @@ export {
   describeActiveSessionMode,
   parseActiveSession,
   parseActiveSessionRows,
+  resolveTableSeat,
   resumeTargetFor,
   type ActiveSession,
   type ActiveSessionMode,
   type ResumeTarget,
+  type TableSeatResolution,
 } from "./active-session.js";
 
 export {

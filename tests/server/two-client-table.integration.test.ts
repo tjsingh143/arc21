@@ -657,13 +657,35 @@ suite("every action a multi-seat table offers", () => {
           if (available.has("SPLIT")) {
             const before = seatBefore?.hands.length ?? 0;
             const wagerBefore = handBefore?.wager ?? 0;
+            const stackBefore = seatBefore?.stack ?? 0;
+            const idsBefore = new Set((seatBefore?.hands ?? []).map((hand) => hand.id));
             table = (await send(actor, gameId, "SPLIT", table.version)).state;
 
             const after = table.seats.find((candidate) => candidate.seatId === seatId);
             expect(after?.hands.length).toBe(before + 1);
-            // Each hand carries its own equal wager, and the second was funded
-            // from the stack rather than conjured.
-            for (const hands of after?.hands ?? []) expect(hands.wager).toBe(wagerBefore);
+            /*
+             * THE TWO HANDS OF **THIS** SPLIT, not every hand the seat holds.
+             *
+             * The first version iterated the whole seat, which is a claim about
+             * hands this split never touched — and it is false as soon as one of
+             * them was DOUBLED. A seat that splits, doubles one half, and then
+             * splits the other holds `[200, 100, 100]`, so the assertion failed
+             * with `expected 200 to be 100` and read like a wager defect.
+             * Reached in a full `test:server` run whose other 198 tests passed,
+             * and rare enough to have survived several before it.
+             *
+             * The rule the specification actually states is about the pair: a
+             * split makes a second hand carrying an equal wager, taken from the
+             * stack. Both halves are asserted — the wagers AND the debit — so
+             * this now proves the "rather than conjured" half of its own comment,
+             * which nothing did before.
+             */
+            const splitPair = (after?.hands ?? []).filter(
+              (hand) => hand.id === handId || !idsBefore.has(hand.id),
+            );
+            expect(splitPair).toHaveLength(2);
+            for (const hand of splitPair) expect(hand.wager).toBe(wagerBefore);
+            expect(after?.stack).toBe(stackBefore - wagerBefore);
             /*
              * SEQUENTIAL INSIDE THE SEAT, stated as the rule rather than as an
              * observation of the common case.

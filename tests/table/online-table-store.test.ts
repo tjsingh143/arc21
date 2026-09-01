@@ -116,11 +116,20 @@ interface Recorded {
   unsubscribes: number;
   /** Game ids the store read a snapshot for — the gap recovery asserts on this. */
   snapshots: string[];
+  /** Game ids this gateway was asked to reset a private stack for. */
+  resets: string[];
 }
 
 function gateway(
   responses: TableSnapshotOutcome[],
-  recorded: Recorded = { commands: [], cashOuts: [], push: null, unsubscribes: 0, snapshots: [] },
+  recorded: Recorded = {
+    commands: [],
+    cashOuts: [],
+    push: null,
+    unsubscribes: 0,
+    snapshots: [],
+    resets: [],
+  },
 ): TableGateway & { recorded: Recorded } {
   let index = 0;
   const next = (): TableSnapshotOutcome =>
@@ -140,6 +149,11 @@ function gateway(
     cashOut: async (gameId) => {
       recorded.cashOuts.push(gameId);
       return { ok: true, walletBalance: 1_000 };
+    },
+    resetPrivateStack: async (gameId) => {
+      recorded.resets.push(gameId);
+      const outcome = next();
+      return outcome.ok ? { ok: true, state: outcome.state } : outcome;
     },
     command: async (_gameId, command) => {
       recorded.commands.push(command);
@@ -358,11 +372,22 @@ describe("commands", () => {
 
     const spy: TableGateway & { recorded: Recorded } = {
       kind: "fake",
-      recorded: { commands: [], cashOuts: [], push: null, unsubscribes: 0, snapshots: [] },
+      recorded: {
+        commands: [],
+        cashOuts: [],
+        push: null,
+        unsubscribes: 0,
+        snapshots: [],
+        resets: [],
+      },
       subscribe: () => () => undefined,
       cashOut: async (gameId) => {
         spy.recorded.cashOuts.push(gameId);
         return { ok: true, walletBalance: 1_000 };
+      },
+      resetPrivateStack: async (gameId) => {
+        spy.recorded.resets.push(gameId);
+        return { ok: true, state: tableState() };
       },
       snapshot: async () => ({ ok: true, state: tableState(), events: [] }),
       command: async (_gameId, command) => {
@@ -476,6 +501,7 @@ describe("connection lost mid-command", () => {
       kind: "fake",
       subscribe: () => () => undefined,
       cashOut: async () => ({ ok: true, walletBalance: 1_000 }),
+      resetPrivateStack: async () => ({ ok: true, state: tableState() }),
       snapshot: async () => ({ ok: true, state: tableState(), events: [] }),
       command: async (_gameId, _command, options) => {
         options?.onRetry?.();
@@ -916,5 +942,169 @@ describe("a seat that is no longer at the table", () => {
 
     expect(useOnlineTableStore.getState().status.kind).toBe("at-table");
     expect(useOnlineTableStore.getState().notice).toMatch(/not your turn/i);
+  });
+});
+
+/**
+ * The free reset at a private table.
+ *
+ * THE DEFECT: `RESET_PRIVATE_STACK` had no caller anywhere in the app. The
+ * server has accepted it since private tables were built — three guards, its own
+ * log status, a rejection-contract test — and no gateway method, no store action
+ * and no control existed, so the specification's "permit a free reset to 5,000
+ * between hands" was a rule nobody could invoke. A player who busted sat out
+ * every remaining hand of the table.
+ *
+ * What is asserted here is the STORE half: that it asks the right boundary, and
+ * that it adopts the server's answer rather than predicting one.
+ * `broke-affordance.test.ts` covers whether anybody can reach it.
+ */
+describe("a free reset at a private table", () => {
+  /** The seat as the engine leaves it once it cannot cover the minimum. */
+  const brokeState = tableState({
+    version: 9,
+    seats: [
+      {
+        seatId: SEAT,
+        userId: "user-1",
+        displayName: "Me",
+        stack: 10,
+        originalBet: 0,
+        insuranceBet: 0,
+        hands: [],
+        connected: true,
+        sittingOut: true,
+        betLocked: false,
+      },
+    ],
+  } as Partial<PublicGameState>);
+
+  const refilled = tableState({
+    version: 10,
+    seats: [
+      {
+        seatId: SEAT,
+        userId: "user-1",
+        displayName: "Me",
+        stack: 5_000,
+        originalBet: 0,
+        insuranceBet: 0,
+        hands: [],
+        connected: true,
+        // Reinstated by the server in the same write: a reset that refilled the
+        // stack and left the seat sitting out would answer a successful reset
+        // with the same "waiting" the player was already looking at.
+        sittingOut: false,
+        betLocked: false,
+      },
+    ],
+  } as Partial<PublicGameState>);
+
+  it("asks the SERVER, naming only the game", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      { ok: true, state: refilled, events: [] },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    await useOnlineTableStore.getState().resetStack();
+
+    // Nothing about an amount. The figure is the ruleset's, applied server-side.
+    expect(spy.recorded.resets).toEqual(["game-1"]);
+    // And not sent as a game command: the economic boundary is `create-session`.
+    expect(spy.recorded.commands).toEqual([]);
+  });
+
+  it("adopts the snapshot that comes back rather than predicting a stack", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      { ok: true, state: refilled, events: [] },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    expect(ownSeat(useOnlineTableStore.getState().status)?.stack).toBe(10);
+
+    await useOnlineTableStore.getState().resetStack();
+
+    const status = useOnlineTableStore.getState().status;
+    expect(status.kind).toBe("at-table");
+    if (status.kind !== "at-table") throw new Error("unreachable");
+    expect(status.state.version).toBe(10);
+    expect(ownSeat(status)?.stack).toBe(5_000);
+    // The seat is playable again, which is the whole point of asking.
+    expect(ownSeat(status)?.sittingOut).toBe(false);
+  });
+
+  it("clears a staged bet and the repeat, which were made against chips that are gone", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      { ok: true, state: refilled, events: [] },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    useOnlineTableStore.setState({ stagedBet: 40, lastBet: 200 });
+
+    await useOnlineTableStore.getState().resetStack();
+
+    expect(useOnlineTableStore.getState().stagedBet).toBe(0);
+    expect(useOnlineTableStore.getState().lastBet).toBe(0);
+  });
+
+  it("keeps the player at the table when the server refuses", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      {
+        ok: false,
+        reason: "refused",
+        message: "a reset is only available when you cannot cover the minimum bet",
+        code: "ILLEGAL_ACTION",
+      },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    await useOnlineTableStore.getState().resetStack();
+
+    expect(useOnlineTableStore.getState().status.kind).toBe("at-table");
+    expect(useOnlineTableStore.getState().notice).toMatch(/cannot cover the minimum/i);
+    expect(useOnlineTableStore.getState().pending).toBe(false);
+  });
+
+  it("leaves the table when the seat itself has closed under it", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      {
+        ok: false,
+        reason: "refused",
+        message: "This table has closed. (ref 1234)",
+        code: "SESSION_CLOSED",
+      },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    await useOnlineTableStore.getState().resetStack();
+
+    const status = useOnlineTableStore.getState().status;
+    expect(status.kind).toBe("unavailable");
+    if (status.kind !== "unavailable") throw new Error("unreachable");
+    expect(status.message).toMatch(/no longer at this table/i);
+  });
+
+  it("does not send a second reset while one is in flight", async () => {
+    const spy = gateway([
+      { ok: true, state: brokeState, events: [] },
+      { ok: true, state: refilled, events: [] },
+      { ok: true, state: refilled, events: [] },
+    ]);
+    setTableGateway(spy);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    const first = useOnlineTableStore.getState().resetStack();
+    await useOnlineTableStore.getState().resetStack();
+    await first;
+
+    expect(spy.recorded.resets).toEqual(["game-1"]);
   });
 });

@@ -214,22 +214,62 @@ async function send(
 /**
  * Plays until the seat is actually mid-hand, with a wager committed.
  *
- * NOT just "bet and lock". A natural — the player's or the dealer's — settles
- * the hand inside `LOCK_BET`'s own cascade and lands on HAND_COMPLETE, where
- * cashing out is perfectly legal. A test that assumed PLAYER_TURNS therefore
- * passed about fifteen times in sixteen and failed the rest, which is exactly
- * the kind of intermittent this repository has spent phases chasing. The dealer
- * is fair, so the answer is to deal again rather than to retry the assertion.
+ * NOT just "bet and lock". `LOCK_BET` completes the betting round, so its own
+ * cascade runs the deal and can stop at any of THREE places, and this helper
+ * has now been wrong about two of them:
+ *
+ *   - PLAYER_TURNS, the ordinary one;
+ *   - HAND_COMPLETE, when a natural — the player's or the dealer's — settles
+ *     the round inside that cascade. Assuming PLAYER_TURNS passed about fifteen
+ *     times in sixteen and failed the rest;
+ *   - **INSURANCE_OFFER, when the dealer's upcard is an ACE.** The cascade
+ *     returns while any seat's insurance decision is `PENDING`, because that is
+ *     a decision only the player can make.
+ *
+ * THE THIRD ONE COST A PHASE OF "UNREPRODUCED, NOT DIAGNOSED". A `test:server`
+ * run failed here once, the message was lost to a truncated capture, the file
+ * then passed alone and the suite passed twice more, and the edge runtime's
+ * CPU-limit counts ruled out the usual explanation — so it was recorded as a
+ * transient. It is not one. It is a dealer ace: about one hand in thirteen, and
+ * this file calls this helper twice, so roughly one run in seven. Reproduced on
+ * purpose in the verification pass — run 8 of 20 — and confirmed from the
+ * engine row, which was sitting at `INSURANCE_OFFER` with an ace showing while
+ * the helper sent `NEXT_HAND` at it and the server correctly answered
+ * WRONG_PHASE.
+ *
+ * Declining is the right answer rather than dealing again: it is what the
+ * absent-player default is, it costs nothing, and it leads to the two phases
+ * this already knew how to handle.
  */
 async function reachPlayerTurns(player: Player, table: Table): Promise<void> {
   for (let attempt = 0; attempt < 12; attempt += 1) {
     await send(player, table, "PLACE_BET", { amount: 100 });
     const locked = await send(player, table, "LOCK_BET");
-    if (locked.phase === "PLAYER_TURNS") return;
+
+    // A dealer ace. Answering the offer is the only way past it, and declining
+    // leads to PLAYER_TURNS or — if the dealer had it — HAND_COMPLETE.
+    let phase = locked.phase;
+    if (phase === "INSURANCE_OFFER") {
+      const declined = await send(player, table, "DECLINE_INSURANCE");
+      if (declined.response.status !== 200) {
+        throw new Error(
+          `could not decline insurance: ${declined.response.raw.slice(0, 300)}`,
+        );
+      }
+      phase = declined.phase;
+    }
+
+    if (phase === "PLAYER_TURNS") return;
+
     // A natural. Settle the round and deal another.
     const next = await send(player, table, "NEXT_HAND");
     if (next.response.status !== 200) {
-      throw new Error(`could not deal another hand: ${next.response.raw.slice(0, 200)}`);
+      // The phase is NAMED, so a future failure here diagnoses itself instead
+      // of being read as a flake for a second time.
+      throw new Error(
+        `could not deal another hand from phase ${phase ?? "unknown"}: ` +
+          next.response.raw.slice(0, 300),
+      );
     }
   }
   throw new Error("twelve consecutive naturals: the shoe is not fair");

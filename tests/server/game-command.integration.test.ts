@@ -2015,7 +2015,24 @@ suite("an expired deadline is resolved by a client asking", () => {
     expect(asked.status).toBe(200);
     expect(asked.body.status).toBe("accepted");
     const moved = asked.body.publicState as { phase: string; version: number };
-    expect(moved.phase).toBe("PLAYER_TURNS");
+    /*
+     * PAST BETTING_OPEN — and not necessarily at PLAYER_TURNS.
+     *
+     * Resolving the betting deadline stakes the minimum for both seats and the
+     * cascade then DEALS, so where it stops depends on the cards: an ordinary
+     * hand reaches PLAYER_TURNS, a dealer ACE parks at INSURANCE_OFFER because
+     * only a player can answer that, and a dealer natural under the peek settles
+     * to HAND_COMPLETE. Asserting PLAYER_TURNS alone passed about twelve runs in
+     * thirteen and failed the rest — reproduced in the phase 6 verification pass
+     * with `expected 'INSURANCE_OFFER' to be 'PLAYER_TURNS'`, from an ace
+     * upcard, in a full `test:server` run whose other 198 tests passed.
+     *
+     * The subject here is that the version-0 poll applied NOTHING and the real
+     * command applied the timeout, so the assertion is that the table moved and
+     * moved somewhere the deal can legitimately reach. CLAUDE.md already
+     * carries this lesson for `LOCK_BET`; it is the same cascade.
+     */
+    expect(["PLAYER_TURNS", "INSURANCE_OFFER", "HAND_COMPLETE"]).toContain(moved.phase);
     expect(moved.version).toBeGreaterThan(stalled.version);
 
     // The defaults are stated and dull, and the engine names each one it applied

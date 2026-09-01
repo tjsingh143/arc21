@@ -1,7 +1,9 @@
 # Arc 21 Launch State
 
 **Current Phase:** 7 — Public Multiplayer (not started)
-**Last Completed Phase:** 6 — Social / Private Multiplayer (PASS, 2026-08-31)
+**Last Completed Phase:** 6 — Social / Private Multiplayer
+(**PASS, 2026-08-31 — independently reverified the same day**;
+see `docs/phase-reports/phase-06-verification.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -19,7 +21,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 3 — Database / Auth | **PASS** | Seven defects fixed, each regression proved to fail without its fix; the account lifecycle run end to end against the real GoTrue. |
 | 4 — Economy / Server Solo | **PASS** | Three defects fixed, each regression proved to fail without its fix; every economic command replayed, every modified-client attack run against the live stack. |
 | 5 — Mobile Product / Career / Stats | **PASS** | Eight defects fixed, each regression proved to fail without its fix; the rename proved against the live stack, the last defect found only by looking at a rendered screen, and a guard that had stopped covering its own subject strengthened and proved to fail on three breaches. |
-| 6 — Social / Private Multiplayer | **PASS** | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. |
+| 6 — Social / Private Multiplayer | **PASS** (reverified) | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. **An independent pass then re-proved every B14/B15 regression by reverting its fix, found three further defects, and re-walked the lifecycle on a freshly reset database** — `phase-06-verification.md`. |
 | 7 — Public Multiplayer | IN PROGRESS | Built; `online-table.yaml` RAN. |
 | 8 — Sprint Tournament | IN PROGRESS | Built; TESTED, with a documented pool-drain fix for a real flake. |
 | 9 — Daily / Leaderboards / Cosmetics | IN PROGRESS | Built; the daily-challenge intermittent is CLOSED (see below). |
@@ -63,6 +65,32 @@ off. Treat every one as unverified until its own phase runs.
   only topic a client may write is the presence roster. **A new channel needs a
   policy the day it is added** — and `supabase/tests/20_authorization_surface.test.sql`
   fails if the policy set changes shape.
+- **AN ACTION IN THE WIRE CONTRACT WITH NO CLIENT CALLER IS A FEATURE THAT DOES
+  NOT EXIST.** `RESET_PRIVATE_STACK` — the specification's free reset for a
+  private player who runs out of chips — was contracted, handled, guarded three
+  ways and logged, and no line of `src`, `app` or `scripts` had ever sent it. A
+  broke seat is sat out by `openBetting` and `getLegalActions` answers
+  NO_ACTIONS, so the table screen said "Waiting for the next hand." for the life
+  of the table. `tests/contracts/every-command-has-a-caller.test.ts` reads the
+  action names out of the contract file and fails for any without a caller; its
+  `SERVER_ONLY` allowlist is deliberately empty. The reset also has to clear
+  `sittingOut`, because `openBetting` clears it only at the START of a hand.
+- **THE `your_turn` PUSH CARRIES A GAME ID AND NO SEAT ID**, because
+  `notifications.data` may hold only short scalars by CHECK constraint.
+  `resolveTableSeat` asks `my_active_session()` when the route did not name a
+  seat, with `checked` in COMPONENT state — the `mayOpenDealtTable` rule again.
+  Without it the one message written to bring an absent player back opened a
+  screen saying "This screen needs a table to open".
+- **THE CASCADE AFTER BETTING CLOSES STOPS IN THREE PLACES.** PLAYER_TURNS,
+  HAND_COMPLETE on a natural, and **INSURANCE_OFFER on a dealer ace** — about
+  one hand in thirteen. That is the whole of the `reachPlayerTurns` failure
+  phase 6 recorded as unreproduced, and it was silently failing a second test
+  too. Any test that closes betting and then asserts a phase must accept all
+  three, or answer the offer.
+- **THE SPECIFICATION'S TEXT IS IN THIS REPOSITORY.** `.spec-extracted.txt` and
+  `.spec-partB.txt` (gitignored); the PDF is at `~/Desktop`. `phase-06.md`
+  states it is not on this machine and worked from `docs/` instead, which is how
+  the free-reset requirement went unread.
 - **Integer chips only**; chips move only through `apply_wallet_delta`; identity
   comes from the verified JWT.
 - **Edge-function imports:** reaching into `shared/` uses `.js` specifiers
@@ -310,20 +338,51 @@ Two iOS simulators, two accounts, one local backend (phase 6's multi-client proo
   membership `left`, guest seat `active` on 5,040; after the guest left, room
   `closed`, session `completed`, 0 held seats, 0 joined members.
 
-ONE UNEXPLAINED TRANSIENT, recorded rather than smoothed over. In the first of
-three `test:server` runs this session, `economy-authority.integration.test.ts`
-threw once inside the `reachPlayerTurns` helper — a `NEXT_HAND` that did not
-answer 200 — and the exact message was lost to a truncated capture. It did not
-recur: the file passed alone, and the full suite passed twice afterwards. The
-edge runtime logged 19 CPU soft-limit events in the failing run and 20 in the
-green one, so runtime pressure does not explain it, and the file imports nothing
-this session touched. Unreproduced, not diagnosed.
+THE UNEXPLAINED TRANSIENT IS NOW EXPLAINED — see
+`docs/phase-reports/phase-06-verification.md`. It was recorded here as "in the
+first of three `test:server` runs, `economy-authority.integration.test.ts` threw
+once inside the `reachPlayerTurns` helper … unreproduced, not diagnosed."
+Reproduced on demand in the verification pass at four runs in twenty, and
+confirmed from the engine row: `LOCK_BET`'s cascade parks at INSURANCE_OFFER
+whenever the dealer's upcard is an ACE, and the helper handled only PLAYER_TURNS
+and HAND_COMPLETE. It is test nondeterminism, not a product defect. Three more
+tests carried the same assumption and are fixed with it — the helper now
+declines the offer, and 25 consecutive runs pass.
 
 Maestro, iPhone 17 Pro (iOS 26.5), dev build + Metro, stack live:
   practice-hand.yaml                exit 0, every step COMPLETED
   career-node.yaml                  exit 0, all 20 hand iterations, stars progressed
   online-table.yaml                 exit 0
   every-screen.yaml                 exit 0, with .env.local moved aside
+```
+
+## Verification pass — 2026-08-31, same day
+
+**Phase 6 — PASS (independently reverified).** `phase-06-verification.md`.
+
+Every B14/B15 regression re-proved by REVERTING its fix. Five further problems
+found and fixed: two product defects (`RESET_PRIVATE_STACK` had no client caller
+and its server half left the seat sitting out; the `your_turn` push led to "this
+screen needs a table to open") and three tests asserting one phase where the
+cascade legitimately has three. Re-measured on a database reset from empty:
+
+```
+npx tsc --noEmit                    exit 0
+npm run lint                        0 errors, 37 warnings (unchanged)
+npm run check:functions             all 3 Edge Functions typecheck
+npm run test:unit                 115 files / 2,280 tests PASS  (+2 files, +41)
+npm run test:server                18 files /   199 tests PASS  (+5)
+supabase test db                   25 files /   494 tests PASS
+supabase db reset                  48 migrations applied from empty, exit 0
+npm run contrast:check             46 pairings, 0 failing
+
+Two iOS simulators, two accounts, one local backend, room PFD86N — ten flows,
+every one exit 0, with the server asked at each checkpoint:
+  before any leave     room active,   session active,    2 members, 2 seats
+  after the HOST left  room active,   session active,    1 member,  1 seat,
+                       host migrated to the guest, host seat `left` on 0
+  after the GUEST left room closed,   session completed, 0 members, 0 seats
+  wallets untouched at 25,000 each; zero table_buy_in/table_cash_out rows
 ```
 
 The database WAS reset during phase 6: all 48 migrations applied from empty,

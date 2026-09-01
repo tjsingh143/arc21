@@ -44,13 +44,20 @@ import {
 } from "../../src/features/table/leave-guard";
 import { useSettings } from "../../src/features/settings/use-settings";
 import {
+  BROKE_AT_PRIVATE_TABLE_BODY,
+  BROKE_AT_PRIVATE_TABLE_TITLE,
   COUNTDOWN_TICK_MS,
   describeDeadline,
   describeDealerUpCardForAnnouncement,
   engineEventsOf,
   insuranceOffer,
   isMyTurn,
+  mayResetPrivateStack,
   ownSeat,
+  RESET_PRIVATE_STACK_LABEL,
+  resolveTableSeat,
+  selectActiveSession,
+  useActiveSessionStore,
   useOnlineTableStore,
   YOUR_TURN_ANNOUNCEMENT,
 } from "../../src/features/table";
@@ -77,7 +84,7 @@ const POLL_MS = 3_000;
 export default function SharedTable() {
   const params = useLocalSearchParams<{ gameId?: string; seatId?: string }>();
   const gameId = typeof params.gameId === "string" ? params.gameId : null;
-  const seatId = typeof params.seatId === "string" ? params.seatId : null;
+  const paramSeatId = typeof params.seatId === "string" ? params.seatId : null;
 
   const status = useOnlineTableStore((state) => state.status);
   const connection = useOnlineTableStore((state) => state.connection);
@@ -98,6 +105,51 @@ export default function SharedTable() {
   const setOwnPresence = usePresenceStore((state) => state.setOwnState);
   const lastEvents = useOnlineTableStore((state) => state.lastEvents);
   const resolveTimeout = useOnlineTableStore((state) => state.resolveTimeout);
+  const resetStack = useOnlineTableStore((state) => state.resetStack);
+
+  /*
+   * WHICH KIND OF TABLE THIS IS, asked of the server rather than carried.
+   *
+   * `my_active_session()` derives the mode from the session row for the seat
+   * the caller actually holds. A route parameter would have been cheaper and
+   * would have been the wrong kind of answer: this screen is reached by a
+   * `router.replace` from the lobby, by a resume card, and by a deep link, and
+   * a value that outlives one of those is precisely the shape of the defect
+   * `mayOpenDealtTable` exists to close.
+   *
+   * Only used to decide whether the free reset is DRAWN. The server checks the
+   * mode again inside `RESET_PRIVATE_STACK`, so a client that got this wrong
+   * would be refused rather than obeyed.
+   */
+  const activeSessionStatus = useActiveSessionStore((state) => state.status);
+  const refreshActiveSession = useActiveSessionStore((state) => state.refresh);
+  const activeSession = useMemo(
+    () => selectActiveSession(activeSessionStatus),
+    [activeSessionStatus],
+  );
+  const [sessionChecked, setSessionChecked] = useState(false);
+
+  /*
+   * THE SEAT, WHICH THE ROUTE DOES NOT ALWAYS CARRY.
+   *
+   * Every in-app route to this screen passes `seatId` — except the `your_turn`
+   * notification, whose payload may hold only a fixed set of short scalars and
+   * carries `game_id` alone. So the one message written specifically to bring an
+   * absent player back landed on "This screen needs a table to open", which is
+   * the opposite of what the notification had just told them. See
+   * `resolveTableSeat`.
+   */
+  const seatLookup = useMemo(
+    () =>
+      resolveTableSeat({
+        gameId,
+        paramSeatId,
+        checked: sessionChecked,
+        session: activeSession,
+      }),
+    [gameId, paramSeatId, sessionChecked, activeSession],
+  );
+  const seatId = seatLookup.kind === "known" ? seatLookup.seatId : null;
 
   /*
    * The same feedback the practice table uses, from the same kind of event
@@ -129,6 +181,25 @@ export default function SharedTable() {
     setOwnPresence("in_game");
     return () => setOwnPresence("available");
   }, [setOwnPresence]);
+
+  /*
+   * Asked once per mount, alongside the snapshot.
+   *
+   * `sessionChecked` is COMPONENT state for the reason `mayOpenDealtTable`'s
+   * `checked` is: the store behind this lookup is a module-level cache the Play
+   * screen also fills, so a `ready` reading can arrive here already carried over
+   * from a previous screen. A failure means the reset is simply not offered —
+   * never a wrong offer — and the next mount asks again.
+   */
+  useEffect(() => {
+    let live = true;
+    void refreshActiveSession().finally(() => {
+      if (live) setSessionChecked(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, [refreshActiveSession]);
 
   // Other people act while this screen is open, so it re-reads on a timer.
   useEffect(() => {
@@ -236,6 +307,31 @@ export default function SharedTable() {
   );
 
   /*
+   * THE FREE RESET, and the reason this branch exists at all.
+   *
+   * A seat that cannot cover the table minimum is sat out by the engine, and
+   * `getLegalActions` answers NO_ACTIONS for a seat that is sitting out — so
+   * every branch below is false and the screen falls through to "Waiting for
+   * the next hand.", hand after hand, for the life of the table. At a private
+   * table the specification's remedy is a free reset to the fixed stack, which
+   * the server has always accepted and nothing had ever sent.
+   */
+  const canResetStack = useMemo(
+    () =>
+      status.kind === "at-table" && seat !== null
+        ? mayResetPrivateStack({
+            isPrivateTable:
+              activeSession?.mode === "private_table" &&
+              activeSession.gameId === status.state.gameId,
+            phase: status.state.phase,
+            sittingOut: seat.sittingOut,
+            connected: seat.connected,
+          })
+        : false,
+    [status, seat, activeSession],
+  );
+
+  /*
    * The split presentation, derived from subscribed state with `useMemo` — the
    * same discipline as `seat` and `legal` above, and for the same reason.
    * `describeSplitHands` returns an empty array for a single hand, so an
@@ -293,12 +389,20 @@ export default function SharedTable() {
    */
   const controlsDisabled = pending || connection.kind === "reconnecting";
 
-  if (!gameId || !seatId) {
+  if (!seatId) {
     return (
       <Frame>
-        <UnavailableNote>
-          This screen needs a table to open. Start or join one from Social.
-        </UnavailableNote>
+        {seatLookup.kind === "checking" ? (
+          // The lookup has not answered yet. Saying "you have no table" here
+          // would be the same dead end one beat earlier.
+          <AppText variant="body" color="textSecondary">
+            Reading the table…
+          </AppText>
+        ) : (
+          <UnavailableNote>
+            This screen needs a table to open. Start or join one from Social.
+          </UnavailableNote>
+        )}
       </Frame>
     );
   }
@@ -532,6 +636,27 @@ export default function SharedTable() {
           onTake={() => void takeInsurance()}
           onDecline={() => void declineInsurance()}
         />
+      ) : canResetStack ? (
+        /*
+         * Ahead of the betting bar, which cannot render for this seat anyway —
+         * a sitting-out seat has no legal actions at all. Placed here so the
+         * one thing a stuck player can do is the one thing on screen.
+         */
+        <SurfaceCard>
+          <AppText variant="bodyStrong" testID="table-broke-title">
+            {BROKE_AT_PRIVATE_TABLE_TITLE}
+          </AppText>
+          <AppText variant="body" color="textSecondary">
+            {BROKE_AT_PRIVATE_TABLE_BODY}
+          </AppText>
+          <Button
+            label={RESET_PRIVATE_STACK_LABEL}
+            testID="table-reset-stack"
+            accessibilityHint="Puts your seat back on this table's full stack of chips"
+            disabled={controlsDisabled}
+            onPress={() => void resetStack()}
+          />
+        </SurfaceCard>
       ) : legal?.canPlaceBet && seat ? (
         <BettingBar
           legal={legal}

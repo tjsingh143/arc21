@@ -142,9 +142,35 @@ export type TableCashOutOutcome =
   | { readonly ok: true; readonly walletBalance: number | null }
   | TableFailure;
 
+/**
+ * What came back from a private table's free reset.
+ *
+ * The snapshot is the server's, exactly as it is for a command: the stack in it
+ * is the ruleset's figure applied server-side, never one this client named.
+ */
+export type TableStackResetOutcome =
+  | { readonly ok: true; readonly state: PublicGameState }
+  | TableFailure;
+
 export interface TableGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   snapshot(gameId: string, options?: TableCallOptions): Promise<TableSnapshotOutcome>;
+  /**
+   * Put a broke seat back on a private table's fixed stack.
+   *
+   * The specification's rule for a private table: "if a private player reaches
+   * zero session chips, permit a free reset to 5,000 between hands; private
+   * mode is unranked." `RESET_PRIVATE_STACK` has been implemented, contracted
+   * and logged on the server since the private-table work landed, and **nothing
+   * in this app had ever sent it** — so a player who busted at a table with
+   * their friends sat out every remaining hand of it, permanently, with the
+   * remedy sitting unreachable behind the wire.
+   *
+   * Named ONLY by its game. The amount is the ruleset's and the three guards —
+   * private table, between hands, actually broke — are all the server's. A
+   * client that could name a stack at an unranked table could name one anywhere.
+   */
+  resetPrivateStack(gameId: string): Promise<TableStackResetOutcome>;
   /**
    * Close this seat and return the remaining stack to the wallet.
    *
@@ -194,6 +220,7 @@ export function createUnconfiguredTableGateway(message: string): TableGateway {
     snapshot: refuse,
     command: refuse,
     cashOut: refuse,
+    resetPrivateStack: refuse,
     subscribe: () => () => undefined,
   };
 }
@@ -376,9 +403,72 @@ export function createSupabaseTableGateway(
     };
   }
 
+  /**
+   * The free reset, at `create-session` rather than `game-command`.
+   *
+   * The same boundary as the cash-out and for the same reason: `create-session`
+   * owns what a seat is worth, `game-command` owns play. Retried on silence like
+   * every other one-shot the player is waiting on — a reset that arrives twice
+   * sets the same stack to the same figure, and the server refuses the second
+   * outright once the first has left the seat able to cover the minimum.
+   */
+  async function requestStackReset(gameId: string): Promise<TableStackResetOutcome> {
+    const denied = await requireSession();
+    if (denied) return denied;
+
+    /*
+     * Minted ONCE, outside the retry loop, for the same reason `send` does it:
+     * every attempt at one intent presents the same key. The server derives no
+     * idempotency record from it today — it does not need one, because a
+     * SECOND reset finds a stack that can cover the minimum and is refused on
+     * that guard — but a request id that changed per attempt would be a lie
+     * about what the attempts are, and the guard is not the place to rely on.
+     */
+    const clientRequestId = globalThis.crypto.randomUUID();
+
+    const attemptOnce = async (): Promise<TableStackResetOutcome> => {
+      const result = await bounded(
+        client.functions.invoke("create-session", {
+          body: {
+            action: "RESET_PRIVATE_STACK",
+            gameId,
+            clientRequestId,
+            clientSentAt: new Date().toISOString(),
+          },
+        }),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+
+      if (result.error) {
+        const rejection = await readRejection(result.error);
+        if (rejection === null) {
+          return { ok: false, reason: "unreachable", message: UNREACHABLE };
+        }
+        return {
+          ok: false,
+          reason: "refused",
+          message: rejection.message,
+          code: rejection.code,
+        };
+      }
+
+      const read = readState(result.data);
+      if (!read) return { ok: false, reason: "unreachable", message: UNREADABLE };
+      return { ok: true, state: read.state };
+    };
+
+    const { value } = await retryWhile(
+      attemptOnce,
+      (outcome) => !outcome.ok && outcome.reason === "unreachable",
+      { ...(policy ? { policy } : {}) },
+    );
+    return value;
+  }
+
   return {
     kind: "supabase",
     cashOut: requestCashOut,
+    resetPrivateStack: requestStackReset,
 
     /**
      * Read the table without changing it.

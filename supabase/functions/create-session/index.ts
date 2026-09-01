@@ -388,11 +388,32 @@ async function resetPrivateStack(
     );
   }
 
+  /*
+   * THE SEAT IS REINSTATED AS WELL AS REFILLED, and the second half is not a
+   * nicety.
+   *
+   * `openBetting` sits a seat out when it cannot cover the minimum, and clears
+   * that flag only at the START of a later hand. So a reset that moved chips
+   * alone left the player holding 5,000 and still `sittingOut` for the betting
+   * window they were looking at — `getLegalActions` returns NO_ACTIONS for a
+   * seat that is sitting out, so the screen would have answered a successful
+   * reset with the same "waiting" it showed before it. The specification's rule
+   * is a free reset BETWEEN HANDS, and the betting window is between hands.
+   *
+   * Safe by construction: this only ever runs at a phase where no wager is
+   * committed (`canCloseSession` above), and only for a stack that has just
+   * been set to a figure the table minimum is a small fraction of, so the
+   * engine's own reinstatement condition — `stack >= minBet` — is already true.
+   * `sitOutNextHand` is untouched: that is a competition's decision about the
+   * NEXT hand and never a consequence of chips.
+   */
   const next = {
     ...state,
     version: state.version + 1,
     seats: state.seats.map((candidate) =>
-      candidate.seatId === seat.id ? { ...candidate, stack: PRIVATE_TABLE_STACK } : candidate,
+      candidate.seatId === seat.id
+        ? { ...candidate, stack: PRIVATE_TABLE_STACK, sittingOut: false }
+        : candidate,
     ),
   };
 
