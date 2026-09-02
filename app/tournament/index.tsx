@@ -40,8 +40,10 @@ export default function SprintTournament() {
   const status = useTournamentStore((state) => state.status);
   const notice = useTournamentStore((state) => state.notice);
   const registering = useTournamentStore((state) => state.registering);
+  const withdrawing = useTournamentStore((state) => state.withdrawing);
   const load = useTournamentStore((state) => state.load);
   const register = useTournamentStore((state) => state.register);
+  const withdraw = useTournamentStore((state) => state.withdraw);
 
   const offerPush = usePushRegistration((state) => state.offer);
   const { settings, update: updateSettings } = useSettings();
@@ -69,6 +71,27 @@ export default function SprintTournament() {
   );
   const shared = useMemo(() => sharedPlacements(standings), [standings]);
   const waiting = entry !== null && entry.tournament_status === "registering";
+  /*
+   * A finished tournament is a RESULT, not a tournament in progress. The lookup
+   * that finds it stops naming it after a day, and until this phase it stopped
+   * naming it the instant the last hand settled — so a player who had just
+   * played twelve hands came back to this screen and found no placement, no
+   * prize and no standings anywhere on it.
+   */
+  const finished = entry !== null && entry.tournament_status === "completed";
+  /*
+   * The table is only worth opening while it is being played. A completed
+   * tournament's session is `completed` too, and every command against it is
+   * refused SESSION_CLOSED — so the old "Review the table" control could only
+   * ever land on a screen saying the table had gone.
+   */
+  const tableToOpen = useMemo(
+    () =>
+      entry && !finished && entry.game_session_id && entry.game_session_seat_id
+        ? { gameId: entry.game_session_id, seatId: entry.game_session_seat_id }
+        : null,
+    [entry, finished],
+  );
 
   /*
    * The advancement cue, fired on a TRANSITION rather than on a state.
@@ -106,12 +129,9 @@ export default function SprintTournament() {
     // Both ids, and the SEAT id rather than the entry id: the table screen finds
     // the player's own hand and controls by seat, so an entry id there renders a
     // table with no buttons on it.
-    if (!entry?.game_session_id || !entry.game_session_seat_id) return;
-    router.push({
-      pathname: "/table/[gameId]",
-      params: { gameId: entry.game_session_id, seatId: entry.game_session_seat_id },
-    });
-  }, [entry]);
+    if (!tableToOpen) return;
+    router.push({ pathname: "/table/[gameId]", params: tableToOpen });
+  }, [tableToOpen]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -205,17 +225,55 @@ export default function SprintTournament() {
                   {describeProgress(entry)}
                 </AppText>
                 {waiting ? (
-                  <AppText variant="caption" color="textDisabled" numeric>
-                    {`${entry.entries_filled} of ${entry.seats_required} seats taken. Your entry is paid and held.`}
-                  </AppText>
+                  <>
+                    <AppText variant="caption" color="textDisabled" numeric>
+                      {`${entry.entries_filled} of ${entry.seats_required} seats taken. Your entry is paid and held.`}
+                    </AppText>
+                    {/*
+                      THE WAY OUT. A tournament fills when three other people
+                      arrive, and nothing guarantees they will — so the screen
+                      that took 500 chips has to be able to give them back. It
+                      is offered only while the field is filling: once the cards
+                      are out the server refuses, because a player must not be
+                      able to buy out of a tournament they are losing.
+                    */}
+                    <Button
+                      label="Leave the queue and refund 500 chips"
+                      testID="tournament-withdraw"
+                      variant="secondary"
+                      accessibilityHint="Gives up the seat and returns the entry fee to your balance"
+                      disabled={withdrawing}
+                      onPress={() => void withdraw()}
+                    />
+                  </>
                 ) : null}
-                {entry.game_session_id && entry.game_session_seat_id ? (
+                {tableToOpen ? (
                   <Button
-                    label={entry.tournament_status === "completed" ? "Review the table" : "Open the table"}
+                    label="Open the table"
                     testID="tournament-open-table"
                     accessibilityHint="Opens the tournament table"
                     onPress={onOpenTable}
                   />
+                ) : null}
+                {finished ? (
+                  <>
+                    <AppText variant="caption" color="textDisabled" numeric testID="tournament-result">
+                      {`Final stack ${formatChips(entry.chips)} chips.`}
+                    </AppText>
+                    {/*
+                      The specification's "rematch/new tournament". A completed
+                      entry does not block a new one — `registerSprint` looks
+                      only at tournaments still registering or running — so this
+                      is the same command the first entry used.
+                    */}
+                    <Button
+                      label="Enter another for 500 chips"
+                      testID="tournament-rematch"
+                      accessibilityHint="Enters a new tournament and takes the entry fee"
+                      disabled={registering}
+                      onPress={() => void onRegister()}
+                    />
+                  </>
                 ) : null}
               </SurfaceCard>
             ) : (

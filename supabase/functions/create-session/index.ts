@@ -173,6 +173,9 @@ Deno.serve(async (request: Request): Promise<Response> => {
     } else if (command.action === "REGISTER_SPRINT") {
       response = await withTransaction((tx) => registerSprint(tx, identity.userId, command, log));
       log.outcome = "sprint_registered";
+    } else if (command.action === "WITHDRAW_SPRINT") {
+      response = await withTransaction((tx) => withdrawSprint(tx, identity.userId, log));
+      log.outcome = "sprint_withdrawn";
     } else {
       log.gameId = command.gameId;
       response = await withTransaction((tx) => cashOut(tx, identity.userId, command, log));
@@ -443,6 +446,11 @@ async function resetPrivateStack(
  * they are already sitting at must land on the existing seat and the existing
  * ledger row, or the guard would lock them out of their own chips.
  *
+ * It also refuses a player holding a PAID sprint entry whose field has not
+ * filled. That is not a seat row yet, and it becomes one without the player
+ * sending anything: the fourth registrant's command seats the whole field. See
+ * the second query for what that cost when it was missing.
+ *
  * This is the CONTROL. `join_matchmaking` refuses an already-seated player too,
  * but that one is a courtesy that keeps a client out of a queue it cannot use —
  * the same relationship the tier's unlock level already has with this function.
@@ -466,6 +474,52 @@ async function assertNoOtherLiveSeat(
   `;
   if (seated.length > 0) {
     throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
+  }
+
+  /*
+   * A player returning to a table they already hold is not taking a new seat, so
+   * nothing further is asked of them. Reached only when `exceptGameId` named a
+   * game — the query above has already proved there is no seat anywhere ELSE.
+   */
+  if (exceptGameId !== null) {
+    const own = await tx<{ id: string }[]>`
+      select s.id from public.game_session_seats s
+      where s.user_id = ${userId}::uuid
+        and s.game_session_id = ${exceptGameId}::uuid
+        and s.status <> 'left'
+      limit 1
+    `;
+    if (own.length > 0) return;
+  }
+
+  /*
+   * A PAID SPRINT ENTRY IS A SEAT ALREADY BOUGHT, even though no seat row exists
+   * for it yet.
+   *
+   * The tournament is dealt by whoever registers fourth, and it seats everybody
+   * already in the field without asking any of them again. So a player who
+   * registers, then opens a solo table while the field is still filling, is
+   * given a second live seat by somebody else's command — the same invariant
+   * break as the one `registerSprint` now refuses, reached from the other end.
+   * Touch one path, check the other.
+   *
+   * The entry is refundable (`WITHDRAW_SPRINT`) and expires by itself, so this
+   * refusal always names something the player can do.
+   */
+  const queued = await tx<{ tournament_id: string }[]>`
+    select e.tournament_id
+    from public.tournament_entries e
+    join public.tournaments t on t.id = e.tournament_id
+    where e.user_id = ${userId}::uuid
+      and e.status = 'registered'
+      and t.status = 'registering'
+    limit 1
+  `;
+  if (queued.length > 0) {
+    throw new CommandError(
+      "SESSION_ALREADY_ACTIVE",
+      `waiting for tournament ${queued[0]?.tournament_id}`,
+    );
   }
 }
 
@@ -1173,6 +1227,17 @@ async function registerSprint(
    */
   await tx`select pg_advisory_xact_lock(hashtext('sprint:registration'))`;
 
+  /*
+   * Clear out tournaments that have sat unfilled past the registration window,
+   * refunding their entries, before allocating anybody into one.
+   *
+   * Here rather than on a schedule for the reason the daily challenge row and
+   * the matchmaking room are both created on demand: a cron job that has not run
+   * yet is an outage, whereas work done by the next person through the door
+   * cannot be late.
+   */
+  await expireStaleSprints(tx);
+
   // Already entered: return the same entry rather than a second one. This is the
   // reconnect path as much as the double-tap path.
   const mine = await tx<
@@ -1190,6 +1255,23 @@ async function registerSprint(
   let entryId = mine[0]?.entry_id ?? null;
 
   if (!tournamentId) {
+    /*
+     * ONE LIVE SEAT, and a tournament seat is a seat.
+     *
+     * `OPEN`, `JOIN_PUBLIC_TABLE` and `START_CAREER_NODE` all refuse a player
+     * who is already sitting somewhere, and this did not — measured against the
+     * running stack: an account holding a live solo table registered, filled a
+     * field, and was dealt a second seat. `my_active_session()` then named only
+     * the newer of the two, which is precisely the failure phase 7 recorded as
+     * "a live seat must be ADDRESSABLE": the solo table's buy-in was stranded at
+     * a game id the player could no longer discover.
+     *
+     * Only on the path that would create a NEW entry. A player already in a
+     * tournament is reconnecting, and the seat the guard would find is their
+     * own.
+     */
+    await assertNoOtherLiveSeat(tx, userId, null);
+
     const open = await tx<{ id: string }[]>`
       select t.id
       from public.tournaments t
@@ -1370,6 +1452,16 @@ async function dealSprintTable(tx: Tx, tournamentId: string, log: LogFields): Pr
       ...ARC_STANDARD_RULES,
       minBet: SPRINT.minBet,
       maxBet: maxBetForHand(1),
+      /*
+       * The format's defining mechanic, and the only table in Arc 21 that has
+       * it: "Betting is sequential. Earlier committed tournament bets become
+       * visible. This is intentional because bankroll-position strategy
+       * matters." The engine takes bets one seat at a time in `state.seats`
+       * order — which is the order the button rotates — and gives each seat its
+       * own seven-second clock, so the specification's "7 seconds/person" is
+       * seven seconds each rather than seven seconds between four people.
+       */
+      sequentialBetting: true,
     },
     seats: rotateToButton(seats, initialButton),
     random: serverRandom(),
@@ -1426,6 +1518,182 @@ async function debitSprintEntry(
       throw new CommandError("INSUFFICIENT_STACK", "the entry fee would overdraw the wallet");
     }
     throw error;
+  }
+}
+
+/**
+ * Give up a seat that has not been dealt, and take the entry fee back.
+ *
+ * THE THREE THINGS THIS HAS TO GET RIGHT.
+ *
+ * 1. IT MUST BE IMPOSSIBLE AFTER THE CARDS ARE OUT. A player cannot buy out of
+ *    a tournament they are losing, so the only withdrawable state is
+ *    `registering` with no table dealt — checked against the tournament row
+ *    held FOR UPDATE, in the same transaction as the refund.
+ * 2. THE REFUND IS KEYED, like every other chip movement in this file. The key
+ *    is derived from the tournament and the player, never from the request id,
+ *    so a retry with a fresh id returns the first result instead of minting a
+ *    second 500 chips.
+ * 3. AN EMPTIED TOURNAMENT IS CLOSED. Otherwise the pool fills with husks that
+ *    later registrants are allocated into one at a time and nothing ever deals
+ *    — which is the very flake the drain helper exists to work around.
+ */
+async function withdrawSprint(tx: Tx, userId: string, log: LogFields): Promise<SessionResponse> {
+  // Same lock as registration, and for the same reason: withdrawing changes how
+  // full a tournament is, which is exactly the number allocation reads.
+  await tx`select pg_advisory_xact_lock(hashtext('sprint:registration'))`;
+
+  const rows = await tx<
+    {
+      entry_id: string;
+      tournament_id: string;
+      entry_status: string;
+      tournament_status: string;
+      game_session_id: string | null;
+    }[]
+  >`
+    select e.id as entry_id, e.tournament_id, e.status as entry_status,
+           t.status as tournament_status,
+           (select g.id from public.game_sessions g where g.tournament_id = t.id limit 1)
+             as game_session_id
+    from public.tournament_entries e
+    join public.tournaments t on t.id = e.tournament_id
+    where e.user_id = ${userId}::uuid
+      and t.status in ('registering', 'running')
+    order by e.registered_at desc
+    limit 1
+  `;
+
+  const mine = rows[0];
+  if (!mine) throw new CommandError("NOT_A_PARTICIPANT", "no tournament entry to withdraw");
+  log.tournamentId = mine.tournament_id;
+
+  if (mine.tournament_status !== "registering" || mine.game_session_id !== null) {
+    // The cards are out. `SESSION_BUSY` rather than a refusal that reads as
+    // final: the entry resolves itself when the tournament finishes.
+    throw new CommandError("SESSION_BUSY", "the tournament has already been dealt");
+  }
+
+  const refunded = await refundSprintEntry(tx, {
+    userId,
+    tournamentId: mine.tournament_id,
+    entryId: mine.entry_id,
+  });
+
+  const cancelled = await closeSprintIfEmpty(tx, mine.tournament_id);
+
+  return {
+    status: "sprint_withdrawn",
+    tournamentId: mine.tournament_id,
+    entryId: mine.entry_id,
+    refundChips: refunded.refunded,
+    walletBalance: refunded.balance,
+    tournamentCancelled: cancelled,
+  };
+}
+
+/**
+ * Marks one entry withdrawn and returns its fee, at most once.
+ *
+ * Shared by the player's own withdrawal and by the server-side expiry below, so
+ * "a cancelled tournament refunds through the ledger" has one implementation
+ * rather than one per trigger. The entry is marked `withdrawn` whether or not
+ * the ledger moved anything: a replay finds the row already withdrawn, reports
+ * a refund of zero, and does not claim a second one.
+ */
+async function refundSprintEntry(
+  tx: Tx,
+  params: { userId: string; tournamentId: string; entryId: string },
+): Promise<{ refunded: number; balance: number }> {
+  await tx`
+    update public.tournament_entries
+    set status = 'withdrawn', chips = 0, score = 0
+    where id = ${params.entryId}::uuid
+  `;
+
+  const key = `sprint_refund:${params.tournamentId}:${params.userId}`;
+  const already = await findLedgerEntry(tx, key);
+  if (already) {
+    return { refunded: 0, balance: await walletBalance(tx, params.userId) };
+  }
+
+  // Nothing was ever debited for this entry — a state the code does not produce,
+  // because the fee and the entry commit together — so there is nothing to give
+  // back. Asked rather than assumed: a refund with no matching debit is minting.
+  const paid = await findLedgerEntry(tx, `sprint_entry:${params.tournamentId}:${params.userId}`);
+  if (!paid) {
+    return { refunded: 0, balance: await walletBalance(tx, params.userId) };
+  }
+
+  const ledger = await applyWalletDelta(tx, {
+    userId: params.userId,
+    delta: SPRINT.entryFee,
+    reason: "tournament_refund",
+    idempotencyKey: key,
+    referenceId: params.tournamentId,
+    metadata: { entryId: params.entryId },
+  });
+  return { refunded: SPRINT.entryFee, balance: ledger.balanceAfter };
+}
+
+/** Cancels a `registering` tournament nobody is left in. Returns whether it did. */
+async function closeSprintIfEmpty(tx: Tx, tournamentId: string): Promise<boolean> {
+  const remaining = await tx<{ n: unknown }[]>`
+    select count(*) as n from public.tournament_entries
+    where tournament_id = ${tournamentId}::uuid and status <> 'withdrawn'
+  `;
+  if (toInteger(remaining[0]?.n ?? 0, "remaining entries") > 0) return false;
+
+  await tx`
+    update public.tournaments
+    set status = 'cancelled', ends_at = now(), updated_at = now()
+    where id = ${tournamentId}::uuid and status = 'registering'
+  `;
+  return true;
+}
+
+/**
+ * Cancels and refunds sprints that have sat unfilled for too long.
+ *
+ * The specification's error handling asks for a refund through the ledger when
+ * a committed tournament is cancelled server-side; this is the trigger, because
+ * a cancellation nothing can cause is not a behaviour. Without it a player who
+ * registered and never came back would hold a paid entry — and be refused every
+ * other online mode — for the life of the database.
+ *
+ * Run from registration, under the same advisory lock, so there is no scheduler
+ * to be late. Bounded to tournaments already older than the window, so ordinary
+ * registration does no extra work once the pool is clean.
+ */
+async function expireStaleSprints(tx: Tx): Promise<void> {
+  const stale = await tx<{ id: string }[]>`
+    select t.id
+    from public.tournaments t
+    where t.code like 'sprint-%'
+      and t.status = 'registering'
+      and t.registration_opens_at < now() - ${SPRINT.registrationWindowMinutes}::int * interval '1 minute'
+    order by t.registration_opens_at
+    limit 8
+    for update
+  `;
+
+  for (const tournament of stale) {
+    const entries = await tx<{ id: string; user_id: string }[]>`
+      select id, user_id from public.tournament_entries
+      where tournament_id = ${tournament.id}::uuid and status <> 'withdrawn'
+    `;
+    for (const entry of entries) {
+      await refundSprintEntry(tx, {
+        userId: entry.user_id,
+        tournamentId: tournament.id,
+        entryId: entry.id,
+      });
+    }
+    await tx`
+      update public.tournaments
+      set status = 'cancelled', ends_at = now(), updated_at = now()
+      where id = ${tournament.id}::uuid
+    `;
   }
 }
 

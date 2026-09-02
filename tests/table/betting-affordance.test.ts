@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { canDealStagedBet } from "../../src/features/table/betting-affordance.js";
+import {
+  canDealStagedBet,
+  describeWaiting,
+} from "../../src/features/table/betting-affordance.js";
 import type { LegalActionSet } from "../../shared/blackjack/legal-actions.js";
 
 /** A betting-phase legal set. Spelled out rather than exporting an engine internal. */
@@ -56,5 +59,52 @@ describe("offering Deal for a staged bet", () => {
     const legal = betting({ canLockBet: false, betBounds: null });
     expect(canDealStagedBet(legal, 0)).toBe(false);
     expect(canDealStagedBet(legal, 25)).toBe(true);
+  });
+
+  /**
+   * A tournament bets one seat at a time, and the engine answers NO_ACTIONS to
+   * every seat but the current bettor. Chips can still be staged locally — the
+   * tray is a client-side pile until Deal is pressed — so without this the
+   * three waiting players would each be offered a Deal the server can only
+   * refuse.
+   */
+  it("does not offer Deal to a seat whose turn to bet has not arrived", () => {
+    const notMyTurn = betting({ canPlaceBet: false, canLockBet: false, betBounds: null });
+    expect(canDealStagedBet(notMyTurn, 0)).toBe(false);
+    expect(canDealStagedBet(notMyTurn, 500)).toBe(false);
+  });
+});
+
+/**
+ * The caption a seat with no control is shown.
+ *
+ * "Waiting for another player." was true and useless once the Sprint Tournament
+ * started betting one seat at a time: the whole reason the format bets in turn
+ * is that you WATCH the bets go in, and a caption that does not say a bet is
+ * being placed hides the mechanic.
+ */
+describe("what a waiting seat is told", () => {
+  it("names the player who is betting, when one is", () => {
+    expect(
+      describeWaiting({ phase: "BETTING_OPEN", activeSeatId: "s2", activeSeatName: "Ada" }),
+    ).toBe("Ada is betting.");
+  });
+
+  it("says a bet is being placed even when the name is missing", () => {
+    expect(
+      describeWaiting({ phase: "BETTING_OPEN", activeSeatId: "s2", activeSeatName: null }),
+    ).toBe("Another player is betting.");
+  });
+
+  it("still says what it always said when nobody is active", () => {
+    expect(
+      describeWaiting({ phase: "HAND_COMPLETE", activeSeatId: null, activeSeatName: null }),
+    ).toBe("Waiting for the next hand.");
+  });
+
+  it("keeps the general wording for a turn that is not a bet", () => {
+    expect(
+      describeWaiting({ phase: "PLAYER_TURNS", activeSeatId: "s3", activeSeatName: "Ada" }),
+    ).toBe("Waiting for another player.");
   });
 });

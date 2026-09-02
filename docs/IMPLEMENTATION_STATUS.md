@@ -416,7 +416,9 @@ Six-deck configurable engine; full state machine; S17 (H17 configurable); 3:2
 naturals; peek; insurance and even money; late surrender; double and DAS; split,
 resplit and split-ace restrictions; integer chip math; 75% penetration with
 between-hands-only reshuffles; transactional shoe-exhaustion abort; predictable
-timeout defaults; sequential multi-seat turn order; typed errors that leave state
+timeout defaults; sequential multi-seat turn order (and, for the Sprint
+Tournament alone, sequential BETTING — one seat at a time with a clock each,
+`rules.sequentialBetting`); typed errors that leave state
 untouched; monotonic versioning; and a sanitisation boundary with automated
 leak assertions.
 

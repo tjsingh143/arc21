@@ -488,7 +488,24 @@ async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
   throw new Error("twelve consecutive naturals: the shoe is not fair");
 }
 
-/** Stands every hand out until the dealer has resolved the round. */
+/**
+ * Stands every hand out until the dealer has resolved the round.
+ *
+ * A PUBLIC TABLE IS NOT THIS FILE'S TABLE. Allocation is global, CI runs two
+ * server files at once, and a public room keeps taking players while it has
+ * room — so a seat this suite never created can legitimately be the one being
+ * waited on. The first version threw "the active seat X is not one of ours"
+ * there, which failed one run in a handful and read as a product defect. It is
+ * the same lesson `public-seat.ts` records one layer up, and the same lesson as
+ * the RLS-scoped reads: a shared database means assertions have to be
+ * relational, and helpers have to cope with somebody else being at the table.
+ *
+ * A stranger's turn is waited out the way the app waits one out: a public table
+ * carries clocks, and any connected client may ask the server to resolve an
+ * expired deadline. `snapshot` sends exactly that request, so the loop's own
+ * next pass advances the table — and if the deadline has not passed yet, the
+ * server refuses and the pass after it tries again.
+ */
 async function standToSettlement(seats: Seated[]): Promise<PublicState> {
   for (let guard = 0; guard < 60; guard += 1) {
     const state = await snapshot(seats[0]!.player, seats[0]!.gameId);
@@ -497,11 +514,18 @@ async function standToSettlement(seats: Seated[]): Promise<PublicState> {
       throw new Error(`unexpected phase while standing out a hand: ${state.phase}`);
     }
     const actor = seats.find((seat) => seat.seatId === state.activeSeatId);
-    if (!actor) throw new Error(`the active seat ${state.activeSeatId} is not one of ours`);
+    if (!actor) {
+      // Somebody else's seat. Their action clock is running; the next pass asks
+      // the server to resolve it, which stands them exactly as the timeout does.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      continue;
+    }
     const stood = await command(actor.player, actor.gameId, "STAND", state.version);
     if (stood.status !== 200) throw new Error(`STAND refused: ${stood.raw.slice(0, 300)}`);
   }
-  throw new Error("the hand never settled");
+  throw new Error(
+    `the hand never settled. Our seats: ${seats.map((seat) => seat.seatId).join(", ")}`,
+  );
 }
 
 async function cashOut(seat: Seated, requestId: string = crypto.randomUUID()) {

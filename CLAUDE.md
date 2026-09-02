@@ -918,6 +918,72 @@ dealer 16 draws to 26, both split hands win) rather than retried, and pinned in
 whatever the hand returned — rather than the debit, which is both correct in
 each case and stronger than what it replaced.
 
+**A MECHANIC THE SPECIFICATION CALLS "INTENTIONAL" CAN BE ABSENT WITH EVERYTHING
+AROUND IT BUILT.** The Sprint Tournament had its exact configuration, its
+boundaries, its prizes, its button rotation and a twelve-hand server run — and
+betting was SIMULTANEOUS. "Betting is sequential. Earlier committed tournament
+bets become visible. This is intentional because bankroll-position strategy
+matters" was the one line nothing implemented: `activeSeatId` was null for the
+whole betting round, the LAST seat in button order could lock before the first
+(measured, 200 to both), and one seven-second clock covered all four players
+rather than "7 seconds/person". `docs/TEST_PLAN.md` even recorded the area as
+"still open: sequential betting asserted as VISIBLE", which reads as though the
+order were already there. `rules.sequentialBetting` is the flag — a posted table
+property beside the bet band, altering no strategy cell and so not bumping
+`rulesetId@version` — and `isBettingTurn` is the ONE definition, shared by
+`getLegalActions`, the reducer and `assertCommandIsLegal`. When a specification
+sentence says "this is intentional", check that the thing it is defending exists.
+
+**A SETTLEMENT-WINDOW TIMEOUT STARTS THE NEXT HAND, so anything that must happen
+BETWEEN hands cannot be keyed on `NEXT_HAND`.** `game-command` ran
+`resolveHandBoundary` only for that command, while the engine's
+`RESOLVE_TIMEOUT` at HAND_COMPLETE calls `advanceToNextHand`. Measured: hand two
+dealt with `scheduled_hands_played` still 0 — no elimination after hand six, no
+ceiling change at hand nine, no button rotation for that hand, and a tournament
+that could never reach twelve, finalise or pay a prize. It silently broke the
+Daily Challenge's twenty-hand stop and a Career node's stars too. Four players
+watching an eight-second clock is not an edge case; it is what a table looks
+like when somebody puts their phone down. `commandStartsNextHand` is the
+predicate, and **the deadline check is part of it**: `assertCommandIsLegal`
+returns early for `RESOLVE_TIMEOUT` because the engine owns that clock, and the
+boundary runs BEFORE the engine — so without it a boundary that ENDS a
+tournament would be reachable by any client willing to ask early.
+
+**A COMMITMENT THAT SOMEBODY ELSE'S COMMAND TURNS INTO A SEAT IS A SEAT.** A
+paid Sprint entry becomes a live seat when the FOURTH player registers — the
+holder sends nothing. So `REGISTER_SPRINT` refusing a seated player is only half
+of it: `assertNoOtherLiveSeat` must refuse a pending entry as well, or a player
+who registers and then opens a solo table is dealt a second seat by a stranger.
+Measured in the first direction: an account holding a live solo table registered,
+was seated, and `my_active_session()` then named only the tournament — stranding
+the solo buy-in at a game id the player could no longer discover, which is
+exactly the failure phase 7 recorded as "a live seat must be ADDRESSABLE". And a
+refusal must name something the player can do, which is why `WITHDRAW_SPRINT`
+and a thirty-minute server-side expiry exist: an entry whose field never fills is
+refundable through the ledger, per the specification's own error handling.
+
+**A STORE ACTION THAT RELOADS AFTER ITSELF WILL HAVE ITS OWN MESSAGE ERASED BY
+THE RELOAD.** `register` and `withdraw` both finish by calling `load()` — they
+must, because what the player now holds is the server's answer — and `load()`
+ended with `notice: null`. Every message either produced was written and wiped a
+few milliseconds later: the refund sentence, and "You were already entered. No
+second fee was taken." Nothing failed; the Maestro flow tapped the control, it
+COMPLETED, the entry went away and the money came back, and the sentence
+explaining it was never on screen. Set the notice AFTER the reload, and do not
+let a poll clear a message the player has not read. Found only by asserting the
+RESULT on a rendered screen — the fifth time in this project.
+
+**A SHARED PUBLIC TABLE IS NOT YOUR TEST'S TABLE.** One `npm run test:server` in
+four failed on "the active seat X is not one of ours" in
+`public-table.integration.test.ts`. Allocation is global, CI runs two files at
+once, and a public room keeps taking players while it has room — so a seat the
+suite never created is legitimately the one being waited on. Reproduced on
+purpose by seating a stranger into a casual table every 1.5 seconds during the
+run, rather than retried. A helper has to cope with somebody else being there:
+wait the stranger out through the product's own timeout, which a snapshot request
+already sends. Same lesson as `public-seat.ts` one layer up, and as the RLS-scoped
+reads one layer down.
+
 ---
 
 ## Product rules that are easy to get wrong
@@ -946,6 +1012,17 @@ each case and stronger than what it replaced.
   the 500 entry fee out, and a prize or the daily reward back in — each through
   `apply_wallet_delta` under a key derived from the tournament/challenge and the
   player, never from a client request id.
+- **A Sprint entry is refundable until the cards are out, and only until then.**
+  A player whose three companions never arrive can take the 500 chips back
+  (`WITHDRAW_SPRINT`), and a `registering` tournament older than thirty minutes
+  is cancelled and refunded by the server — the specification's "if a committed
+  tournament is cancelled server-side, refund through ledger". Once the field
+  fills the withdrawal is refused `SESSION_BUSY`, because nobody buys out of a
+  tournament they are losing.
+- **Tournament betting is SEQUENTIAL and every bet is visible.** One seat at a
+  time in button order, seven seconds each, and the seats that have not bet yet
+  can see what the seats before them committed. It is the only table in Arc 21
+  that works this way; `rules.sequentialBetting` is false everywhere else.
 - **A full sprint is a net SOURCE of 1,500 chips** (2,000 of fees in, 3,500 of
   prizes out), straight from the specification's figures. Deliberate: chips have
   no value and the opening grant is already 25,000.

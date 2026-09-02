@@ -1,8 +1,8 @@
 # Arc 21 Launch State
 
-**Current Phase:** 8 — Sprint Tournament (not started)
-**Last Completed Phase:** 7 — Public Multiplayer
-(**PASS, 2026-09-01**; see `docs/phase-reports/phase-07.md`)
+**Current Phase:** 9 — Daily / Leaderboards / Cosmetics (not started)
+**Last Completed Phase:** 8 — Sprint Tournament
+(**PASS, 2026-09-01**; see `docs/phase-reports/phase-08.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -22,7 +22,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 5 — Mobile Product / Career / Stats | **PASS** | Eight defects fixed, each regression proved to fail without its fix; the rename proved against the live stack, the last defect found only by looking at a rendered screen, and a guard that had stopped covering its own subject strengthened and proved to fail on three breaches. |
 | 6 — Social / Private Multiplayer | **PASS** (reverified) | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. **An independent pass then re-proved every B14/B15 regression by reverting its fix, found three further defects, and re-walked the lifecycle on a freshly reset database** — `phase-06-verification.md`. |
 | 7 — Public Multiplayer | **PASS** | Eight defects fixed, each regression proved to fail without its fix by reverting it in the running system. A public table did not take a second player at all; nobody ever observed `waiting`, so three specified controls were unreachable; a public room's code admitted anyone; its accidental host could kick strangers; a leave racing a join deadlocked. Two TEST defects were hiding real ones. |
-| 8 — Sprint Tournament | IN PROGRESS | Built; TESTED, with a documented pool-drain fix for a real flake. |
+| 8 — Sprint Tournament | **PASS** | Seven defects fixed, six proved to fail by reverting the fix in the running system. Betting was not sequential at all — the format's defining mechanic was absent; a settlement-window timeout dealt the next hand with NO boundary, so a tournament could never finish or pay; a paid entry could never be given up; registering did not check for a seat elsewhere, in either direction; and the result vanished in the transaction that created it. |
 | 9 — Daily / Leaderboards / Cosmetics | IN PROGRESS | Built; the daily-challenge intermittent is CLOSED (see below). |
 | 10 — Backend/API Security | IN PROGRESS | Built; IDOR sweep over 32 tables with two real JWTs. |
 | 11 — Adversarial QA / E2E / CI | IN PROGRESS | 4 Maestro flows exist; **CI has never run on a runner**. |
@@ -238,6 +238,37 @@ off. Treat every one as unverified until its own phase runs.
   one table, one verb and six columns — and it is proved to fail on a wallet
   write, an off-allowlist column and an untyped patch, rather than assumed to.
 
+- **BETTING ORDER IS A POSTED TABLE PROPERTY, AND THE SPRINT TOURNAMENT IS THE
+  ONLY TABLE THAT USES IT.** `BlackjackRules.sequentialBetting` sits beside the
+  bet band; it changes who may stake at a given moment and no cell of the
+  strategy chart, so it does not bump `rulesetId@version`. Before phase 8 it did
+  not exist: `activeSeatId` was null for the whole betting round, every seat
+  could stake at once, and one seven-second clock covered all four players —
+  measured, with the last seat in button order locking before the first and the
+  server answering 200. `isBettingTurn` is the single definition; three callers
+  share it, and the server answers **NOT_YOUR_TURN** rather than WRONG_PHASE.
+- **A SETTLEMENT-WINDOW TIMEOUT STARTS THE NEXT HAND, and it used to start it
+  with no competition boundary at all.** `game-command` ran `resolveHandBoundary`
+  for `NEXT_HAND` only, while the engine's `RESOLVE_TIMEOUT` at HAND_COMPLETE
+  calls `advanceToNextHand`. Measured: hand two dealt with
+  `scheduled_hands_played` still 0 — so hand six never eliminated, the ceiling
+  never rose, and a tournament could never reach twelve or pay a prize. The
+  Daily Challenge's twenty-hand stop and a Career node's stars went the same
+  way. `commandStartsNextHand` is the predicate now, and the deadline check is
+  PART of it: `assertCommandIsLegal` returns early for `RESOLVE_TIMEOUT`, and
+  the boundary runs before the engine.
+- **A SUDDEN-DEATH HAND IS AN EXTRA HAND AT ITS BOUNDARY.** It does not consume
+  one of the twelve and it carries the boundary's ceiling, which is why
+  `tournaments.scheduled_hands_played` is counted separately from the engine's
+  hand number. The button keeps rotating through it.
+- **A TOURNAMENT ENTRY IS A SEAT ALREADY BOUGHT.** It becomes a real seat when
+  somebody ELSE registers fourth, so `assertNoOtherLiveSeat` refuses a pending
+  entry as well as a live seat — and `REGISTER_SPRINT` refuses a player already
+  seated, which it did not, so an account holding a solo table was dealt a
+  second live seat and `my_active_session()` lost the first. The refusal names
+  something the player can do, because `WITHDRAW_SPRINT` now exists: an entry
+  whose field never fills is refundable, and a `registering` tournament older
+  than thirty minutes is cancelled and refunded through the ledger.
 - **A UNIT TEST CANNOT SEE A SHAPE.** `HandSelector`'s chip row rendered as two
   ELLIPSES with the labels spilling out of them — a `ScrollView` with no
   `flexGrow: 0` expanded to fill `playerArea`, its children stretched, and
@@ -247,8 +278,16 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260901120000_public_tables_keep_taking_players.sql`
-(49 migrations, all applied from scratch cleanly on 2026-09-01).
+`supabase/migrations/20260902120000_sprint_withdrawal_and_result.sql`
+(50 migrations, all applied from scratch cleanly on 2026-09-01).
+
+Phase 8 added one:
+
+- `20260902120000_sprint_withdrawal_and_result.sql` — `tournament_refund` on
+  `ledger_reason`; `my_sprint_entry` returns a tournament that finished within
+  the last day, so the result page has something to render, and stops counting
+  withdrawn entries towards the field; `sprint_standings` drops withdrawn
+  entries. Both functions copied from the LAST migration that defined them.
 
 Phase 7 added one:
 
@@ -324,6 +363,16 @@ Phase 6 added three:
   identity from `auth.uid()`, and it mirrors `assertNoOtherLiveSeat`'s predicate.
 - `src/features/table/active-session.ts` — the RN-free half of the resume path:
   parsing, wording and the `canResume` predicate the card is gated on.
+- `shared/blackjack/legal-actions.ts` — `isBettingTurn`, the single answer to
+  "may this seat stake chips right now". True for every seat at an ordinary
+  table; true for one seat at a time at a sequential one.
+- `_shared/session-boundary.ts` — `commandStartsNextHand`, the single answer to
+  "is this the command that starts the next hand". `NEXT_HAND`, or a
+  `RESOLVE_TIMEOUT` at HAND_COMPLETE whose deadline has actually passed.
+- `tests/server/sprint-table.ts` — the ONE way a server test gets a four-player
+  Sprint Tournament. Drains the waiting pool first, and never assumes a betting
+  order: it reads the one the server published, which is also the only way a
+  test can notice if that order stops being enforced.
 
 ## Known unresolved defects
 

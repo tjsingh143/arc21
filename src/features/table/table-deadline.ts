@@ -120,6 +120,44 @@ export function shouldRequestTimeoutResolution(params: {
 }
 
 /**
+ * Whether the running clock belongs to THIS seat.
+ *
+ * Pulled out of the table screen because it is a fact about the snapshot, and
+ * because it has been wrong twice in ways nothing could assert about a string:
+ * once by taking only the phase (the host's screen read "you stand if you do
+ * not" while the other seat was being waited on), and once by assuming every
+ * unlocked seat owns the betting clock — which stopped being true the moment
+ * the Sprint Tournament started betting one seat at a time.
+ *
+ * `activeSeatId` is null during BETTING_OPEN at an ORDINARY table, where the
+ * one clock covers everybody who has not locked; at a sequential table it names
+ * the seat whose seven seconds are running. Both are the same question asked of
+ * the server's own answer, rather than two rules.
+ */
+export function deadlineAwaitsSeat(params: {
+  readonly phase: string;
+  readonly seatId: string;
+  readonly activeSeatId: string | null;
+  readonly betLocked: boolean;
+  readonly sittingOut: boolean;
+  readonly canAnswerInsurance: boolean;
+}): boolean {
+  switch (params.phase) {
+    case "BETTING_OPEN":
+      if (params.betLocked || params.sittingOut) return false;
+      return params.activeSeatId === null || params.activeSeatId === params.seatId;
+    case "INSURANCE_OFFER":
+      return params.canAnswerInsurance;
+    case "PLAYER_TURNS":
+      return params.activeSeatId === params.seatId;
+    default:
+      // HAND_COMPLETE waits on nobody in particular: whoever asks first starts
+      // the next round for everyone.
+      return true;
+  }
+}
+
+/**
  * What the countdown says.
  *
  * It names the default as well as the number, because a bare "3" beside a

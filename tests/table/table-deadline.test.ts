@@ -21,6 +21,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  deadlineAwaitsSeat,
   describeDeadline,
   secondsUntilDeadline,
   shouldRequestTimeoutResolution,
@@ -255,5 +256,73 @@ describe("the countdown says whose clock it is", () => {
     expect(describeDeadline({ ...asked, awaitingYou: true })).toBe(
       describeDeadline({ ...asked, awaitingYou: false }),
     );
+  });
+});
+
+/**
+ * WHOSE CLOCK IT IS, at a table that bets one seat at a time.
+ *
+ * The table screen derived this inline as "I have not locked and I am not
+ * sitting out", which is exactly right while a single betting clock covers the
+ * whole table and exactly wrong once the Sprint Tournament started giving each
+ * seat its own seven seconds: three players who had not bet yet would each have
+ * been told "7 seconds to bet · the table minimum is staked if you do not"
+ * while somebody else's clock was running. The same class of defect as the
+ * PLAYER_TURNS one above, one phase later.
+ */
+describe("who a betting clock belongs to", () => {
+  const base = {
+    seatId: "mine",
+    betLocked: false,
+    sittingOut: false,
+    canAnswerInsurance: false,
+  } as const;
+
+  it("belongs to every unlocked seat at an ordinary table", () => {
+    // `activeSeatId` is null during BETTING_OPEN when betting is simultaneous.
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "BETTING_OPEN", activeSeatId: null }),
+    ).toBe(true);
+  });
+
+  it("belongs to the named bettor alone at a sequential table", () => {
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "BETTING_OPEN", activeSeatId: "mine" }),
+    ).toBe(true);
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "BETTING_OPEN", activeSeatId: "theirs" }),
+    ).toBe(false);
+  });
+
+  it("belongs to nobody who has already bet or is sitting out", () => {
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "BETTING_OPEN", activeSeatId: null, betLocked: true }),
+    ).toBe(false);
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "BETTING_OPEN", activeSeatId: null, sittingOut: true }),
+    ).toBe(false);
+  });
+
+  it("follows the active seat during player turns and the offer during insurance", () => {
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "PLAYER_TURNS", activeSeatId: "mine" }),
+    ).toBe(true);
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "PLAYER_TURNS", activeSeatId: "theirs" }),
+    ).toBe(false);
+    expect(
+      deadlineAwaitsSeat({
+        ...base,
+        phase: "INSURANCE_OFFER",
+        activeSeatId: null,
+        canAnswerInsurance: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("waits on everybody between hands", () => {
+    expect(
+      deadlineAwaitsSeat({ ...base, phase: "HAND_COMPLETE", activeSeatId: null }),
+    ).toBe(true);
   });
 });

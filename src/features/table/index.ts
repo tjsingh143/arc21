@@ -29,6 +29,7 @@ export {
 
 export {
   COUNTDOWN_TICK_MS,
+  deadlineAwaitsSeat,
   describeDeadline,
   secondsUntilDeadline,
   shouldRequestTimeoutResolution,

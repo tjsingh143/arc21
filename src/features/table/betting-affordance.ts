@@ -32,7 +32,48 @@ import type { LegalActionSet } from "../../../shared/blackjack/legal-actions.js"
 
 export function canDealStagedBet(legal: LegalActionSet, stagedBet: number): boolean {
   if (legal.canLockBet) return true;
+  /*
+   * The seat may not stake anything right now, so a staged pile is not a bet
+   * worth offering to send.
+   *
+   * This became reachable with the Sprint Tournament, which bets one seat at a
+   * time: every seat but the current bettor is answered NO_ACTIONS, and the
+   * earlier fallback ("no bounds, so trust whatever is staged") would have
+   * offered Deal to all three of them. The engine would have refused it
+   * NOT_YOUR_TURN, which is the right answer to the wrong question — a control
+   * that can only be refused should not be offered.
+   */
+  if (!legal.canPlaceBet) return false;
   const bounds = legal.betBounds;
   if (!bounds) return stagedBet > 0;
   return stagedBet >= bounds.min && stagedBet <= bounds.max;
+}
+
+/**
+ * What a seat with no control is actually waiting for.
+ *
+ * The table screen used to answer this with two sentences — "Waiting for the
+ * next hand." when nobody was active and "Waiting for another player."
+ * otherwise — and the second became misleading the moment a table started
+ * betting one seat at a time. The Sprint Tournament's whole reason for
+ * sequential betting is that a player WATCHES the bets go in and reacts to
+ * them; a caption that does not say a bet is being placed hides the mechanic
+ * the format is built on.
+ *
+ * Pure and separate so it can be asserted without rendering React Native, like
+ * `canDealStagedBet` above.
+ */
+export function describeWaiting(params: {
+  readonly phase: string;
+  readonly activeSeatId: string | null;
+  /** The active seat's display name, when the snapshot carries one. */
+  readonly activeSeatName: string | null;
+}): string {
+  if (params.activeSeatId === null) return "Waiting for the next hand.";
+  if (params.phase === "BETTING_OPEN") {
+    return params.activeSeatName
+      ? `${params.activeSeatName} is betting.`
+      : "Another player is betting.";
+  }
+  return "Waiting for another player.";
 }

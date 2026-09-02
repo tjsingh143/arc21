@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(30);
+select plan(37);
 
 -- ---------------------------------------------------------------------------
 -- Every game mode is classified as wallet-backed or not
@@ -195,6 +195,142 @@ select is(
   150,
   'and a hundred and fifty XP with it'
 );
+
+-- ---------------------------------------------------------------------------
+-- Leaving the queue, and reading a result that has just been decided
+-- ---------------------------------------------------------------------------
+--
+-- Two holes phase 8 closed, both measured against the running stack first.
+--
+-- `my_sprint_entry` filtered on `registering`/`running`, and finalisation sets a
+-- tournament `completed` in the same transaction as the last hand — so the one
+-- lookup the client has for finding its own tournament stopped naming it the
+-- instant it ended, and the Sprint screen offered a fresh entry with no
+-- placement and no prize anywhere on it.
+--
+-- And a player whose field never filled had no way out: registration returns the
+-- SAME entry to anybody already in one, so the 500 chips were spent for ever.
+-- `WITHDRAW_SPRINT` marks the entry `withdrawn`; these assert that a withdrawn
+-- entry stops being a competitor everywhere a competitor is counted.
+--
+-- FIXTURES ARE SCOPED TO IDS THIS FILE OWNS, per the header: every id below is
+-- in this file's own `0c00…` range and every count is filtered to it.
+
+insert into auth.users (id, email, aud, role) values
+  ('0c000000-0000-4000-8000-000000000002', 'sprint-b@arc21.test', 'authenticated', 'authenticated'),
+  ('0c000000-0000-4000-8000-000000000003', 'sprint-c@arc21.test', 'authenticated', 'authenticated');
+
+insert into public.tournaments
+  (id, code, name, format, status, ruleset_id, entry_fee_chips, starting_chips,
+   min_entries, max_entries, registration_opens_at, starts_at, ends_at)
+values
+  ('0c000000-0000-4000-8000-0000000000a1', 'sprint-pgtap-open', 'Sprint',
+   'leaderboard', 'registering',
+   (select id from public.rulesets where is_active order by created_at limit 1),
+   500, 10000, 4, 4, now(), now(), null),
+  ('0c000000-0000-4000-8000-0000000000a2', 'sprint-pgtap-done', 'Sprint',
+   'leaderboard', 'completed',
+   (select id from public.rulesets where is_active order by created_at limit 1),
+   500, 10000, 4, 4, now() - interval '2 hours', now() - interval '2 hours', now());
+
+insert into public.tournament_entries
+  (id, tournament_id, user_id, status, bracket_seed, chips, score, placement,
+   prize_chips, prize_xp, registered_at)
+values
+  -- Still waiting in the open tournament.
+  ('0c000000-0000-4000-8000-0000000000b1', '0c000000-0000-4000-8000-0000000000a1',
+   '0c000000-0000-4000-8000-000000000002', 'registered', 1, 0, 0, null, 0, 0,
+   now() - interval '5 minutes'),
+  -- Took the fee back and left it.
+  ('0c000000-0000-4000-8000-0000000000b2', '0c000000-0000-4000-8000-0000000000a1',
+   '0c000000-0000-4000-8000-000000000003', 'withdrawn', 2, 0, 0, null, 0, 0,
+   now() - interval '6 minutes'),
+  -- Finished second in the tournament that has just ended.
+  ('0c000000-0000-4000-8000-0000000000b3', '0c000000-0000-4000-8000-0000000000a2',
+   '0c000000-0000-4000-8000-000000000002', 'active', 1, 11500, 11500, 2, 1000, 120,
+   now() - interval '3 hours');
+
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0c000000-0000-4000-8000-000000000002","role":"authenticated"}';
+
+-- The live entry wins over the completed one: `order by registered_at desc`.
+select is(
+  (select tournament_id from public.my_sprint_entry()),
+  '0c000000-0000-4000-8000-0000000000a1'::uuid,
+  'a player still waiting is shown the tournament they are waiting in'
+);
+
+-- The withdrawn seat is not somebody the field is waiting for. Counting it would
+-- tell three people the fourth had arrived.
+select is(
+  (select entries_filled from public.my_sprint_entry()),
+  1,
+  'and a withdrawn entry is not counted towards the field'
+);
+
+select is(
+  (select count(*)::int from public.sprint_standings('0c000000-0000-4000-8000-0000000000a1')),
+  1,
+  'a withdrawn entry is not a competitor in the standings'
+);
+
+reset role;
+
+-- Now the only entry this player holds is the finished one.
+update public.tournaments
+set status = 'cancelled'
+where id = '0c000000-0000-4000-8000-0000000000a1';
+
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0c000000-0000-4000-8000-000000000002","role":"authenticated"}';
+
+select is(
+  (select tournament_id from public.my_sprint_entry()),
+  '0c000000-0000-4000-8000-0000000000a2'::uuid,
+  'a tournament that finished within the day is still findable, so the result page has something to render'
+);
+
+select is(
+  (select placement from public.my_sprint_entry()),
+  2,
+  'carrying the placement the player finished on'
+);
+
+reset role;
+
+-- Older than the window, and it stops being presented as the current tournament.
+update public.tournaments
+set ends_at = now() - interval '2 days'
+where id = '0c000000-0000-4000-8000-0000000000a2';
+
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0c000000-0000-4000-8000-000000000002","role":"authenticated"}';
+
+select is(
+  (select count(*)::int from public.my_sprint_entry()),
+  0,
+  'but a result older than a day is no longer the player''s current tournament'
+);
+
+reset role;
+
+-- A withdrawn entry is not a tournament anybody took part in, so it must not
+-- show up in the competition record either. Written before a withdrawal could
+-- exist, which is exactly why it is worth asserting now that one can.
+set local role authenticated;
+set local request.jwt.claims to
+  '{"sub":"0c000000-0000-4000-8000-000000000003","role":"authenticated"}';
+
+select is(
+  (select tournaments_entered from public.my_competition_record()),
+  0,
+  'a withdrawn entry is not a tournament the player took part in'
+);
+
+reset role;
 
 select * from finish();
 rollback;

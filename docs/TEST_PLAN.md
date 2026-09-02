@@ -212,20 +212,34 @@ placement ordering (a survivor always finishes above an eliminated player with
 more chips), pooled-and-floored prizes for a shared placement, and the invariant
 that a payout never exceeds the schedule.
 
-`tests/server/game-command.integration.test.ts` plays a whole four-player
+`tests/server/sprint-tournament.integration.test.ts` plays a whole four-player
 tournament through the real functions: entry debited once per player and not again
 on a retry with a fresh request id, four equal stacks, twelve scheduled hands, the
 ceiling changing, the button moving every hand, exactly one elimination after hand
 six, placements assigned to all four, prizes never exceeding the schedule, and the
-wallet arithmetic reconciling to fees-out minus prizes-in.
+wallet arithmetic reconciling to fees-out minus prizes-in. It also drives one hand
+by letting the SETTLEMENT WINDOW lapse, because the competition boundary used to
+be skipped on that path entirely.
+
+Betting order is asserted where it is enforced: only `activeSeatId` may stake,
+everybody else is refused `NOT_YOUR_TURN` and is offered no bet bounds at all, the
+turn moves one seat along per lock with its own seven-second clock, and the
+committed bet is on the snapshot every seat reads. Three further cases construct a
+STANDING in `private.game_state_private` — an elimination tie, a player below the
+table minimum, a tie at the top after hand twelve — because a fair shoe will not
+produce those on demand and retrying until it does is a flake by construction.
 
 `supabase/tests/16_sprint_and_daily.test.sql` holds `sprint_format()` to the
-specification field by field, so the client's format, the server's enforcement and
-`SPRINT` in `tournament-format.ts` cannot drift apart.
+specification field by field, and the server suite compares that published format
+with `SPRINT` in `tournament-format.ts` directly, so the client's format, the
+server's enforcement and the constant cannot drift apart.
 
-Still open: sequential betting asserted as *visible* to other seats (the data is
-sent; no test yet reads one seat's staged bet from another's snapshot), and hints
-disabled in ranked play asserted on device.
+On a device: `tests/e2e/sprint-wait-and-withdraw.yaml` pays an entry, waits, and
+takes the fee back through the screen; `tests/e2e/sprint-table.yaml` completes a
+field seeded from outside the device and asserts the table renders and takes a
+bet in turn. Hints disabled in ranked play are asserted on the server (no `advice`
+on any tournament snapshot, and no ranked decision rows) rather than on a
+screenshot.
 
 ### Daily challenge suite — **written**
 `tests/daily/daily-challenge.test.ts` (24 assertions) covers same-seed-same-shoe

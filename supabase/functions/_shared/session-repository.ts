@@ -488,6 +488,10 @@ export type LedgerReason =
   | "career_reward"
   | "tournament_entry"
   | "tournament_prize"
+  // A cancelled or withdrawn sprint entry, given back. Kept distinct from a
+  // negative `tournament_entry` so a refund reads as a refund in the ledger a
+  // player can see, rather than as an entry fee with the sign flipped.
+  | "tournament_refund"
   | "daily_challenge_reward"
   | "daily_top_up"
   | "correction"

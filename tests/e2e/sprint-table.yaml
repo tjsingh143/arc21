@@ -1,0 +1,132 @@
+# Arc 21 — Sprint Tournament, step 2: the field fills and the table is dealt.
+#
+#   npx tsx scripts/e2e-sprint-field.ts --stage waiting
+#   npx tsx scripts/e2e-sprint-field.ts --stage fill
+#   maestro test --device <udid> tests/e2e/mc-sign-in.yaml -e EMAIL=e2e-lobby@arc21.test
+#   maestro test --device <udid> tests/e2e/sprint-table.yaml
+#
+# THREE OTHER PLAYERS ARRIVE FROM OUTSIDE THE DEVICE, because a tournament needs
+# four accounts before a card is dealt and Maestro drives one simulator. They
+# register through the real `REGISTER_SPRINT` and pay the real entry fee; the
+# device account does everything through the screen. See
+# `scripts/e2e-sprint-field.ts`.
+#
+# WHAT THIS PROVES. That the tournament table is REACHABLE and RENDERS — the
+# thing four separate defects in this repository have turned on. `lockBet` was
+# correct and wired to a button that could not be pressed; `RESET_PRIVATE_STACK`
+# was correct and had no caller; the `your_turn` push led to a screen saying it
+# needed a table to open; and the private lobby's `dealt` pointer only ever
+# opened for the host. Every one of them passed its unit tests.
+#
+# BETTING IS SEQUENTIAL HERE, and the button is chosen by the server's CSPRNG —
+# so whether this device holds the FIRST bet is a coin flip, and both answers
+# are correct. The last section therefore checks the "not my turn" wording
+# conditionally and then waits, unconditionally, for the turn to arrive: the
+# other three seats are absent, so this client's own timeout requests stake each
+# of them the table minimum in turn until the tray reaches this player.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible: "Sprint Tournament"
+    timeout: 20000
+
+# --- Enter, completing the field -------------------------------------------
+# Inside a small repeat: a tap issued while a screen is settling can be
+# swallowed, and once it lands there is nothing left to tap.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "tournament-register"
+    commands:
+      - tapOn:
+          id: "tournament-register"
+          optional: true
+
+# The screen polls every three seconds, so this is the transition from
+# "Waiting for 3 more players." to a running tournament.
+- extendedWaitUntil:
+    visible:
+      id: "tournament-open-table"
+    timeout: 60000
+- assertVisible:
+    id: "tournament-progress"
+
+# --- The table --------------------------------------------------------------
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "tournament-open-table"
+    commands:
+      - tapOn:
+          id: "tournament-open-table"
+          optional: true
+
+# A tournament table carries clocks — seven seconds a bettor, fifteen a decision
+# — so the countdown is the proof the screen resolved a real session rather than
+# an empty state.
+- extendedWaitUntil:
+    visible:
+      id: "table-countdown"
+    timeout: 60000
+- assertVisible:
+    id: "table-rules"
+- assertVisible:
+    id: "table-my-stack"
+
+# The tournament's own bet band, read from the snapshot rather than from copy.
+- assertVisible: ".*10,000.*"
+
+# --- Sequential betting, from both sides of it ------------------------------
+#
+# If the button did not land here, the screen must SAY who is betting. "Waiting
+# for another player." was true and useless once betting became sequential,
+# because watching the bets go in is the whole point of the format.
+- runFlow:
+    when:
+      notVisible:
+        id: "bet-deal"
+    commands:
+      - assertVisible:
+          id: "table-waiting"
+      - assertVisible: ".*is betting.*"
+
+# AND THE TURN COMES ROUND, whoever it started with.
+#
+# The three other seats are not being played by anybody, and Arc 21 runs no
+# long-lived game process — so the only thing that moves a lapsed seven-second
+# bet clock is a connected client asking the server to resolve it. This device
+# is that client. Each absent seat is staked the table minimum in turn, exactly
+# as the countdown promises, and the tray arrives here within a few clocks.
+#
+# That is the absent-player default and the sequential turn order proved
+# together, on a rendered screen, rather than as two functions.
+- extendedWaitUntil:
+    visible:
+      id: "bet-deal"
+    timeout: 120000
+- assertVisible:
+    id: "chip-100"
+- tapOn:
+    id: "chip-100"
+- tapOn:
+    id: "bet-deal"
+
+# The bet landed and the turn left: the tray is gone. Asserting the RESULT, not
+# the tap — a step that COMPLETED did not necessarily do anything.
+- extendedWaitUntil:
+    notVisible:
+      id: "bet-deal"
+    timeout: 30000

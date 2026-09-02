@@ -153,6 +153,33 @@ export const registerSprintRequestSchema = z.strictObject({
 });
 
 /**
+ * Leave the Sprint Tournament queue and take the entry fee back.
+ *
+ * THE HOLE THIS CLOSES. Registration debits 500 chips and holds the player in
+ * the oldest tournament still short of players — and until this existed there
+ * was no way out of one that never filled. `registerSprint` returns the SAME
+ * entry to anybody already in a `registering` or `running` tournament, so a
+ * player whose three companions never arrived was locked to it permanently:
+ * the fee spent, the screen reading "Waiting for 3 more players", and every
+ * other online mode refusing them for as long as it lasted. Measured, not
+ * inferred.
+ *
+ * The specification's own error handling asks for exactly this half: "if a
+ * committed tournament is cancelled server-side, refund through ledger". A
+ * cancellation with no way to trigger it is a feature that does not exist, so
+ * the player may trigger it themselves while the field is still filling.
+ *
+ * It names no tournament. The server refunds the entry the CALLER holds, which
+ * is the only one they could have, for the same reason registration lets nobody
+ * choose which tournament to sit in.
+ */
+export const withdrawSprintRequestSchema = z.strictObject({
+  action: z.literal("WITHDRAW_SPRINT"),
+  clientRequestId: uuidSchema,
+  clientSentAt: isoTimestampSchema,
+});
+
+/**
  * Start or resume a reward-bearing attempt at a career node.
  *
  * The client names the NODE and nothing else. Not the shoe, not the bankroll,
@@ -202,6 +229,7 @@ export const sessionRequestSchema = z.discriminatedUnion("action", [
   joinPublicTableRequestSchema,
   startDailyChallengeRequestSchema,
   registerSprintRequestSchema,
+  withdrawSprintRequestSchema,
   startCareerNodeRequestSchema,
   submitCareerDrillRequestSchema,
 ]);
@@ -286,6 +314,24 @@ export const sprintRegisteredResponseSchema = z.strictObject({
 });
 
 /**
+ * The entry given up and the fee returned.
+ *
+ * `refundChips` is what actually moved, so a replay reports zero rather than
+ * claiming a second refund — the same honesty `entryFee` shows on a re-entry.
+ * `tournamentCancelled` is true when the withdrawal emptied the tournament and
+ * the server closed it; a tournament with other people still waiting in it
+ * carries on without the leaver.
+ */
+export const sprintWithdrawnResponseSchema = z.strictObject({
+  status: z.literal("sprint_withdrawn"),
+  tournamentId: uuidSchema,
+  entryId: uuidSchema,
+  refundChips: chipAmountSchema,
+  walletBalance: chipAmountSchema,
+  tournamentCancelled: z.boolean(),
+});
+
+/**
  * A career node, opened.
  *
  * Two shapes in one response because a career node has two formats and the
@@ -346,6 +392,7 @@ export const sessionResponseSchema = z.discriminatedUnion("status", [
   publicSeatTakenResponseSchema,
   dailyChallengeStartedResponseSchema,
   sprintRegisteredResponseSchema,
+  sprintWithdrawnResponseSchema,
   careerNodeStartedResponseSchema,
   careerDrillGradedResponseSchema,
   rejectedResponseSchema,
@@ -364,6 +411,8 @@ export type ResetPrivateStackRequest = z.infer<typeof resetPrivateStackRequestSc
 export type JoinPublicTableRequest = z.infer<typeof joinPublicTableRequestSchema>;
 export type StartDailyChallengeRequest = z.infer<typeof startDailyChallengeRequestSchema>;
 export type RegisterSprintRequest = z.infer<typeof registerSprintRequestSchema>;
+export type WithdrawSprintRequest = z.infer<typeof withdrawSprintRequestSchema>;
+export type SprintWithdrawnResponse = z.infer<typeof sprintWithdrawnResponseSchema>;
 export type DailyChallengeStartedResponse = z.infer<typeof dailyChallengeStartedResponseSchema>;
 export type SprintRegisteredResponse = z.infer<typeof sprintRegisteredResponseSchema>;
 export type SessionRequest = z.infer<typeof sessionRequestSchema>;

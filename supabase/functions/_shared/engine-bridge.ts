@@ -20,6 +20,7 @@ import {
   CryptoRandomSource,
   EngineError,
   getLegalActions,
+  isBettingTurn,
   toPublicState,
   type BlackjackGameState,
   type EngineCommand,
@@ -180,6 +181,22 @@ export function assertCommandIsLegal(
 
   const seat = seatOf(state, seatId);
   const legal = getLegalActions(state, seatId);
+
+  /*
+   * A sequential table takes bets one seat at a time, and a seat whose turn has
+   * not arrived is not doing anything illegal. The same distinction the player
+   * actions below draw: NOT_YOUR_TURN is a synchronisation problem the client
+   * recovers from by re-reading the snapshot, where WRONG_PHASE reads as a bug
+   * and ILLEGAL_ACTION reads as an attack.
+   */
+  if (
+    (request.type === "PLACE_BET" || request.type === "LOCK_BET") &&
+    state.phase === "BETTING_OPEN" &&
+    !seat.betLocked &&
+    !isBettingTurn(state, seatId)
+  ) {
+    throw new EngineError("NOT_YOUR_TURN", "it is not this seat's turn to bet");
+  }
 
   switch (request.type) {
     case "NEXT_HAND":

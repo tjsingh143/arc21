@@ -1,0 +1,96 @@
+# Arc 21 — Sprint Tournament, step 1: paying an entry and getting it back.
+#
+#   npx tsx scripts/e2e-sprint-field.ts --stage waiting
+#   maestro test --device <udid> tests/e2e/mc-sign-in.yaml -e EMAIL=e2e-lobby@arc21.test
+#   maestro test --device <udid> tests/e2e/sprint-wait-and-withdraw.yaml
+#
+# WHAT THIS PROVES THAT A SERVER TEST CANNOT. `WITHDRAW_SPRINT` is new in phase
+# 8, and the reason it exists is that a player whose three companions never
+# arrived was locked to a tournament for ever with 500 chips spent — measured
+# against the running stack. A server test proves the command works; it proves
+# nothing about whether anybody can send it. That distinction has cost this
+# project four surfaces: `lockBet` was correct and wired to a button that could
+# not be pressed, and `RESET_PRIVATE_STACK` was correct and had no caller at all.
+#
+# So this taps the control, and then asserts the RESULT — the refund sentence —
+# rather than that the tap COMPLETED. A step that completed did not necessarily
+# do anything.
+#
+# The format card is asserted first because the specification requires a player
+# to see the whole structure before spending the entry fee, and because it is
+# read from `sprint_format()` rather than typed into the client: if the screen
+# renders it at all, the server answered.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+# A deep link is the reliable way to reach a screen — tapping through the tab
+# bar has cost several runs to selectors that COMPLETED against the wrong tab.
+# iOS raises "Open in Arc 21?" when the app is already foregrounded.
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible: "Sprint Tournament"
+    timeout: 20000
+
+# --- The format, before the fee -------------------------------------------
+# Read from the server. Asserted on the numbers a player decides with, in the
+# exact case they are rendered in: Maestro matches the RENDERED text.
+- assertVisible: "The format"
+- assertVisible: ".*4 players.*12 hands.*"
+- assertVisible: ".*Entry 500 chips.*"
+- assertVisible: ".*Lowest stack is eliminated after hand 6.*"
+
+# --- Enter ------------------------------------------------------------------
+# Inside a small repeat: a tap issued while a screen is settling can be
+# swallowed, and once it lands there is nothing left to tap.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "tournament-register"
+    commands:
+      - tapOn:
+          id: "tournament-register"
+          optional: true
+
+# The pool was drained, so the entry is paid and HELD. This is the state the
+# withdrawal exists for.
+- extendedWaitUntil:
+    visible:
+      id: "tournament-progress"
+    timeout: 30000
+- assertVisible: ".*Waiting for 3 more players.*"
+- assertVisible: ".*1 of 4 seats taken.*"
+
+# --- The way out ------------------------------------------------------------
+- assertVisible:
+    id: "tournament-withdraw"
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "tournament-withdraw"
+    commands:
+      - tapOn:
+          id: "tournament-withdraw"
+          optional: true
+
+# THE RESULT, not the tap. The server reports what it actually refunded, and
+# the screen says so; the entry card is gone and the Enter button is back.
+- extendedWaitUntil:
+    visible:
+      id: "tournament-notice"
+    timeout: 30000
+- assertVisible: ".*500 chips is back in your balance.*"
+- assertVisible:
+    id: "tournament-register"
+- assertNotVisible:
+    id: "tournament-withdraw"

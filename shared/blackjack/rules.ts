@@ -56,6 +56,27 @@ export interface BlackjackRules {
   minBet: number;
   maxBet: number;
   betIncrement: number;
+
+  /**
+   * Whether seats bet ONE AT A TIME, in seating order, or all at once.
+   *
+   * A posted table property, like the bet band above it — not a rule of
+   * blackjack. It changes who may stake chips at a given moment and nothing
+   * about what a hand is worth, so it does NOT alter basic strategy and does not
+   * bump `version`; the strategy tables keyed to `id@version` are untouched by
+   * it.
+   *
+   * False everywhere except the Sprint Tournament, where the specification is
+   * explicit that betting is "sequential and visible" with a bet timer of
+   * "7 seconds/person", because tournament strategy derives partly from seeing
+   * what the players before you have committed. With it false, every seat may
+   * stake at any moment during BETTING_OPEN and one shared clock covers them
+   * all, which is what an ordinary casino table does.
+   *
+   * Optional so that engine states persisted before it existed load unchanged —
+   * the same reason `SeatState.sitOutNextHand` is optional.
+   */
+  sequentialBetting?: boolean;
 }
 
 /**
@@ -101,6 +122,10 @@ export const ARC_STANDARD_RULES: BlackjackRules = {
   minBet: 50,
   maxBet: 1000,
   betIncrement: 10,
+
+  // Stated rather than left to the optional's default: an ordinary Arc 21 table
+  // takes bets from every seat at once.
+  sequentialBetting: false,
 };
 
 /** Table tiers differ only in stakes; all other rules stay identical. */

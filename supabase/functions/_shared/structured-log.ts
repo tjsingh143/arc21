@@ -24,6 +24,7 @@ export type CommandOutcome =
   | "public_seat_taken"
   | "daily_challenge_started"
   | "sprint_registered"
+  | "sprint_withdrawn"
   | "career_node_started"
   | "career_drill_graded";
 
@@ -33,6 +34,8 @@ export interface LogFields {
   fn: string;
   userId?: string;
   gameId?: string;
+  /** Which tournament a session command was about. An id, like every other. */
+  tournamentId?: string;
   seatId?: string;
   commandId?: string;
   commandType?: string;

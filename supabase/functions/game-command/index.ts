@@ -72,7 +72,7 @@ import {
 } from "../_shared/session-repository.ts";
 import { settleTableClosure } from "../_shared/close-table.ts";
 import { chipsCameFromWallet } from "../_shared/session-economics.ts";
-import { resolveHandBoundary } from "../_shared/session-boundary.ts";
+import { commandStartsNextHand, resolveHandBoundary } from "../_shared/session-boundary.ts";
 import { careerNodeBySlug } from "../_shared/career/index.ts";
 import { notifyTurnPlayedByTimeout } from "../_shared/notify.ts";
 
@@ -397,7 +397,13 @@ async function handle(
   const now = serverNow();
   let boundaryNote: string | undefined;
 
-  if (command.type === "NEXT_HAND") {
+  /*
+   * NOT `command.type === "NEXT_HAND"`. A settled hand also advances when its
+   * rest window lapses and a connected client asks the server to resolve the
+   * deadline — and for a whole phase that path dealt the next hand with no
+   * boundary at all. See `commandStartsNextHand`.
+   */
+  if (commandStartsNextHand(state, command.type, now)) {
     const boundary = await resolveHandBoundary(tx, {
       gameId: command.gameId,
       mode: session.mode,

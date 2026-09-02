@@ -49,6 +49,7 @@ import {
   BROKE_AT_PRIVATE_TABLE_BODY,
   BROKE_AT_PRIVATE_TABLE_TITLE,
   COUNTDOWN_TICK_MS,
+  deadlineAwaitsSeat,
   describeDeadline,
   describeDealerUpCardForAnnouncement,
   engineEventsOf,
@@ -63,6 +64,7 @@ import {
   useOnlineTableStore,
   YOUR_TURN_ANNOUNCEMENT,
 } from "../../src/features/table";
+import { describeWaiting } from "../../src/features/table/betting-affordance";
 import {
   describeSplitHands,
   focusedSplitHandId,
@@ -271,18 +273,14 @@ export default function SharedTable() {
     const table = status.state;
     const mine = table.seats.find((candidate) => candidate.seatId === status.seatId);
     const mineLegal = table.legalActions[status.seatId];
-    switch (table.phase) {
-      case "BETTING_OPEN":
-        return mine ? !mine.betLocked && !mine.sittingOut : false;
-      case "INSURANCE_OFFER":
-        return Boolean(mineLegal?.canTakeInsurance || mineLegal?.canDeclineInsurance);
-      case "PLAYER_TURNS":
-        return table.activeSeatId === status.seatId;
-      default:
-        // HAND_COMPLETE waits on nobody in particular: whoever asks first
-        // starts the next round for everyone.
-        return true;
-    }
+    return deadlineAwaitsSeat({
+      phase: table.phase,
+      seatId: status.seatId,
+      activeSeatId: table.activeSeatId,
+      betLocked: mine?.betLocked ?? false,
+      sittingOut: mine?.sittingOut ?? true,
+      canAnswerInsurance: Boolean(mineLegal?.canTakeInsurance || mineLegal?.canDeclineInsurance),
+    });
   }, [status]);
 
   const countdown = useMemo(
@@ -749,9 +747,13 @@ export default function SharedTable() {
         />
       ) : (
         <AppText variant="caption" color="textDisabled" align="center" testID="table-waiting">
-          {table.activeSeatId === null
-            ? "Waiting for the next hand."
-            : "Waiting for another player."}
+          {describeWaiting({
+            phase: table.phase,
+            activeSeatId: table.activeSeatId,
+            activeSeatName:
+              table.seats.find((candidate) => candidate.seatId === table.activeSeatId)
+                ?.displayName ?? null,
+          })}
         </AppText>
       )}
     </Frame>

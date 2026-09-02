@@ -16,6 +16,7 @@
  * never told what a hand is worth.
  */
 
+import { isDeadlineReached } from "../../../shared/blackjack/index.js";
 import type { EngineState } from "../../../shared/blackjack/index.js";
 import { CommandError } from "./command-errors.ts";
 import { toInteger, type Tx } from "./postgres-client.ts";
@@ -45,6 +46,41 @@ export interface BoundaryResult {
   finished: boolean;
   /** Human-readable, for the structured log. Never contains card identities. */
   note?: string;
+}
+
+/**
+ * Whether this command is the one that starts the next hand.
+ *
+ * THE DEFECT THIS EXISTS TO CLOSE, measured against the running stack before it
+ * did. `game-command` ran the boundary for `NEXT_HAND` and for nothing else —
+ * but a settled hand also advances when its REST WINDOW lapses and any connected
+ * client asks the server to resolve the deadline. The engine's
+ * `RESOLVE_TIMEOUT` handler calls `advanceToNextHand` at HAND_COMPLETE, so the
+ * next hand was dealt with no boundary at all: a four-player sprint whose table
+ * sat idle for eight seconds after a settlement kept `scheduled_hands_played` at
+ * zero, never eliminated anybody after hand six, never raised its bet ceiling,
+ * never rotated its button for that hand and — because the counter never reaches
+ * twelve — could never finalise or pay a prize. The Daily Challenge's twenty-hand
+ * stop and a Career node's stars went the same way. Nothing failed: the table
+ * simply played on.
+ *
+ * THE DEADLINE CHECK IS PART OF THE PREDICATE, not a detail. `assertCommandIsLegal`
+ * returns early for `RESOLVE_TIMEOUT` — the engine owns that clock — and the
+ * boundary runs BEFORE the engine, so a boundary that can end a tournament would
+ * otherwise be reachable by any client willing to ask early. `isDeadlineReached`
+ * is the engine's own comparison, exported rather than copied.
+ */
+export function commandStartsNextHand(
+  state: EngineState,
+  commandType: string,
+  now: string,
+): boolean {
+  if (commandType === "NEXT_HAND") return true;
+  return (
+    commandType === "RESOLVE_TIMEOUT" &&
+    state.phase === "HAND_COMPLETE" &&
+    isDeadlineReached(state, now)
+  );
 }
 
 /**
