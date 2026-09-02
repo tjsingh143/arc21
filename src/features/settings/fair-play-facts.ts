@@ -114,6 +114,25 @@ export function fairPlayClaims(rules: BlackjackRules = ARC_STANDARD_RULES): Fair
         "deal at all if secure randomness is unavailable rather than quietly falling back to something weaker.",
     },
     {
+      /*
+       * The specification's Fair Play list names this one explicitly — "Online
+       * cards are selected on the server" — and every fact above it described
+       * Practice, which runs on the device. The Daily Challenge's commitment is
+       * the strongest evidence this product has for the claim, and it was only
+       * discoverable from the Daily screen.
+       */
+      id: "online-shoe",
+      title: "Online cards are chosen on the server",
+      body:
+        "At any table you do not play alone — Quick Play, public tables, private tables and " +
+        "tournaments — the shoe is shuffled and held on the server, with the same kind of secure " +
+        "randomness, and no device is ever sent an undealt card or the dealer's face-down card. " +
+        "The Daily Challenge goes one step further: everyone plays a single shoe built from a " +
+        "secret the server publishes a SHA-256 hash of before anybody plays, and publishes the " +
+        "secret itself once the day is over. Your own device does the arithmetic that compares " +
+        "them, on the Daily Challenge screen.",
+    },
+    {
       id: "order",
       title: "Cards come off the shoe in order",
       body:

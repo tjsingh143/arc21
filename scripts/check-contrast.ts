@@ -102,6 +102,10 @@ const BACKGROUNDS: Record<string, string> = {
 const BODY_TEXT_TOKENS: Record<string, string> = {
   textPrimary: colors.textPrimary,
   textSecondary: colors.textSecondary,
+  // `accent` reads as TEXT in several places — the Learn screens, the Home
+  // overline, the leaderboard's "Load more" — and was measured only as a button
+  // FILL until phase 9. A colour used as body copy is checked as body copy.
+  accent: colors.accent,
   warning: colors.warning,
   danger: colors.danger,
   info: colors.info,

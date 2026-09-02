@@ -219,11 +219,20 @@ appId: com.arc21.app
 - assertVisible: ".*no server configured.*"
 - tapOn:
     id: "back-bar"
-# The footer, not the header: reaching the Leaderboards card scrolled Social to
-# its foot and returning keeps that position. Unique to Social either way.
-- extendedWaitUntil:
-    visible: ".*never move chips between accounts.*"
-    timeout: 15000
+# The footer, not the header — and SCROLLED TO rather than waited for.
+#
+# This line used to be an `extendedWaitUntil` under a comment asserting that
+# "returning keeps that position", and it failed twice in a row in phase 9 on a
+# Social tab that had come back at the TOP: the footer was in the tree and not on
+# screen. CLAUDE.md already records the rule this broke — "returning from a
+# pushed screen sometimes restores the previous scroll position and sometimes
+# returns to the top, so assert on text that is actually on screen at that
+# point". A scroll copes with either answer; a wait only copes with one, and
+# passes for a year before it does not.
+- scrollUntilVisible:
+    element: ".*never move chips between accounts.*"
+    direction: DOWN
+    timeout: 20000
 
 # --- Notifications ---------------------------------------------------------
 # Reached from Social, and entered from where the Leaderboards block left off:
@@ -391,3 +400,11 @@ appId: com.arc21.app
     timeout: 15000
 # The claims a player is entitled to, and which must stay true of the code.
 - assertVisible: ".*3:2.*"
+# The specification's Fair Play list names "online cards are selected on the
+# server" alongside the device-randomness claim, and until phase 9 every fact on
+# this page described Practice. It is here rather than in the online flow because
+# it is a statement about the CODE, true whether or not a server is configured.
+- scrollUntilVisible:
+    element: "Online cards are chosen on the server"
+    direction: DOWN
+    timeout: 20000

@@ -79,7 +79,7 @@ is ever loosened.
 | `matchmaking_queue` | yes | select own | `SELECT` to `authenticated` | Your own place in the queue. The queue is not a directory of who is playing |
 | `notifications` | yes | select / update / delete own | `SELECT`, `DELETE` + `UPDATE (read_at)` to `authenticated` | You may mark your own read and delete it. `read_at` is the only writable column, enforced by comparing the whole row rather than a column list |
 | `player_actions` | yes | select own | `SELECT` to `authenticated` | Your own action log. server-owned |
-| `player_daily_xp` | yes | select own | `SELECT` to `authenticated` | Your own daily cap progress. server-owned |
+| `player_daily_xp` | yes | select own | `SELECT` to `authenticated` | Your own daily cap progress. server-owned, and since phase 9 also `deny_client_write` — this table IS the weekly XP board |
 | `player_decision_periods` | yes | select own | `SELECT` to `authenticated` | "62 of the 100 decisions you need this week". server-owned |
 | `player_mode_stats` | yes | select own | `SELECT` to `authenticated` | Your own per-mode statistics. server-owned |
 | `player_stats` | yes | select own | `SELECT` to `authenticated` | Your own lifetime statistics. server-owned |
@@ -155,6 +155,37 @@ migration that changes a grant should call it as its last line.** It enforces:
 Each of those is proved to FAIL when breached, in
 `supabase/tests/20_authorization_surface.test.sql`. A gate nobody has watched
 fail is a gate nobody should trust.
+
+### The second lock: `deny_client_write`
+
+The gate above protects the FIRST lock — that no client grant exists. The second
+is a `BEFORE INSERT OR UPDATE OR DELETE` trigger on each server-owned table,
+raising `42501` whenever `current_user` is `anon` or `authenticated`. It matters
+because sixteen migrations have added a client grant by accident, and a table
+whose only protection is the absence of one is a single migration from being
+writable.
+
+Phase 9 found **five tables without it**, and found the first by attacking it
+rather than by reading:
+
+| table | why it matters |
+|-------|----------------|
+| `player_daily_xp` | the weekly XP leaderboard's entire input. Granting `insert` to `authenticated` made PostgREST answer **HTTP 201** with `repeatable_xp: 999999` on the caller's own row |
+| `wallet_ledger` | the append-only record every balance is reconciled against; `wallets` beside it has carried the trigger since the foundation migration |
+| `rooms`, `room_members`, `matchmaking_queue` | a forged room, a forged seat at one, or a forged place in the queue |
+
+Every function that writes any of them is `SECURITY DEFINER` — checked in
+`pg_proc.prosecdef`, not assumed — so nothing legitimate changed. The other four
+were found by asking the CATALOGUE which tables lack the trigger instead of
+recalling which should have it, and `20_authorization_surface.test.sql` now asks
+the same question on every run: any table in `public` outside the seven a client
+genuinely writes must carry the guard. Proved by dropping one trigger and
+watching the test name the table.
+
+`tests/server/rls-writes.integration.test.ts` attacks the four leaderboard inputs
+over HTTP with a real session token, plus `user_cosmetics` and the six
+server-only functions behind them, so the refusals are measured rather than
+inferred from the grants.
 
 ---
 

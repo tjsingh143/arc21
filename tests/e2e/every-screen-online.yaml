@@ -27,6 +27,11 @@
 #   npx tsx scripts/e2e-account.ts
 #   .env.local must be PRESENT — the opposite of every-screen.yaml
 #
+# `e2e-account.ts` also seeds YESTERDAY's daily challenge. The fairness card
+# checks the most recently CLOSED challenge, and a database reset on the same UTC
+# day has none — production reaches that state on its second day without anybody
+# doing anything, and a local run has to be given it.
+#
 #   export JAVA_HOME=/opt/homebrew/opt/openjdk
 #   maestro test tests/e2e/every-screen-online.yaml
 
@@ -86,6 +91,28 @@ appId: com.arc21.app
 - assertVisible:
     id: "daily-commitment"
     text: ".*[0-9a-f]{16}.*"
+
+# THE COMMITMENT, CHECKED. Today's seed is secret by design, so what a fairness
+# view can show is the most recently CLOSED challenge — and the check happens on
+# the DEVICE, by recomputing SHA-256 of the published seed with `expo-crypto`.
+#
+# For the whole life of this feature nothing ever wrote `revealed_seed`: the
+# column, the trigger, the projection, the parser and the render branch all
+# existed and no code path published a seed, so this card could never appear and
+# the sentence above it promised a check nobody could make.
+#
+# NEEDS A CLOSED CHALLENGE to assert against, which a database reset on the same
+# UTC day does not have. `scripts/e2e-account.ts` seeds yesterday's.
+- scrollUntilVisible:
+    element:
+      id: "daily-verification-verdict"
+    direction: DOWN
+    timeout: 20000
+# The RESULT, not the presence of the card: "checking" would render in exactly
+# the same place and mean nothing was verified.
+- assertVisible:
+    id: "daily-verification-verdict"
+    text: ".*SHA-256 of the published seed is exactly the commitment.*"
 
 # --- Sprint Tournament -----------------------------------------------------
 # The format and the entry fee, from `sprint_format()`, BEFORE anything is spent

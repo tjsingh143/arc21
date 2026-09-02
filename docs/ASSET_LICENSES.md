@@ -1,5 +1,10 @@
 # Arc 21 — Asset Licenses
 
+Last reviewed: **2026-09-02 (phase 9).** No asset was added, removed or changed
+in that review; two references to where the cosmetic catalogue lives were
+corrected, and the counts and unlock rules were re-checked against the
+specification.
+
 Every external asset shipped in this application must be recorded here with its
 source and license **before** it is committed. An asset with no entry in this
 file is a release blocker.
@@ -101,6 +106,13 @@ assets**, so originality is provable by reading them:
 | Card backs | 8 | `src/features/cosmetics/art/card-backs.tsx` | Original work, © Arc 21 |
 | Table themes | 4 | `src/features/cosmetics/art/table-themes.tsx` | Original work, © Arc 21 |
 
+Those counts are the specification's minimum ("at least 12 avatar variants, 8
+card backs, 4 table themes") and are met exactly. Every one is earned by
+playing — a level, a career node, a chapter, a daily streak or a tournament
+placement — and `cosmetic_unlock_type` has no member that could express a
+purchase or a random draw, so adding one would take a migration and a deliberate
+decision rather than an INSERT.
+
 Flat vector geometry throughout: two or three colours per asset from the design
 tokens (plus the cosmetic surface tones recorded in `src/design/tokens.ts`),
 hard edges, no gradient meshes, no bevels, no photorealism. Avatars are
@@ -109,10 +121,18 @@ primitives in this repository and resemble no other game's backs. Table themes
 are a flat tone plus at most one hairline element — no felt texture. Suit
 identity on cards never depends on colour, and no card back changes that.
 
-`tests/cosmetics/registry.test.ts` parses the catalogue out of
-`supabase/seed.sql` and asserts every `asset_key` resolves to one of these
-components with no orphans in either direction — so nothing can be added to
-the catalogue without an original drawing landing here beside it.
+`tests/cosmetics/registry.test.ts` parses the catalogue out of the migration
+that writes it — `supabase/migrations/20260823110000_catalogue_ships_in_migrations.sql`
+— and asserts every `asset_key` resolves to one of these components with no
+orphans in either direction, so nothing can be added to the catalogue without an
+original drawing landing here beside it. It also asserts the CATALOGUE SIZE
+(12 / 8 / 4), which is what catches a regex that has stopped matching rather
+than a catalogue that has stopped growing.
+
+The source moved out of `supabase/seed.sql` and into a migration because the
+seed does not run on `supabase db push`, so a deployed project would have had no
+cosmetics at all. This paragraph named the seed file for a while after the test
+had already been repointed; the file the test reads is the one above.
 
 ---
 

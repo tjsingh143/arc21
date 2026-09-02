@@ -423,6 +423,131 @@ suite("what a second account can actually write", () => {
 
   // -- anonymous -------------------------------------------------------------
 
+  /**
+   * A MODIFIED CLIENT CANNOT MANUFACTURE A LEADERBOARD FIGURE.
+   *
+   * Every board is derived from four things, and this is each of them attacked
+   * directly over PostgREST with a real, valid session token — which is exactly
+   * what a modified client has:
+   *
+   *   XP                 `player_daily_xp`, and `award_milestone_xp`
+   *   strategy accuracy  `player_decision_periods`, and `record_decisions`
+   *   a tournament win   `tournament_entries.placement`
+   *   a daily score      `daily_entries.score`
+   *
+   * The refusals come from the PRIVILEGE SYSTEM rather than from application
+   * code — no client role holds INSERT or UPDATE on any of these tables, and the
+   * functions that write them are revoked from `anon` and `authenticated` — so
+   * there is no code path to reach and nothing to forget to check. The point of
+   * asserting it here anyway is that a grant added by a later migration would
+   * open all of this silently, and `assert_client_authorization_surface()` and
+   * this test would then disagree loudly rather than quietly.
+   */
+  it("gives a modified client no way to manufacture a leaderboard figure", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+
+    const attempts: Array<{ what: string; result: Result }> = [
+      {
+        what: "XP for this week",
+        result: await write("POST", "player_daily_xp", owner, {
+          user_id: ownerId,
+          utc_day: today,
+          repeatable_xp: 999_999,
+          milestone_xp: 999_999,
+        }),
+      },
+      {
+        what: "XP on an existing row",
+        result: await write("PATCH", `player_daily_xp?user_id=eq.${ownerId}`, owner, {
+          milestone_xp: 999_999,
+        }),
+      },
+      {
+        what: "a week of perfect decisions",
+        result: await write("POST", "player_decision_periods", owner, {
+          user_id: ownerId,
+          period_start: today,
+          decisions_total: 1_000,
+          decisions_optimal: 1_000,
+        }),
+      },
+      {
+        what: "accuracy on an existing bucket",
+        result: await write("PATCH", `player_decision_periods?user_id=eq.${ownerId}`, owner, {
+          decisions_optimal: 1_000,
+        }),
+      },
+      {
+        what: "a daily entry with a chosen score",
+        result: await write("POST", "daily_entries", owner, {
+          user_id: ownerId,
+          status: "completed",
+          score: 1_000_000,
+          final_chips: 1_000_000,
+          hands_played: 20,
+        }),
+      },
+      {
+        what: "a better score on an existing entry",
+        result: await write("PATCH", `daily_entries?user_id=eq.${ownerId}`, owner, {
+          score: 1_000_000,
+        }),
+      },
+      {
+        what: "a tournament win",
+        result: await write("POST", "tournament_entries", owner, {
+          user_id: ownerId,
+          placement: 1,
+          status: "eliminated",
+        }),
+      },
+      {
+        what: "a placement on an existing entry",
+        result: await write("PATCH", `tournament_entries?user_id=eq.${ownerId}`, owner, {
+          placement: 1,
+        }),
+      },
+      {
+        what: "cosmetic ownership",
+        result: await write("POST", "user_cosmetics", owner, {
+          user_id: ownerId,
+          source: "default",
+        }),
+      },
+    ];
+
+    for (const attempt of attempts) {
+      expect(
+        changedNothing(attempt.result),
+        `${attempt.what} was not refused: HTTP ${attempt.result.status} ${attempt.result.raw}`,
+      ).toBe(true);
+    }
+
+    // And the server-only functions behind them are unreachable too, so a client
+    // cannot go around the tables by calling what writes them.
+    for (const fn of [
+      "record_decisions",
+      "record_daily_attempt_decisions",
+      "award_milestone_xp",
+      "grant_earned_cosmetics_for",
+      "reveal_closed_daily_seeds",
+      "ensure_daily_challenge_for",
+    ]) {
+      const called = await write("POST", `rpc/${fn}`, owner, {});
+      expect(
+        called.status,
+        `${fn} answered ${called.status}: ${called.raw}`,
+      ).toBeGreaterThanOrEqual(400);
+    }
+
+    // Nothing landed anywhere, checked rather than inferred from the refusals.
+    expect(await read(owner, `player_daily_xp?user_id=eq.${ownerId}&select=milestone_xp`)).toEqual([]);
+    expect(
+      await read(owner, `player_decision_periods?user_id=eq.${ownerId}&select=decisions_total`),
+    ).toEqual([]);
+    expect(await read(owner, `daily_entries?user_id=eq.${ownerId}&select=score`)).toEqual([]);
+  }, 120_000);
+
   it("gives an unauthenticated caller no write at all", async () => {
     const attempts: Result[] = [
       await write("PATCH", `profiles?id=eq.${ownerId}`, null, { display_name: "Anon" }),

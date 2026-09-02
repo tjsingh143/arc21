@@ -11,7 +11,7 @@
  * no replay at all.
  */
 
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
@@ -22,7 +22,16 @@ import { Button } from "../../src/components/ui/Button";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
 import { colors, layout, spacing } from "../../src/design/tokens";
 import { formatChips } from "../../src/design/typography";
-import { describeAttempt, describeVerification, useDailyStore } from "../../src/features/daily";
+import {
+  describeAttempt,
+  describeVerdict,
+  describeVerification,
+  useDailyStore,
+  type VerificationVerdict,
+} from "../../src/features/daily";
+// Direct, not through the barrel: this module imports `expo-crypto` and would
+// otherwise put React Native in front of every pure helper the tests import.
+import { verifyCommitment } from "../../src/features/daily/verify-commitment";
 
 export default function DailyChallenge() {
   const status = useDailyStore((state) => state.status);
@@ -44,6 +53,52 @@ export default function DailyChallenge() {
     [status],
   );
   const plan = useMemo(() => describeAttempt(attempt), [attempt]);
+
+  /*
+   * The audit half of the commitment scheme.
+   *
+   * Today's seed is secret, so what can be checked is the most recently CLOSED
+   * challenge — and the check is done HERE, on the device, by recomputing
+   * SHA-256 of the published seed. A server that also said "yes, it matches"
+   * would be asking to be believed twice.
+   *
+   * The verdict is COMPONENT state and starts as `checking`: the digest is
+   * asynchronous, and a screen that rendered "verified" before it had finished
+   * would be asserting something it had not done. Same rule as
+   * `mayOpenDealtTable` — gate on the answer having come back, not on the
+   * question having been asked.
+   */
+  const verification = useMemo(
+    () => (status.kind === "ready" ? status.verification : null),
+    [status],
+  );
+  const [checked, setChecked] = useState<{
+    date: string;
+    verdict: VerificationVerdict;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!verification) return;
+    let cancelled = false;
+    void verifyCommitment(verification).then((answer) => {
+      if (!cancelled) setChecked({ date: verification.date, verdict: answer });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [verification]);
+
+  /*
+   * DERIVED, not set. Writing "checking" from inside the effect is a synchronous
+   * setState in an effect body — the React Compiler rejects it — and it would
+   * also leave a window in which yesterday's verdict was rendered beside today's
+   * seed. Keying the stored answer by DATE removes both: anything that is not an
+   * answer about THIS row reads as still checking.
+   */
+  const verdict: VerificationVerdict =
+    checked && verification && checked.date === verification.date
+      ? checked.verdict
+      : "checking";
 
   const onStart = useCallback(() => {
     void (async () => {
@@ -119,6 +174,28 @@ export default function DailyChallenge() {
                 </AppText>
               ) : null}
             </SurfaceCard>
+
+            {/* The check itself, on a challenge that has actually closed.
+                Absent rather than empty before the first one does: an audit
+                panel with nothing in it would suggest a check that failed. */}
+            {verification ? (
+              <SurfaceCard>
+                <AppText variant="bodyStrong">{`Verified: ${verification.date}`}</AppText>
+                <AppText
+                  variant="body"
+                  color={verdict === "does-not-match" ? "danger" : "textSecondary"}
+                  testID="daily-verification-verdict"
+                >
+                  {describeVerdict(verdict)}
+                </AppText>
+                <AppText variant="caption" color="textDisabled" numeric>
+                  {`Commitment: ${verification.seedCommitment}`}
+                </AppText>
+                <AppText variant="caption" color="textDisabled" numeric>
+                  {`Seed: ${verification.revealedSeed}`}
+                </AppText>
+              </SurfaceCard>
+            ) : null}
 
             {attempt && attempt.status === "completed" ? (
               <SurfaceCard>

@@ -6,6 +6,14 @@
 
 Last updated: 2026-08-21 (phase 14, session 3)
 
+> **This file predates the launch sequence and does not track it.**
+> `docs/LAUNCH_STATE.md` is the index a fresh context should read first: it
+> carries the per-phase status, the architecture facts a new phase must not
+> rediscover, the current migration head and the last green verification.
+> Per-phase evidence is in `docs/phase-reports/`. What is below remains accurate
+> about the areas it describes; it is simply not the whole picture any more.
+> (Pointer added 2026-09-02, end of phase 9.)
+
 ---
 
 ## Current phase

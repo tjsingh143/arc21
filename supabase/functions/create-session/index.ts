@@ -30,7 +30,12 @@ import {
   randomIntBelow,
   type GameTiming,
 } from "../../../shared/blackjack/index.js";
-import { DAILY, hmacCounterStream, isRankedAttempt } from "../_shared/daily-challenge.ts";
+import {
+  DAILY,
+  dailyShoeSource,
+  hmacCounterStream,
+  isRankedAttempt,
+} from "../_shared/daily-challenge.ts";
 import {
   buildDrillScenarios,
   careerNodeBySlug,
@@ -1092,6 +1097,25 @@ async function startDailyChallenge(
     });
   }
 
+  /*
+   * A NEW ATTEMPT IS A NEW SEAT, so the one-live-seat control applies here too.
+   *
+   * It did not, and the consequence was measured against the running stack
+   * before this line existed: an account holding a solo table with 5,000 chips
+   * in escrow started the Daily Challenge, was answered 200, and ended up with
+   * TWO active seats — after which `my_active_session()` named only the newer
+   * one, because it orders by start time. The solo buy-in was then unaddressable
+   * from any screen, which is the exact failure `my_active_session` was written
+   * to close and the exact one phase 8 closed for a Sprint entry. Every other
+   * mode that opens a seat asks — `open`, `joinPublicTable`, `startCareerNode`,
+   * `registerSprint` — and this one did not.
+   *
+   * Deliberately BELOW the resume branch above. Returning to an attempt already
+   * in progress takes no new seat, so a player whose ranked run is open must
+   * always be able to get back to it.
+   */
+  await assertNoOtherLiveSeat(tx, userId, null);
+
   // A finished or abandoned attempt has spent the ranked slot. The replay is
   // playable — practising against a shoe you know is useful — and it writes no
   // entry row at all, so an unranked run cannot overwrite a ranked score. That
@@ -1125,7 +1149,9 @@ async function startDailyChallenge(
 
   const now = serverNow();
   // The deterministic stream, not the CSPRNG. Same seed, same shoe, every time.
-  const shoeSource = hmacCounterStream(challenge.seed_secret);
+  // Keyed on the shuffle number so a RESHUFFLE mid-attempt is reproducible too —
+  // `game-command` builds shuffle two the same way. See `dailyShoeSource`.
+  const shoeSource = dailyShoeSource(challenge.seed_secret, 1);
   const created = createGame({
     gameId,
     rules: { ...ARC_STANDARD_RULES, minBet: DAILY.minBet, maxBet: DAILY.maxBet },

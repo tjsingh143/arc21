@@ -47,6 +47,66 @@ export interface Challenge {
   readonly closesAt: string;
 }
 
+/**
+ * A challenge whose seed has been PUBLISHED, so the commitment can be checked.
+ *
+ * Only ever a closed one: `reveal_closed_daily_seeds` writes the column after
+ * `closes_at`, and the database's own trigger refuses an earlier write however
+ * it is attempted. So there is no shape of this row that carries a live seed.
+ */
+export const verificationRowSchema = z.object({
+  challenge_date: z.string(),
+  seed_commitment: z.string().regex(/^[0-9a-f]{64}$/),
+  revealed_seed: z.string().min(1),
+  seed_revealed_at: z.string(),
+});
+
+export interface Verification {
+  readonly date: string;
+  readonly seedCommitment: string;
+  readonly revealedSeed: string;
+}
+
+export function toVerification(value: unknown): Verification | null {
+  const parsed = verificationRowSchema.safeParse(firstOf(value));
+  if (!parsed.success) return null;
+  return {
+    date: parsed.data.challenge_date,
+    seedCommitment: parsed.data.seed_commitment,
+    revealedSeed: parsed.data.revealed_seed,
+  };
+}
+
+/**
+ * What the device concluded about a published seed.
+ *
+ * `checking` is a real state, not a placeholder: the hash is computed by the
+ * platform's own SHA-256 and that is asynchronous, so a screen that rendered
+ * "verified" while it was still working would be asserting something it had not
+ * yet done.
+ */
+export type VerificationVerdict = "checking" | "matches" | "does-not-match" | "unavailable";
+
+/**
+ * The words for each verdict.
+ *
+ * A MISMATCH IS STATED PLAINLY. It would mean the shoe was not the one committed
+ * to before play, which is the single most serious thing this product could get
+ * wrong, and softening it would be worse than not checking at all.
+ */
+export function describeVerdict(verdict: VerificationVerdict): string {
+  switch (verdict) {
+    case "checking":
+      return "Checking the published seed against the commitment…";
+    case "matches":
+      return "Checked on this device: SHA-256 of the published seed is exactly the commitment published before anyone played.";
+    case "does-not-match":
+      return "The published seed does NOT hash to the commitment published before play. Please report this.";
+    case "unavailable":
+      return "This device could not compute the hash, so nothing has been checked.";
+  }
+}
+
 export interface Attempt {
   readonly challengeId: string;
   readonly gameId: string | null;

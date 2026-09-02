@@ -242,13 +242,17 @@ on any tournament snapshot, and no ranked decision rows) rather than on a
 screenshot.
 
 ### Daily challenge suite — **written**
-`tests/daily/daily-challenge.test.ts` (24 assertions) covers same-seed-same-shoe
+`tests/daily/daily-challenge.test.ts` (35 assertions) covers same-seed-same-shoe
 at both the raw-stream and the dealt-shoe level, independence from read batch
 size, divergence on a one-character seed change, that the stream is genuinely
 HMAC-SHA-256 over a big-endian counter (recomputed independently), commitment
 verification, that the commitment covers the date, the score being the ending
 bankroll with no speed term, and the one-ranked-attempt rule including after an
-abandoned attempt.
+abandoned attempt. Phase 9 added the shoe AFTER the cut card — same seed and
+shuffle number gives the same second shoe, a different shuffle number gives a
+different one, and a CSPRNG reshuffle is shown not to have that property — and
+`attemptCompletion`, which ends an attempt at the hand count OR below the table
+minimum, whichever comes first.
 
 `tests/server/…` proves the claim that matters end to end: two different accounts
 dealt the identical twenty-hand sequence, the seed absent from every response, the
@@ -268,12 +272,25 @@ blocked, only unbuilt; recorded in `docs/AUDIT.md` as ABSENT rather than
 approximated.
 
 ### Leaderboards and cosmetics suite — **written**
-`tests/features/leaderboards-and-cosmetics.test.ts` (28 assertions) covers
+`tests/features/leaderboards-and-cosmetics.test.ts` (33 assertions) covers
 reading a board, dropping an unreadable row rather than half-rendering it,
 formatting each board's value in the units it is actually in — accuracy arrives in
 basis points, so 8,734 is 87.34% — the four categories being the specification's
 four with global bankroll absent, every board explaining why it is empty, and a
-locked cosmetic never showing anything that reads as a price.
+locked cosmetic never showing anything that reads as a price. Phase 9 added
+paging: the predicates rather than the store, because what goes wrong there is a
+CONTROL — a "Load more" that fires twice appends the same page twice, and one
+that never stops asks the server for an empty page for ever.
+
+`tests/server/rls-writes.integration.test.ts` gained the direct attack on the
+board inputs: `player_daily_xp`, `player_decision_periods`, `daily_entries.score`
+and `tournament_entries.placement` written over PostgREST with a real session
+token, plus `user_cosmetics` and the six server-only functions behind them. It
+was proved to FAIL first — granting `insert` on `player_daily_xp` to
+`authenticated` answered HTTP 201 with 999,999 XP — and that grant is now also
+stopped by a `deny_client_write` trigger, which
+`supabase/tests/20_authorization_surface.test.sql` requires of every server-owned
+table by asking the catalogue rather than naming them.
 
 `tests/progression/decision-grading.test.ts` (13 assertions) covers eligibility as
 an allowlist, the exclusions the specification names, and the four cases that are

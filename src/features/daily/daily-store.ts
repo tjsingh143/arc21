@@ -12,11 +12,27 @@ import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
-import { toAttempt, toChallenge, type Attempt, type Challenge } from "./daily.js";
+import {
+  toAttempt,
+  toChallenge,
+  toVerification,
+  type Attempt,
+  type Challenge,
+  type Verification,
+} from "./daily.js";
 
 export type DailyStatus =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly challenge: Challenge; readonly attempt: Attempt | null }
+  | {
+      readonly kind: "ready";
+      readonly challenge: Challenge;
+      readonly attempt: Attempt | null;
+      /**
+       * The most recent challenge whose seed has been PUBLISHED, so the
+       * commitment can actually be checked. Null until one has closed.
+       */
+      readonly verification: Verification | null;
+    }
   | { readonly kind: "unavailable"; readonly message: string };
 
 export interface DailyStoreState {
@@ -85,7 +101,28 @@ export const useDailyStore = create<DailyStoreState>((set) => ({
     const attempt =
       attemptResult && !attemptResult.error ? toAttempt(attemptResult.data) : null;
 
-    set({ status: { kind: "ready", challenge, attempt }, notice: null });
+    /*
+     * The audit half of the commitment scheme.
+     *
+     * TODAY's seed is secret by design, so a fairness view that only ever looked
+     * at today could never show anything — which is precisely what happened for
+     * the whole life of the feature: the column, the trigger, the projection,
+     * the parser and the render branch all existed and nothing ever published a
+     * seed. `ensure_todays_daily_challenge` publishes every closed one as its
+     * first act, so this is the row the player can actually check.
+     *
+     * A failure here does not fail the screen. Today's challenge is still
+     * playable when yesterday's seed cannot be read.
+     */
+    const verificationResult = await bounded(
+      availability.client.rpc("latest_verifiable_daily_challenge"),
+    );
+    const verification =
+      verificationResult && !verificationResult.error
+        ? toVerification(verificationResult.data)
+        : null;
+
+    set({ status: { kind: "ready", challenge, attempt, verification }, notice: null });
   },
 
   start: async () => {

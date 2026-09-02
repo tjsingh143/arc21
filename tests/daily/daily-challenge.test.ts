@@ -17,9 +17,11 @@ import crypto from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  attemptCompletion,
   commitmentMatches,
   DAILY,
   dailyScore,
+  dailyShoeSource,
   hmacCounterStream,
   isComplete,
   isRankedAttempt,
@@ -27,7 +29,10 @@ import {
 import {
   ARC_STANDARD_RULES,
   createShoe,
+  CryptoRandomSource,
+  needsReshuffle,
   randomIntBelow,
+  reshuffle,
 } from "../../shared/blackjack/index.js";
 
 const SEED = "arc21:daily:2026-08-17:" + "a".repeat(64);
@@ -199,5 +204,116 @@ describe("knowing when an attempt is over", () => {
     // a parameter rather than a constant read inside.
     expect(isComplete(10, 10)).toBe(true);
     expect(isComplete(10, 25)).toBe(false);
+  });
+});
+
+/**
+ * The shoe AFTER the cut card.
+ *
+ * Randomness reaches the engine at two points — the opening shuffle and a
+ * reshuffle inside `openBetting` — and for a long time only the first of them
+ * came from the challenge's seed. The second was `serverRandom()`, so an attempt
+ * that crossed the cut card would have been dealt a CSPRNG shoe and stopped
+ * matching every other entrant, with nothing failing anywhere: both attempts
+ * still play their twenty hands, they just stop being the same challenge.
+ *
+ * Measured before fixing it, over 400 attempts per configuration with the most
+ * card-hungry legal play there is (split whenever allowed, then hit to 21 or
+ * bust): at the shipped TWENTY hands the worst attempt reached index 160 of the
+ * 234-card cut and none reshuffled — so this was latent rather than live. At
+ * forty hands 385 of 400 reshuffled, and at sixty all 400 did. `hand_count` is
+ * the CHALLENGE ROW's, constrained only to 1..100 and honoured as authored, so
+ * the guarantee held on a number nobody was checking.
+ */
+describe("a reshuffle mid-challenge stays deterministic", () => {
+  const shuffleOne = () => createShoe(ARC_STANDARD_RULES, dailyShoeSource(SEED, 1));
+
+  it("gives every entrant the same opening shoe", () => {
+    expect(shuffleOne().cards.map((c) => c.id)).toEqual(shuffleOne().cards.map((c) => c.id));
+  });
+
+  it("gives every entrant the same SECOND shoe", () => {
+    const mine = reshuffle(shuffleOne(), ARC_STANDARD_RULES, dailyShoeSource(SEED, 2));
+    const theirs = reshuffle(shuffleOne(), ARC_STANDARD_RULES, dailyShoeSource(SEED, 2));
+    expect(mine.shuffleNumber).toBe(2);
+    expect(mine.cards.map((c) => c.id)).toEqual(theirs.cards.map((c) => c.id));
+  });
+
+  it("does not deal the opening shoe over again", () => {
+    // A stream keyed only on the seed would repeat shuffle one for ever, which
+    // is deterministic and useless: a player who reached the cut card would be
+    // dealt the cards they had just seen.
+    const second = reshuffle(shuffleOne(), ARC_STANDARD_RULES, dailyShoeSource(SEED, 2));
+    expect(second.cards.map((c) => c.id)).not.toEqual(shuffleOne().cards.map((c) => c.id));
+  });
+
+  it("diverges for a different seed at the same shuffle number", () => {
+    const mine = reshuffle(shuffleOne(), ARC_STANDARD_RULES, dailyShoeSource(SEED, 2));
+    const theirs = reshuffle(shuffleOne(), ARC_STANDARD_RULES, dailyShoeSource(OTHER, 2));
+    expect(mine.cards.map((c) => c.id)).not.toEqual(theirs.cards.map((c) => c.id));
+  });
+
+  it("is the property a CSPRNG reshuffle does not have", () => {
+    // The pre-fix behaviour, stated rather than described: two entrants
+    // reshuffling from `serverRandom()` disagree, which is exactly what the
+    // three assertions above exist to prevent.
+    const mine = reshuffle(shuffleOne(), ARC_STANDARD_RULES, new CryptoRandomSource());
+    const theirs = reshuffle(shuffleOne(), ARC_STANDARD_RULES, new CryptoRandomSource());
+    expect(mine.cards.map((c) => c.id)).not.toEqual(theirs.cards.map((c) => c.id));
+  });
+
+  it("refuses a shuffle number that is not a positive integer", () => {
+    // The caller passes `shoe.shuffleNumber + 1`; a zero or a float would mean
+    // the state it read was not the state it thought it had.
+    expect(() => dailyShoeSource(SEED, 0)).toThrow(/positive integer/);
+    expect(() => dailyShoeSource(SEED, 1.5)).toThrow(/positive integer/);
+  });
+
+  it("agrees with the engine about when a reshuffle is due", () => {
+    // Not a copy of the rule: the engine's own predicate, so a change to the
+    // penetration cannot leave this file asserting the old boundary.
+    const shoe = shuffleOne();
+    expect(needsReshuffle(shoe)).toBe(false);
+    expect(needsReshuffle({ ...shoe, nextIndex: shoe.cutIndex })).toBe(true);
+  });
+});
+
+/**
+ * An attempt ends in two ways, and only one of them used to be checked.
+ */
+describe("an attempt that runs out of chips is over", () => {
+  const format = { handCount: DAILY.hands, minBet: DAILY.minBet };
+
+  it("is not over while a legal bet is still affordable", () => {
+    expect(attemptCompletion({ ...format, handsPlayed: 7, finalChips: 100 })).toBeNull();
+  });
+
+  it("is over at the hand count", () => {
+    expect(attemptCompletion({ ...format, handsPlayed: 20, finalChips: 5_000 })).toBe("hand_count");
+  });
+
+  it("is over when the stack cannot cover the table minimum", () => {
+    // Below this there is no legal bet to place, `getLegalActions` answers with
+    // nothing at all, and the Daily Challenge carries no clocks — so an attempt
+    // left here can never be moved by anybody.
+    expect(attemptCompletion({ ...format, handsPlayed: 6, finalChips: 99 })).toBe(
+      "bankroll_exhausted",
+    );
+    expect(attemptCompletion({ ...format, handsPlayed: 6, finalChips: 0 })).toBe(
+      "bankroll_exhausted",
+    );
+  });
+
+  it("prefers the hand count when both are true", () => {
+    // A player who busts on the last hand has completed the challenge; saying so
+    // keeps `hands_played` meaning what it says.
+    expect(attemptCompletion({ ...format, handsPlayed: 20, finalChips: 0 })).toBe("hand_count");
+  });
+
+  it("uses the CHALLENGE's minimum, not a constant", () => {
+    expect(attemptCompletion({ handCount: 20, minBet: 25, handsPlayed: 3, finalChips: 50 })).toBeNull();
+    expect(attemptCompletion({ handCount: 20, minBet: 500, handsPlayed: 3, finalChips: 400 })).toBe(
+      "bankroll_exhausted",
+    );
   });
 });

@@ -32,7 +32,9 @@ export default function Leaderboards() {
   const status = useLeaderboardStore((state) => state.status);
   const category = useLeaderboardStore((state) => state.category);
   const strategyProgress = useLeaderboardStore((state) => state.strategyProgress);
+  const loadingMore = useLeaderboardStore((state) => state.loadingMore);
   const select = useLeaderboardStore((state) => state.select);
+  const more = useLeaderboardStore((state) => state.more);
 
   useEffect(() => {
     void select("weekly_xp");
@@ -50,12 +52,17 @@ export default function Leaderboards() {
     () => (status.kind === "ready" ? describePosition(category, status.position) : null),
     [status, category],
   );
+  const hasMore = useMemo(
+    () => (status.kind === "ready" ? status.hasMore : false),
+    [status],
+  );
   const copy = CATEGORY_COPY[category];
 
   const onSelect = useCallback(
     (next: LeaderboardCategory) => void select(next),
     [select],
   );
+  const onMore = useCallback(() => void more(), [more]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -170,6 +177,21 @@ export default function Leaderboards() {
                     </View>
                   </SurfaceCard>
                 ))}
+
+                {/* A page at a time. The control disappears rather than being
+                    disabled when the board has run out, because a dead button is
+                    a worse answer than the end of a list. */}
+                {hasMore ? (
+                  <SurfaceCard
+                    onPress={onMore}
+                    testID="leaderboard-load-more"
+                    accessibilityLabel="Load more players"
+                  >
+                    <AppText variant="bodyStrong" align="center" color="accent">
+                      {loadingMore ? "Loading…" : "Load more"}
+                    </AppText>
+                  </SurfaceCard>
+                ) : null}
               </View>
             )}
           </>

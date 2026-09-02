@@ -34,7 +34,7 @@ import {
   type GameCommandResponse,
   type PublicGameEvent,
 } from "../../../shared/contracts/index.js";
-import type { PublicGameState } from "../../../shared/blackjack/index.js";
+import type { PublicGameState, RandomSource } from "../../../shared/blackjack/index.js";
 import {
   accountForSettlement,
   isEmptyAccounting,
@@ -66,6 +66,7 @@ import {
   recordDecisions,
   recordCareerAttemptDecisions,
   recordDailyAttemptDecisions,
+  findDailyShoeSeed,
   recordHandSettlement,
   syncSessionRow,
   totalChipsAtTable,
@@ -74,6 +75,7 @@ import { settleTableClosure } from "../_shared/close-table.ts";
 import { chipsCameFromWallet } from "../_shared/session-economics.ts";
 import { commandStartsNextHand, resolveHandBoundary } from "../_shared/session-boundary.ts";
 import { careerNodeBySlug } from "../_shared/career/index.ts";
+import { dailyShoeSource } from "../_shared/daily-challenge.ts";
 import { notifyTurnPlayedByTimeout } from "../_shared/notify.ts";
 
 import {
@@ -175,6 +177,39 @@ Deno.serve(async (request: Request): Promise<Response> => {
  */
 function escrowFor(mode: string, state: Parameters<typeof totalChipsAtTable>[0]): number {
   return chipsCameFromWallet(mode) ? totalChipsAtTable(state) : 0;
+}
+
+/**
+ * Which random source deals this command's cards.
+ *
+ * Randomness reaches the engine at exactly two points — `createShoe` when the
+ * session opens, and `reshuffle` inside `openBetting` when the cut card has been
+ * passed — so this decides only what a RESHUFFLE is shuffled with. Every other
+ * command builds a source that is never consulted.
+ *
+ * THE DEFECT: `serverRandom()` was passed unconditionally, including for the
+ * Daily Challenge, whose whole claim is that every ranked entrant faces the
+ * identical sequence. An attempt that crossed the cut card would have been dealt
+ * a CSPRNG shoe from that point and silently stopped matching everybody else's.
+ * The mode is read from the session row, never from the request — the same rule
+ * `settleTableClosure` follows, and for the same reason: a caller that could
+ * name the answer could name the wrong one.
+ */
+async function shoeSourceFor(
+  tx: Tx,
+  session: { mode: string },
+  gameId: string,
+  state: { shoe: { shuffleNumber: number } },
+): Promise<RandomSource> {
+  if (session.mode !== "daily_challenge") return serverRandom();
+
+  const seed = await findDailyShoeSeed(tx, gameId);
+  // A daily session whose challenge has gone is not something to improvise a
+  // shoe for: dealing from the CSPRNG here is the very defect this closes.
+  if (!seed) throw new CommandError("INTERNAL", "daily challenge session has no seed");
+
+  // The shuffle this command could produce, not the one already on the table.
+  return dailyShoeSource(seed, state.shoe.shuffleNumber + 1);
 }
 
 /**
@@ -454,7 +489,7 @@ async function handle(
   // --- Apply ---------------------------------------------------------------
   const engineCommand = toEngineCommand(command, seat.id, now);
   const { state: nextState, events } = applyCommand(state, engineCommand, {
-    random: serverRandom(),
+    random: await shoeSourceFor(tx, session, command.gameId, state),
     now,
   });
 

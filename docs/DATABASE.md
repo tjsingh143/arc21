@@ -110,6 +110,23 @@ A commitment nobody verifies is theatre, so the check is in the database rather
 than in a runbook. `revealed_seed` may only be written once `closes_at` has
 passed.
 
+**And until phase 9 nothing ever wrote it.** The column, the trigger, the
+projection, the client parser and the render branch all existed, and no code path
+in the product published a seed — so the commitment could not be checked by
+anybody, while the Daily screen told the player it could. A commitment nobody CAN
+verify is worse than one nobody does. `reveal_closed_daily_seeds()` publishes
+every challenge whose window has closed and is called by
+`ensure_todays_daily_challenge()` as its first act — on demand rather than on a
+schedule, for the same reason the challenge row itself is created that way.
+`latest_verifiable_daily_challenge()` returns the seed, the commitment and **no
+verdict**: the device recomputes SHA-256 itself, because a server that also
+answered "yes, it matches" would be asking to be believed twice.
+
+The shoe is deterministic at every shuffle, not only the first.
+`dailyShoeSource(seed, shuffleNumber)` keys the stream on the shuffle number, so
+an attempt that passes the cut card is dealt a second shoe every other entrant is
+also dealt. Before phase 9 that reshuffle came from the CSPRNG.
+
 ---
 
 ## Authorization model
@@ -365,8 +382,17 @@ suite.
 ## Reversibility and recovery
 
 The specification asks that migrations be "reversible where reasonable or include
-documented recovery". This is the position for every one of the forty-four, so
-that a bad deploy is answered by reading rather than by improvising.
+documented recovery". This is the position for every one of them, so that a bad
+deploy is answered by reading rather than by improvising. The count was
+forty-four when this section was written and is **fifty-three** now; the nine
+added since are all additive DDL or `create or replace` of a function body, and
+fall under the "additive" heading below without changing what it says. The three
+phase 9 added are `20260903120000_leaderboard_pagination.sql` (which DROPS the
+one-argument board arities — recovery is to recreate them from
+`20260817300000` and `20260818110000`, and nothing else references them),
+`20260903130000_daily_seed_reveal.sql` and
+`20260903140000_server_owned_write_guards.sql` (five triggers; dropping them
+restores the prior shape and loses nothing).
 
 **There is no down-migration framework, and adding one would be worse than not
 having it.** A `down.sql` that nobody runs is a file that describes a rollback
@@ -438,7 +464,7 @@ bites on three of them, and it is worth naming which:
 
 ### The forward guarantee, which is the one that is actually tested
 
-`supabase db reset` applies all forty-four from an empty database on every run of
+`supabase db reset` applies all fifty-three from an empty database on every run of
 the test suite, and `20260818120000_authorization_gate.sql` fails the migration
 if the authorization surface is wrong when it finishes. A migration that cannot
 apply cleanly from scratch is caught before it is ever deployed, which is the

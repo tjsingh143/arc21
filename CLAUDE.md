@@ -984,6 +984,85 @@ wait the stranger out through the product's own timeout, which a snapshot reques
 already sends. Same lesson as `public-seat.ts` one layer up, and as the RLS-scoped
 reads one layer down.
 
+**A DETERMINISTIC SOURCE THAT IS ONLY USED ONCE IS DETERMINISTIC ONLY ONCE.** The
+Daily Challenge's shoe came from the challenge's secret seed at `createShoe` and
+from `serverRandom()` — the CSPRNG — at every command after it, because
+`game-command` passed one source for everything. Randomness reaches the engine at
+exactly two points, and the second is `reshuffle` inside `openBetting`: so an
+attempt that crossed the cut card would have been dealt a shoe nobody else was
+dealt, with **nothing failing anywhere**. Both attempts still play their twenty
+hands; they simply stop being the same challenge. Latent rather than live at the
+shipped twenty (measured over 400 attempts of the most card-hungry legal play:
+worst index 160 of a 234-card cut, zero reshuffles) — and `hand_count` is the
+challenge ROW's, capped only at 100, and at forty hands 385 of 400 reshuffled.
+`dailyShoeSource(seed, shuffleNumber)` keys the stream on the shuffle so shuffle
+two is reproducible AND different from shuffle one, and the source is chosen from
+the SESSION ROW's mode. **When a guarantee holds only because of a number nobody
+is checking, it is not a guarantee.**
+
+**AN ATTEMPT ENDS IN TWO WAYS, AND ONLY ONE WAS CHECKED.** `dailyBoundary` asked
+whether the hand count had been reached and nothing else. A challenge stack can be
+exhausted long before hand twenty — 5,000 chips against a 1,000 ceiling is five
+losing hands — and below the table minimum `getLegalActions` answers with no
+actions, no bounds and no `canStartNextHand`. A Daily Challenge carries NO CLOCKS
+on purpose, so nothing can move a table left there. Measured: `NEXT_HAND` dealt
+hand 2 into BETTING_OPEN with nothing to press, the entry stuck `in_progress` at
+`final_chips = 5000` (a lie), and because `startDailyChallenge` RESUMES an
+in-progress attempt, that account's one ranked run for the day was permanently
+unfinishable. `careerBoundary` has had the branch since career sessions shipped.
+The lesson generalises: when a mode has a stop condition, ask what ELSE stops it.
+
+**A NEW SEAT IS A NEW SEAT IN EVERY MODE.** `START_DAILY_CHALLENGE` did not call
+`assertNoOtherLiveSeat`, and `open`, `joinPublicTable`, `startCareerNode` and
+`registerSprint` all do. Measured: an account holding a solo table with 5,000 in
+escrow was given a SECOND active seat, and `my_active_session()` orders by start
+time — so it named only the challenge and the solo buy-in became unaddressable
+from every screen. Exactly the failure that function exists to close and exactly
+the one phase 8 closed for a Sprint entry, reached through the one mode neither
+had checked. Put the guard BELOW the resume branch: returning to an attempt
+already in progress takes no new seat.
+
+**THE HALF OF A MECHANISM THAT NOBODY CALLS IS THE HALF THAT IS MISSING, AND A
+COLUMN CAN BE THAT HALF.** `daily_challenges.revealed_seed` had a trigger
+refusing an early or mismatched reveal, a place in the client projection, a Zod
+field, a parser and a render branch — and no line in `supabase/functions`, `src`
+or `app` had ever WRITTEN it. So the seed was never published, the render branch
+was dead, and `describeVerification` told the player the hash "can be checked"
+when it could not be, by anybody. `tests/contracts/every-command-has-a-caller.test.ts`
+catches this shape for wire actions; nothing catches it for a column. The fix is
+the same as everywhere else: a producer (`reveal_closed_daily_seeds`, called on
+demand from `ensure_todays_daily_challenge` rather than from a scheduler that can
+fail to run) and a consumer that proves it — the DEVICE recomputes SHA-256 with
+`expo-crypto`, because a server that also answered "yes, it matches" would be
+asking to be believed twice.
+
+**A LEADERBOARD PAGES ON `row_number()`, NEVER ON `rank`.** `rank()` is what a
+player reads — equal XP is equal placing — and it is not a total order, so
+`order by rank offset 25 limit 25` over a tie can put one row on two pages and
+another on none. Compute both over the IDENTICAL window (every window here ends
+in `user_id`) and page on the row number; only the rank is returned. Also:
+`create or replace function f(a int default 100, b int default 0)` does NOT
+replace `f(a int default 100)` — it creates a second function, and `f(100)` then
+fails with "function is not unique". Drop the old arity.
+
+**`deny_client_write` IS THE SECOND LOCK, AND FIVE TABLES WERE RELYING ON THE
+FIRST ALONE.** The first lock is the absence of a client grant, and sixteen
+migrations have added one by accident. `player_daily_xp` — the weekly XP
+leaderboard's entire input — had no trigger: granting `insert` to `authenticated`
+made PostgREST answer **HTTP 201 with `repeatable_xp: 999999`** on the caller's
+own row. `wallet_ledger`, `rooms`, `room_members` and `matchmaking_queue` were
+the same shape. Four of the five were found by asking the CATALOGUE which tables
+lack the trigger rather than by remembering, which is the move
+`23_account_lifecycle.test.sql` already makes about cascades, and
+`20_authorization_surface.test.sql` now asks it on every run.
+
+**A TEST THAT ASSERTS A FAILURE MESSAGE ASSERTS THE FORMATTER.** The lost-reply
+regression first checked that the reported message named 18 and 20, and passed
+three times before failing on the fourth: Vitest renders `[ …(18) ]` when the
+leading array elements differ and `[ 'd5-4H,…', …(17) ]` when they agree, so the
+numbers in the sentence depend on the shoe. Assert the lengths, which are stable,
+and record the rendering in a comment.
+
 ---
 
 ## Product rules that are easy to get wrong
@@ -1029,6 +1108,15 @@ reads one layer down.
 - One ranked daily attempt per UTC date. A replay is playable and writes **no
   entry row at all**, which is how an unranked run cannot overwrite a ranked
   score — enforced by never writing rather than by comparing.
+- **A daily attempt ends at the hand count OR when its stack cannot cover the
+  table minimum**, whichever comes first, and `attemptCompletion` is the single
+  definition. The mode carries no clocks, so an attempt left below the minimum
+  can never be moved by anybody.
+- **The seed of a CLOSED challenge is published**, by
+  `reveal_closed_daily_seeds()` running from `ensure_todays_daily_challenge` —
+  on demand, not on a schedule. `latest_verifiable_daily_challenge()` returns the
+  seed and the commitment and no verdict; the device recomputes SHA-256 itself.
+  Today's seed is never among them.
 - Timeouts are predictable and stated: stand, decline insurance. Never silently
   play basic strategy for an absent player.
 - Empty states say **why** a surface is empty and never render sample data.

@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(39);
+select plan(44);
 
 -- ---------------------------------------------------------------------------
 -- Structure
@@ -29,10 +29,19 @@ select plan(39);
 select has_table('public', 'player_decision_periods', 'decisions are bucketed by week');
 select has_function('public', 'record_decisions',
   array['uuid', 'integer', 'integer', 'timestamptz'], 'grading is recorded by a server function');
-select has_function('public', 'leaderboard_weekly_xp', array['integer'], 'weekly XP board exists');
-select has_function('public', 'leaderboard_tournament_wins', array['integer'], 'tournament board exists');
-select has_function('public', 'leaderboard_strategy_accuracy', array['integer'], 'accuracy board exists');
-select has_function('public', 'leaderboard_daily_challenge', array['date', 'integer'], 'daily board exists');
+-- Every board takes an OFFSET as well as a limit, and the one-argument forms are
+-- gone rather than left beside them: two functions differing only in a defaulted
+-- parameter make `leaderboard_weekly_xp(100)` ambiguous, and Postgres answers
+-- "function is not unique" rather than choosing.
+select has_function('public', 'leaderboard_weekly_xp', array['integer', 'integer'], 'weekly XP board pages');
+select has_function('public', 'leaderboard_tournament_wins', array['integer', 'integer'], 'tournament board pages');
+select has_function('public', 'leaderboard_strategy_accuracy', array['integer', 'integer'], 'accuracy board pages');
+select has_function('public', 'leaderboard_daily_challenge', array['date', 'integer', 'integer'], 'daily board pages');
+
+select hasnt_function('public', 'leaderboard_weekly_xp', array['integer'],
+  'and the un-paged weekly board no longer exists to be ambiguous with it');
+select hasnt_function('public', 'leaderboard_daily_challenge', array['date', 'integer'],
+  'and neither does the un-paged daily board');
 
 -- The projection, asserted at the type rather than per query. A board cannot leak
 -- a user id however it is written, because the shape it returns has no column for
@@ -151,6 +160,40 @@ select is(
    where detail = '60 decisions'),
   0,
   'and excludes a player who has not reached the hundred-decision bar'
+);
+
+-- ---------------------------------------------------------------------------
+-- Paging
+-- ---------------------------------------------------------------------------
+--
+-- Asserted against the WHOLE board rather than an absolute page: other accounts
+-- qualify for this board too, so a test naming "the second row" would report
+-- whoever else happened to have played this week. What paging promises is that
+-- the pages concatenate back into the board, in order, with nothing repeated and
+-- nothing missed — and that holds however many players there are.
+
+select is(
+  (select array_agg(row(rank, display_name, value)::text order by ordinality)
+   from (
+     select * from public.leaderboard_strategy_accuracy(2, 0) with ordinality
+     union all
+     select * from public.leaderboard_strategy_accuracy(2, 2) with ordinality
+   ) pages),
+  (select array_agg(row(rank, display_name, value)::text order by ordinality)
+   from public.leaderboard_strategy_accuracy(4, 0) with ordinality),
+  'two pages of two are the first four rows, in the same order'
+);
+
+select is(
+  (select count(*)::int from public.leaderboard_strategy_accuracy(2, 0)),
+  2,
+  'a page is the size it was asked for'
+);
+
+select is(
+  (select count(*)::int from public.leaderboard_strategy_accuracy(100, 1000000)),
+  0,
+  'and an offset past the end of the board is an empty page, not an error'
 );
 
 select is(

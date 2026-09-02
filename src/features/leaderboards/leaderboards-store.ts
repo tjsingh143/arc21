@@ -5,6 +5,11 @@
  * four to display one would be four times the work for no benefit. Switching
  * category refetches; nothing is cached across a switch, so a board is never a
  * stale copy of a different week.
+ *
+ * PAGED, a page at a time. The server takes an offset as well as a limit and
+ * orders on a total key, so a rank shared by two players cannot put one of them
+ * on two pages and the other on none. `select` starts at the top; `more`
+ * appends the next page and is a no-op once the board has run out.
  */
 
 import { create } from "zustand";
@@ -12,6 +17,9 @@ import { create } from "zustand";
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
+  nextPageRequest,
+  PAGE_SIZE,
+  pageWasLast,
   toEntries,
   toPosition,
   type LeaderboardCategory,
@@ -27,6 +35,8 @@ export type LeaderboardStatus =
       readonly entries: readonly LeaderboardEntry[];
       /** Null when the player is not ranked on this board at all. */
       readonly position: LeaderboardPosition | null;
+      /** Whether another page exists. False once a short page came back. */
+      readonly hasMore: boolean;
     }
   | { readonly kind: "unavailable"; readonly message: string };
 
@@ -41,16 +51,17 @@ export interface LeaderboardStoreState {
   readonly category: LeaderboardCategory;
   /** Only meaningful on the accuracy board; null elsewhere. */
   readonly strategyProgress: StrategyProgress | null;
+  /** True while a further page is being fetched. */
+  readonly loadingMore: boolean;
 
   select: (category: LeaderboardCategory) => Promise<void>;
+  /** Appends the next page. Does nothing when there is not one. */
+  more: () => Promise<void>;
 }
 
 const UNREACHABLE = "Could not reach the leaderboards.";
 const SIGNED_OUT =
   "Leaderboards need an account, because every figure on them is server-recorded. Practice stays available without one.";
-
-/** The specification's "Top 100". */
-const TOP = 100;
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -64,13 +75,14 @@ const RPC_FOR: Record<LeaderboardCategory, "leaderboard_weekly_xp" | "leaderboar
   daily_challenge: "leaderboard_daily_challenge",
 };
 
-export const useLeaderboardStore = create<LeaderboardStoreState>((set) => ({
+export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => ({
   status: { kind: "loading" },
   category: "weekly_xp",
   strategyProgress: null,
+  loadingMore: false,
 
   select: async (category) => {
-    set({ category, status: { kind: "loading" }, strategyProgress: null });
+    set({ category, status: { kind: "loading" }, strategyProgress: null, loadingMore: false });
 
     const availability = getSupabase();
     if (availability.status !== "ready") {
@@ -89,7 +101,7 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set) => ({
     }
 
     const board = await bounded(
-      availability.client.rpc(RPC_FOR[category], { p_limit: TOP }),
+      availability.client.rpc(RPC_FOR[category], { p_limit: PAGE_SIZE, p_offset: 0 }),
     );
     if (board === null || board.error) {
       set({ status: { kind: "unavailable", message: UNREACHABLE } });
@@ -130,6 +142,58 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set) => ({
       }
     }
 
-    set({ status: { kind: "ready", category, entries, position }, strategyProgress });
+    set({
+      status: {
+        kind: "ready",
+        category,
+        entries,
+        position,
+        hasMore: !pageWasLast(entries.length),
+      },
+      strategyProgress,
+    });
+  },
+
+  more: async () => {
+    const current = get().status;
+    if (current.kind !== "ready") return;
+
+    // The control's own predicate, shared with the screen and tested on its own.
+    const request = nextPageRequest({
+      loaded: current.entries.length,
+      hasMore: current.hasMore,
+      busy: get().loadingMore,
+    });
+    if (!request) return;
+
+    const availability = getSupabase();
+    if (availability.status !== "ready") return;
+
+    set({ loadingMore: true });
+    const page = await bounded(
+      availability.client.rpc(RPC_FOR[current.category], {
+        p_limit: request.limit,
+        p_offset: request.offset,
+      }),
+    );
+    set({ loadingMore: false });
+
+    // A page that could not be read leaves the board exactly as it was. The
+    // rows already on screen are still true, and "Load more" is still there.
+    if (page === null || page.error) return;
+
+    const next = toEntries(page.data);
+    const latest = get().status;
+    // The category may have changed while this was in flight; appending a page
+    // of weekly XP to the accuracy board would be worse than dropping it.
+    if (latest.kind !== "ready" || latest.category !== current.category) return;
+
+    set({
+      status: {
+        ...latest,
+        entries: [...latest.entries, ...next],
+        hasMore: !pageWasLast(next.length),
+      },
+    });
   },
 }));

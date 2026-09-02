@@ -92,6 +92,28 @@ export async function lockEngineState(tx: Tx, gameId: string): Promise<LockedEng
   };
 }
 
+/**
+ * The secret seed behind a Daily Challenge session's shoe.
+ *
+ * SERVER ONLY, and never logged. It is as dangerous as the shoe itself: with it
+ * every remaining card of a live challenge is computable. It is read here so
+ * that a reshuffle mid-attempt comes from the challenge's own deterministic
+ * stream rather than the CSPRNG — see `dailyShoeSource`.
+ *
+ * Returns null for any session that is not a daily challenge, so the caller's
+ * "which source" decision is made from the session row rather than from a flag
+ * a client could influence.
+ */
+export async function findDailyShoeSeed(tx: Tx, gameId: string): Promise<string | null> {
+  const rows = await tx<{ seed_secret: string }[]>`
+    select c.seed_secret
+    from public.game_sessions s
+    join public.daily_challenges c on c.id = s.daily_challenge_id
+    where s.id = ${gameId}::uuid and s.mode = 'daily_challenge'
+  `;
+  return rows[0]?.seed_secret ?? null;
+}
+
 export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | null> {
   const rows = await tx<
     {

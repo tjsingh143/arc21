@@ -21,7 +21,7 @@ import type { EngineState } from "../../../shared/blackjack/index.js";
 import { CommandError } from "./command-errors.ts";
 import { toInteger, type Tx } from "./postgres-client.ts";
 import { applyWalletDelta, findLedgerEntry } from "./session-repository.ts";
-import { dailyScore, isComplete } from "./daily-challenge.ts";
+import { attemptCompletion, dailyScore } from "./daily-challenge.ts";
 import {
   activeEntries,
   buttonOffsetFor,
@@ -257,11 +257,26 @@ async function dailyBoundary(
   if (!row) throw new CommandError("INTERNAL", "no daily challenge for this session");
 
   const handCount = toInteger(row.hand_count, "daily_challenges.hand_count");
-  if (!isComplete(params.state.handNumber, handCount)) return { finished: false };
 
   const seat = params.state.seats[0];
   if (!seat) throw new CommandError("INTERNAL", "daily challenge session has no seat");
   const finalChips = seat.stack;
+
+  /*
+   * Two ways an attempt ends, and for a long time only one of them was here.
+   * A stack below the table minimum cannot place a legal bet, and this mode
+   * carries no clocks, so an attempt that ran out of chips stopped at
+   * BETTING_OPEN for ever with nothing on screen to press. See
+   * `attemptCompletion`.
+   */
+  const completion = attemptCompletion({
+    handsPlayed: params.state.handNumber,
+    handCount,
+    finalChips,
+    minBet: params.state.rules.minBet,
+  });
+  if (!completion) return { finished: false };
+
   const score = dailyScore({ handsPlayed: params.state.handNumber, finalChips });
 
   /*
@@ -315,7 +330,7 @@ async function dailyBoundary(
   await tx`select public.grant_earned_cosmetics_for(${row.user_id}::uuid)`;
 
   closeOut(params.state);
-  return { finished: true, note: `daily complete at ${finalChips}` };
+  return { finished: true, note: `daily ${completion} at ${finalChips}` };
 }
 
 // ---------------------------------------------------------------------------

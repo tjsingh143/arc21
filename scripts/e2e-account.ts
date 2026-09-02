@@ -232,11 +232,58 @@ async function ensureAccount(email: string): Promise<void> {
   throw new Error(`could not create ${email}: ${response.status} ${body}`);
 }
 
+/**
+ * Yesterday's challenge, so the Daily screen has something to VERIFY.
+ *
+ * The fairness view checks the most recently CLOSED challenge: today's seed is
+ * secret by design, so a database reset on the same UTC day leaves nothing for
+ * it to show and the card is correctly absent. Production reaches this state on
+ * its second day without anybody doing anything; a local run has to be given it.
+ *
+ * The seed is minted by the DATABASE, exactly as `ensure_daily_challenge_for`
+ * does, so the commitment is a real SHA-256 of a real secret rather than a
+ * fixture that happens to look like one — which is the only version of this
+ * worth putting in front of the verification code.
+ *
+ * `docker exec psql` rather than PostgREST: `daily_challenges` is server-owned
+ * and carries a `deny_client_write` trigger, which is the point of it.
+ */
+function seedYesterdaysChallenge(): void {
+  const statement = `
+    insert into public.daily_challenges
+      (challenge_date, ruleset_id, seed_secret, seed_commitment,
+       hand_count, starting_chips, tier, reward_chips, reward_xp, opens_at, closes_at)
+    select (now() at time zone 'utc')::date - 1, r.id, s.secret,
+           encode(extensions.digest(s.secret, 'sha256'), 'hex'),
+           20, 5000, 'standard', 1000, 150,
+           ((now() at time zone 'utc')::date - 1)::timestamptz,
+           ((now() at time zone 'utc')::date)::timestamptz
+    from public.rulesets r,
+         (select 'arc21:daily:' || ((now() at time zone 'utc')::date - 1)::text || ':'
+                 || encode(extensions.gen_random_bytes(32), 'hex') as secret) s
+    where r.is_active
+    limit 1
+    on conflict (challenge_date) do nothing`;
+  try {
+    execFileSync(
+      "docker",
+      ["exec", "supabase_db_arc21", "psql", "-U", "postgres", "-d", "postgres", "-tAc", statement],
+      { encoding: "utf8" },
+    );
+    process.stdout.write("yesterday's challenge exists, so the seed reveal has something to publish\n");
+  } catch {
+    // No Docker, or a database that is not local. The account still works; only
+    // the fairness card will be absent, which is the honest state without one.
+    process.stdout.write("could not seed yesterday's challenge (no local database?)\n");
+  }
+}
+
 async function main(): Promise<void> {
   const email = argument("email") ?? DEFAULT_EMAIL;
   const udid = argument("udid") ?? bootedUdid();
 
   await ensureAccount(email);
+  seedYesterdaysChallenge();
   const userId = await findUserId(email);
   await leaveAnyOpenRoom(userId);
   await leaveAnyOpenTable(userId);

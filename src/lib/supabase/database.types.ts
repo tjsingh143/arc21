@@ -236,6 +236,18 @@ export interface Database {
         Returns: unknown;
       };
       /**
+       * The most recent challenge whose seed has been PUBLISHED, for the
+       * fairness view. Only ever a CLOSED one: the column is written by
+       * `reveal_closed_daily_seeds` after `closes_at`, and the table's own
+       * trigger refuses an earlier write however it is reached. The server
+       * returns the seed and the commitment and no verdict — the device
+       * recomputes the hash, which is the entire point of a commitment.
+       */
+      latest_verifiable_daily_challenge: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
        * The caller's own career progress, keyed by node CODE — which is the same
        * string as `CareerNode.slug`, so the client never needs a second lookup
        * table to translate a uuid.
@@ -308,11 +320,18 @@ export interface Database {
        * Leaderboards. Each returns a display name, an avatar asset key and a
        * number — never a user id and never an email. The projection is the
        * server's, so there is no field here a client could render by mistake.
+       *
+       * PAGED: every board takes a limit and an offset, and orders on a total
+       * key rather than on `rank` — two players sharing a rank would otherwise
+       * be able to appear on two pages, or on none.
        */
-      leaderboard_weekly_xp: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_tournament_wins: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_strategy_accuracy: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_daily_challenge: { Args: { p_date?: string; p_limit?: number }; Returns: unknown };
+      leaderboard_weekly_xp: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_tournament_wins: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_strategy_accuracy: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_daily_challenge: {
+        Args: { p_date?: string | null; p_limit?: number; p_offset?: number };
+        Returns: unknown;
+      };
       /** The caller's own place, derived from the same ordering the board uses. */
       my_leaderboard_position: { Args: { p_category: string }; Returns: unknown };
       /** Qualification progress, for someone not yet on the accuracy board. */

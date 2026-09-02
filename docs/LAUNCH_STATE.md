@@ -1,8 +1,8 @@
 # Arc 21 Launch State
 
-**Current Phase:** 9 — Daily / Leaderboards / Cosmetics (not started)
-**Last Completed Phase:** 8 — Sprint Tournament
-(**PASS, 2026-09-01**; see `docs/phase-reports/phase-08.md`)
+**Current Phase:** 10 — Backend/API Security (not started)
+**Last Completed Phase:** 9 — Daily / Leaderboards / Cosmetics / Notifications
+(**PASS, 2026-09-02**; see `docs/phase-reports/phase-09.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -23,7 +23,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 6 — Social / Private Multiplayer | **PASS** (reverified) | Seventeen defects fixed, each regression proved to fail without its fix; the Realtime game topic was found open in BOTH directions and closed with policies; two iOS simulators played 25 unattended hands at one private table, then walked the whole open→join→deal→leave→close lifecycle end to end with the server asked at each leave. **An independent pass then re-proved every B14/B15 regression by reverting its fix, found three further defects, and re-walked the lifecycle on a freshly reset database** — `phase-06-verification.md`. |
 | 7 — Public Multiplayer | **PASS** | Eight defects fixed, each regression proved to fail without its fix by reverting it in the running system. A public table did not take a second player at all; nobody ever observed `waiting`, so three specified controls were unreachable; a public room's code admitted anyone; its accidental host could kick strangers; a leave racing a join deadlocked. Two TEST defects were hiding real ones. |
 | 8 — Sprint Tournament | **PASS** | Seven defects fixed, six proved to fail by reverting the fix in the running system. Betting was not sequential at all — the format's defining mechanic was absent; a settlement-window timeout dealt the next hand with NO boundary, so a tournament could never finish or pay; a paid entry could never be given up; registering did not check for a seat elsewhere, in either direction; and the result vanished in the transaction that created it. |
-| 9 — Daily / Leaderboards / Cosmetics | IN PROGRESS | Built; the daily-challenge intermittent is CLOSED (see below). |
+| 9 — Daily / Leaderboards / Cosmetics | **PASS** | Five defects fixed, each proved to fail by reverting it in the running system. The "18 vs 20" intermittent was REPRODUCED on purpose against the real functions and is now a regression test; a bankrupt daily attempt could never end; the challenge took a second live seat and hid the first; a mid-challenge reshuffle would have come from the CSPRNG; and the seed was never published, so the commitment could not be checked by anybody. |
 | 10 — Backend/API Security | IN PROGRESS | Built; IDOR sweep over 32 tables with two real JWTs. |
 | 11 — Adversarial QA / E2E / CI | IN PROGRESS | 4 Maestro flows exist; **CI has never run on a runner**. |
 | 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
@@ -118,6 +118,54 @@ off. Treat every one as unverified until its own phase runs.
   one card each and stands both, so a seat splitting aces as the last actor runs
   the dealer and settles inside its own command. Assert the ACCOUNTING (the
   debit plus whatever the hand returned), never the debit alone.
+- **THE DAILY CHALLENGE'S SHOE IS DETERMINISTIC AT EVERY SHUFFLE, NOT JUST THE
+  FIRST.** Randomness reaches the engine at exactly two points — `createShoe`
+  when the session opens and `reshuffle` inside `openBetting` once the cut card
+  is passed. The second used to come from `serverRandom()`, so an attempt that
+  crossed the cut would have been dealt a shoe nobody else was dealt with
+  nothing failing anywhere. `dailyShoeSource(seed, shuffleNumber)` keys the
+  stream on the shuffle number; `game-command` picks the source from the SESSION
+  ROW's mode. Latent at twenty hands (worst of 400 greedy attempts: index 160 of
+  a 234-card cut) and ordinary past forty, and `hand_count` is the challenge
+  row's, capped only at 100.
+- **AN ATTEMPT ENDS IN TWO WAYS.** `attemptCompletion` — the hand count, OR a
+  stack below the table minimum. A Daily Challenge carries no clocks on purpose,
+  so an attempt left at BETTING_OPEN with no affordable bet can never be moved by
+  anybody: measured, the server dealt hand 2 and offered the seat `actions: []`
+  with `betBounds: null`, and because `startDailyChallenge` RESUMES an
+  in-progress attempt that account's one ranked run for the day was
+  permanently unfinishable. `careerBoundary` has had this branch all along.
+- **A NEW SEAT IS A NEW SEAT IN EVERY MODE.** `START_DAILY_CHALLENGE` did not
+  call `assertNoOtherLiveSeat`, so a player holding a solo table was given a
+  second live seat and `my_active_session()` — which orders by start time — then
+  named only the newer one, stranding the buy-in. Same shape as the Sprint entry
+  phase 8 closed, in the one mode neither phase had checked. The guard sits
+  BELOW the resume branch: returning to an open attempt takes no new seat.
+- **THE SEED REVEAL IS THE OTHER HALF OF THE COMMITMENT, AND IT HAD NO
+  PRODUCER.** The column, the trigger, the projection, the parser and the render
+  branch all existed, and nothing in the product ever wrote `revealed_seed` — so
+  the screen promised a check nobody could make. `reveal_closed_daily_seeds()`
+  runs from `ensure_todays_daily_challenge`, on demand rather than on a
+  schedule; `latest_verifiable_daily_challenge()` returns the seed, the
+  commitment and NO VERDICT, and the device recomputes SHA-256 itself.
+- **A LEADERBOARD PAGES ON `row_number()`, NOT ON `rank`.** `rank` is what a
+  player reads (equal XP is equal placing) and is not a total order, so paging on
+  it can put one row on two pages and another on none. Every board computes both
+  over the identical window; only `rank` is returned. Adding a defaulted
+  parameter would have created a second function and made
+  `leaderboard_weekly_xp(100)` ambiguous, so the old arities are dropped.
+- **`deny_client_write` IS THE SECOND LOCK, AND FIVE TABLES DID NOT HAVE IT.**
+  The first lock is the absence of a grant, and sixteen migrations have added one
+  by accident. `player_daily_xp` — the weekly XP board's whole input — took a
+  single grant to become forgeable (measured at HTTP 201 with 999,999 XP);
+  `wallet_ledger`, `rooms`, `room_members` and `matchmaking_queue` were the same
+  shape. `20_authorization_surface.test.sql` now asks the CATALOGUE which tables
+  lack the trigger rather than naming them.
+- **`every-screen.yaml` ASSUMED A SCROLL POSITION AND IT FINALLY BIT.** Returning
+  from Leaderboards left Social at the TOP, and the flow waited for a footer that
+  was in the tree and not on screen — under a comment stating that "returning
+  keeps that position". `CLAUDE.md` already records the rule it broke. It is a
+  `scrollUntilVisible` now. Two consecutive failures, then exit 0 with 87 steps.
 - **A TEST HELPER THAT RETRIES A 5xx CAN HIDE A DETERMINISTIC SERVER FAULT.**
   `call-function.ts` replayed the deadlock's own `{"status":"rejected",
   "code":"INTERNAL"}` envelope and the race test passed three times out of
@@ -278,8 +326,28 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260902120000_sprint_withdrawal_and_result.sql`
-(50 migrations, all applied from scratch cleanly on 2026-09-01).
+`supabase/migrations/20260903140000_server_owned_write_guards.sql`
+(53 migrations, all applied from scratch cleanly on 2026-09-02).
+
+Phase 9 added three:
+
+- `20260903120000_leaderboard_pagination.sql` — every board takes `p_offset` as
+  well as `p_limit` and pages on `row_number()` over the same window `rank()`
+  uses, so a shared rank cannot put a player on two pages. The one-argument
+  arities are DROPPED rather than left beside the new ones: a defaulted
+  parameter makes `leaderboard_weekly_xp(100)` ambiguous. `my_leaderboard_position`
+  is redefined from the last file that defined it. The tournament board also
+  stops counting withdrawn entries.
+- `20260903130000_daily_seed_reveal.sql` — `reveal_closed_daily_seeds()` and
+  `latest_verifiable_daily_challenge()`, the half of the commitment scheme that
+  had no producer, plus `ensure_todays_daily_challenge` calling the first as its
+  first act. The authorization gate is redefined (from the last file that
+  defined it) with one name added; it refused this migration on its first run,
+  which is the gate working.
+- `20260903140000_server_owned_write_guards.sql` — `deny_client_write` on the
+  five tables that lacked it: `player_daily_xp`, `wallet_ledger`, `rooms`,
+  `room_members` and `matchmaking_queue`. Found by attacking the first and then
+  asking the catalogue about the rest.
 
 Phase 8 added one:
 
@@ -428,7 +496,39 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-09-01 (end of phase 7)
+## Last known green verification — 2026-09-02 (end of phase 9)
+
+Against a database reset from empty, with `functions serve` restarted first:
+
+```
+npx tsc --noEmit                    exit 0
+npm run check:functions             all 3 Edge Functions typecheck
+npm run lint                        0 errors, 37 warnings (baseline unchanged)
+npm run test:unit                 118 files / 2,359 tests PASS  (phase 8: 118 / 2,330)
+npm run test:server                20 files /   250 tests PASS  (phase 8:  20 /   243)
+supabase test db                   25 files /   532 tests PASS  (phase 8:  25 /   520)
+npm run test:coverage              per-area gates pass, exit 0
+npm run contrast:check             50 pairings, 0 failing (+2 Increased-contrast)
+npm run benchmark                  802 µs/hand (range 752–808)
+supabase db reset                  53 migrations applied from empty, exit 0
+
+Maestro, iPhone 17 Pro Max (iOS 26.5), dev build, Metro restarted with `--clear`
+AFTER the client edits and confirmed by its pid's start time:
+  every-screen-online.yaml          exit 0, 46 steps COMPLETED
+  every-screen.yaml                 exit 0, 87 steps COMPLETED (.env.local aside)
+
+Daily Challenge stability, live stack: 12 consecutive runs during development,
+10 further quiet runs after the final reset, 4 runs started five seconds into a
+full `npm run test:unit` — the shape the historical intermittent was seen in —
+and 3 confirmation runs against the final code. **29 runs, 0 failures**, with no
+`[call-function]` retry warning in any of them.
+```
+
+`contrast:check` went from 46 pairings to 50: `accent` is used as body TEXT in
+five places and had only ever been measured as a button FILL. All four new
+pairings pass, 7.54:1 at the worst.
+
+## Previous green verification — 2026-09-01 (end of phase 7)
 
 ```
 npx tsc --noEmit                    exit 0

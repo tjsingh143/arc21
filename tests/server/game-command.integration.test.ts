@@ -20,9 +20,11 @@
  */
 
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
+import http from "node:http";
 import { beforeAll, describe, expect, it } from "vitest";
 
-import { callFunction as call } from "./call-function.js";
+import { callFunction as call, callFunctionAt, type CallResult } from "./call-function.js";
 import { matchIntoAPublicRoom } from "./public-seat.js";
 import { stackUp } from "./stack-guard.js";
 
@@ -906,6 +908,42 @@ interface PublicSnapshot {
 suite("the daily challenge", () => {
   const REST = "http://127.0.0.1:54321/rest/v1";
 
+  /**
+   * SQL against the local database container.
+   *
+   * Test fixture only, and used for exactly two things: constructing a standing
+   * a fair shoe will not produce to order, and READING the authoritative shoe
+   * order — which no client may see, and which is the only way to compare what
+   * two entrants were actually dealt. Nothing here decides an outcome.
+   */
+  function sql(statement: string): string {
+    return execFileSync(
+      "docker",
+      ["exec", "supabase_db_arc21", "psql", "-U", "postgres", "-d", "postgres", "-tAc", statement],
+      { encoding: "utf8" },
+    ).trim();
+  }
+
+  async function rpc(token: string, name: string, args: Record<string, unknown> = {}) {
+    const response = await fetch(`${REST}/rpc/${name}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: LOCAL_SERVICE_KEY,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(args),
+    });
+    const raw = await response.text();
+    let parsed: unknown = null;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      parsed = raw;
+    }
+    return { status: response.status, body: parsed as unknown[] };
+  }
+
   async function walletOf(token: string): Promise<number> {
     const response = await fetch(`${REST}/wallets?select=balance`, {
       headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` },
@@ -945,7 +983,21 @@ suite("the daily challenge", () => {
    * status and the body. The same rule the wallet reader learned when returning
    * -1 turned a harness failure into "expected 25200 to be 199".
    */
-  async function playOut(token: string, gameId: string, seatId: string, opening: PublicSnapshot) {
+  async function playOut(
+    token: string,
+    gameId: string,
+    seatId: string,
+    opening: PublicSnapshot,
+    /**
+     * How the attempt talks to the server.
+     *
+     * Defaults to the real caller. `callFunctionAt` against a fault-injecting
+     * proxy is what lets the lost-reply case below be reproduced ON PURPOSE
+     * rather than waited for.
+     */
+    send1: (body: Record<string, unknown>) => Promise<CallResult> = (body) =>
+      call("game-command", token, body),
+  ) {
     let state = opening;
     const dealt: string[] = [];
 
@@ -963,7 +1015,7 @@ suite("the daily challenge", () => {
         expectedVersion: state.version,
         clientSentAt: iso(),
       };
-      const result = await call("game-command", token, lastCommand);
+      const result = await send1(lastCommand);
       lastResponse = result.body;
       if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
       return result;
@@ -1260,6 +1312,612 @@ suite("the daily challenge", () => {
     // An integer, in millionths. No float reaches a column in this schema.
     expect(Number.isInteger(entry!.ev_lost_micros)).toBe(true);
   }, 120_000);
+
+  /**
+   * A NEW ATTEMPT IS A NEW SEAT.
+   *
+   * Every other mode that opens one asks whether the caller already holds a
+   * table — `open`, `joinPublicTable`, `startCareerNode`, `registerSprint` — and
+   * this one did not. Measured against the running stack before the guard
+   * existed: an account with a solo table and 5,000 chips in escrow started the
+   * challenge, was answered 200, and held TWO active seats. `my_active_session()`
+   * orders by start time, so it then named only the challenge and the solo
+   * buy-in was unaddressable from every screen — which is the precise failure
+   * that function was written to close, and the one phase 8 closed for a Sprint
+   * entry.
+   *
+   * The refusal has to name something the player can do, which is why the second
+   * half of this test matters as much as the first.
+   */
+  it("refuses to open a second live seat while a table is held", async () => {
+    const token = signToken(await createUser());
+
+    const solo = await call("create-session", token, {
+      action: "OPEN",
+      tier: "standard",
+      clientRequestId: crypto.randomUUID(),
+      clientSentAt: iso(),
+    });
+    expect(solo.status).toBe(200);
+    expect(solo.body.status).toBe("opened");
+
+    const refused = await start(token);
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe("SESSION_ALREADY_ACTIVE");
+
+    // One seat, and it is the one holding the chips.
+    const seats = await fetch(
+      `${REST}/game_session_seats?select=game_session_id,status&user_id=eq.${
+        JSON.parse(Buffer.from((token.split(".")[1] as string), "base64url").toString()).sub
+      }&status=neq.left`,
+      { headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` } },
+    );
+    expect((await seats.json()) as unknown[]).toHaveLength(1);
+
+    const where = await rpc(token, "my_active_session");
+    expect(where.body).toHaveLength(1);
+    expect((where.body[0] as { game_session_id: string }).game_session_id).toBe(solo.body.gameId);
+
+    // And no entry was written for a challenge that never opened.
+    const entries = await fetch(`${REST}/daily_entries?select=status`, {
+      headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` },
+    });
+    expect((await entries.json()) as unknown[]).toHaveLength(0);
+  }, 120_000);
+
+  /**
+   * AN ATTEMPT THAT RUNS OUT OF CHIPS IS OVER.
+   *
+   * 5,000 challenge chips with a 1,000 ceiling is five losing hands at the
+   * maximum, and below the 100-chip minimum there is no legal bet left to place:
+   * `getLegalActions` answers with no actions, no bounds and no
+   * `canStartNextHand`. The Daily Challenge deliberately carries NO CLOCKS, so
+   * nothing can move a table left there either — measured before the fix, the
+   * server dealt hand 2, opened betting, and offered the seat nothing at all,
+   * with the entry still `in_progress` at `final_chips = 5000` and the session
+   * still `active`. Because `startDailyChallenge` RESUMES an in-progress
+   * attempt, that account's one ranked run for the day was permanently
+   * unfinishable.
+   *
+   * The standing is constructed rather than played for: a fair shoe will not
+   * bankrupt a flat 100-chip bettor on demand, and retrying until it does is a
+   * flake by construction. Every decision after it is the server's.
+   */
+  it("ends an attempt whose stack cannot cover the table minimum", async () => {
+    const token = signToken(await createUser());
+    const opened = await start(token);
+    const gameId = opened.body.gameId as string;
+    const seatId = opened.body.seatId as string;
+    let state = opened.body.publicState as PublicSnapshot;
+
+    const send = async (type: string, payload?: Record<string, unknown>) => {
+      const result = await call("game-command", token, {
+        gameId,
+        clientActionId: crypto.randomUUID(),
+        type,
+        ...(payload ? { payload } : {}),
+        expectedVersion: state.version,
+        clientSentAt: iso(),
+      });
+      if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
+      if (result.status !== 200) throw new Error(`${type} -> ${result.status} ${result.raw}`);
+      return result;
+    };
+
+    await send("PLACE_BET", { amount: 100 });
+    await send("LOCK_BET");
+    for (let step = 0; step < 40 && state.phase !== "HAND_COMPLETE"; step += 1) {
+      if (state.phase === "INSURANCE_OFFER" && state.legalActions[seatId]?.canDeclineInsurance) {
+        await send("DECLINE_INSURANCE");
+        continue;
+      }
+      if (state.phase === "PLAYER_TURNS" && state.activeSeatId === seatId) {
+        await send("STAND");
+        continue;
+      }
+      break;
+    }
+    expect(state.phase).toBe("HAND_COMPLETE");
+
+    // 50 chips, against a 100-chip table minimum.
+    sql(
+      `update private.game_state_private
+       set engine_state = jsonb_set(engine_state, '{seats,0,stack}', '50'::jsonb)
+       where game_session_id = '${gameId}'`,
+    );
+
+    await send("NEXT_HAND");
+
+    // Over, rather than parked at a betting round with nothing to press.
+    expect(state.phase).toBe("SESSION_COMPLETE");
+    expect(state.handNumber).toBe(1);
+
+    const entries = await fetch(
+      `${REST}/daily_entries?select=status,hands_played,final_chips,score`,
+      { headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` } },
+    );
+    const rows = (await entries.json()) as Array<{
+      status: string;
+      hands_played: number;
+      final_chips: number;
+      score: number;
+    }>;
+    expect(rows[0]?.status).toBe("completed");
+    expect(rows[0]?.hands_played).toBe(1);
+    // Scored honestly at what was left, which is what the specification's
+    // "ending challenge bankroll" says.
+    expect(rows[0]?.final_chips).toBe(50);
+    expect(rows[0]?.score).toBe(50);
+  }, 120_000);
+
+  /**
+   * THE SHOE AFTER THE CUT CARD IS STILL THE CHALLENGE'S SHOE.
+   *
+   * Randomness reaches the engine at two points and only two: `createShoe` when
+   * the session opens, and `reshuffle` inside `openBetting`. The first came from
+   * the challenge's secret seed; the second came from `serverRandom()`, because
+   * `game-command` handed every command the CSPRNG — so the moment an attempt
+   * crossed the cut card it stopped facing the same cards as everybody else,
+   * with nothing failing anywhere. Both attempts still play their twenty hands.
+   * They simply stop being the same challenge.
+   *
+   * Latent rather than live at the shipped twenty hands — measured over 400
+   * attempts of the most card-hungry legal play there is, the worst reached
+   * index 160 of the 234-card cut and none reshuffled — but `hand_count` is the
+   * challenge ROW's, constrained only to 1..100 and honoured as authored, and at
+   * forty hands 385 of 400 attempts reshuffled. A guarantee that holds because
+   * of a number nobody is checking is not a guarantee.
+   *
+   * Both attempts' shoes are wound to the cut card so the reshuffle happens on
+   * the next command for both. Nothing here chooses a card: the server decides
+   * what to shuffle with, and the two orders are then compared.
+   */
+  it("reshuffles from the challenge's own stream, not from the CSPRNG", async () => {
+    const first = signToken(await createUser());
+    const second = signToken(await createUser());
+
+    const a = await start(first);
+    const b = await start(second);
+    expect(a.body.challengeId).toBe(b.body.challengeId);
+
+    const settleFirstHand = async (token: string, opened: CallResult) => {
+      const gameId = opened.body.gameId as string;
+      const seatId = opened.body.seatId as string;
+      let state = opened.body.publicState as PublicSnapshot;
+      const send = async (type: string, payload?: Record<string, unknown>) => {
+        const result = await call("game-command", token, {
+          gameId,
+          clientActionId: crypto.randomUUID(),
+          type,
+          ...(payload ? { payload } : {}),
+          expectedVersion: state.version,
+          clientSentAt: iso(),
+        });
+        if (result.body.publicState) state = result.body.publicState as PublicSnapshot;
+        if (result.status !== 200) throw new Error(`${type} -> ${result.status} ${result.raw}`);
+        return result;
+      };
+      await send("PLACE_BET", { amount: 100 });
+      await send("LOCK_BET");
+      for (let step = 0; step < 40 && state.phase !== "HAND_COMPLETE"; step += 1) {
+        if (state.phase === "INSURANCE_OFFER" && state.legalActions[seatId]?.canDeclineInsurance) {
+          await send("DECLINE_INSURANCE");
+          continue;
+        }
+        if (state.phase === "PLAYER_TURNS" && state.activeSeatId === seatId) {
+          await send("STAND");
+          continue;
+        }
+        break;
+      }
+      expect(state.phase).toBe("HAND_COMPLETE");
+      return { gameId, state, send };
+    };
+
+    const playerA = await settleFirstHand(first, a);
+    const playerB = await settleFirstHand(second, b);
+
+    // The opening shoe is shared, which is the claim this whole mode rests on.
+    const orderOf = (gameId: string): { shuffleNumber: number; cards: string } =>
+      JSON.parse(
+        sql(
+          `select json_build_object(
+             'shuffleNumber', (engine_state -> 'shoe' ->> 'shuffleNumber')::int,
+             'cards', (select string_agg(c ->> 'id', ',')
+                       from jsonb_array_elements(engine_state -> 'shoe' -> 'cards') c))
+           from private.game_state_private where game_session_id = '${gameId}'`,
+        ),
+      );
+    const openingShoe = orderOf(playerA.gameId).cards;
+    expect(openingShoe).toBe(orderOf(playerB.gameId).cards);
+
+    // Wind both shoes to the cut card. `cutIndex` is the engine's own figure,
+    // read from the state rather than recomputed here.
+    for (const gameId of [playerA.gameId, playerB.gameId]) {
+      sql(
+        `update private.game_state_private
+         set engine_state = jsonb_set(
+               engine_state, '{shoe,nextIndex}',
+               to_jsonb((engine_state -> 'shoe' ->> 'cutIndex')::int))
+         where game_session_id = '${gameId}'`,
+      );
+    }
+
+    await playerA.send("NEXT_HAND");
+    await playerB.send("NEXT_HAND");
+
+    const afterA = orderOf(playerA.gameId);
+    const afterB = orderOf(playerB.gameId);
+
+    // It really did reshuffle...
+    expect(afterA.shuffleNumber).toBe(2);
+    expect(afterB.shuffleNumber).toBe(2);
+    // ...both entrants got the SAME second shoe...
+    expect(afterA.cards).toBe(afterB.cards);
+    // ...and it is a NEW shoe, not the opening one dealt over again, which is
+    // what a stream keyed only on the seed would have produced.
+    expect(afterA.cards).not.toBe(openingShoe);
+  }, 180_000);
+
+  /**
+   * THE OTHER HALF OF THE COMMITMENT SCHEME.
+   *
+   * `daily_challenges.revealed_seed` has existed since the table did. A trigger
+   * refuses a reveal before `closes_at` and refuses one that does not match the
+   * secret; the client projection carries the column, `daily.ts` parses it and
+   * the Daily screen renders it. **Nothing in the product ever wrote it.**
+   * Outside pgTAP, no code path set `revealed_seed` — so the seed was never
+   * published, the render branch was dead, and the sentence on screen promising
+   * the player they could check the hash could not be kept by anybody.
+   *
+   * The specification: "After challenge closes, the seed may become publicly
+   * viewable in an audit/fairness view."
+   *
+   * Note what is asserted about TODAY: nothing was published for it. The reveal
+   * runs on every load, so if its predicate were wrong this is where a live
+   * shoe would escape.
+   */
+  it("publishes a closed challenge's seed, and never a live one", async () => {
+    const token = signToken(await createUser());
+
+    // A challenge whose window has closed, on a date this test owns. Far enough
+    // back that it cannot collide with a real one, and carrying no entries, so
+    // nobody's daily streak changes.
+    const closedDate = "2019-07-04";
+    sql(
+      `insert into public.daily_challenges
+         (challenge_date, ruleset_id, seed_secret, seed_commitment,
+          hand_count, starting_chips, tier, reward_chips, reward_xp, opens_at, closes_at)
+       select '${closedDate}'::date, r.id, s.secret,
+              encode(extensions.digest(s.secret, 'sha256'), 'hex'),
+              20, 5000, 'standard', 1000, 150,
+              '${closedDate}'::timestamptz, '${closedDate}'::timestamptz + interval '1 day'
+       from public.rulesets r,
+            (select 'arc21:daily:${closedDate}:' || repeat('e', 64) as secret) s
+       where r.is_active
+       limit 1
+       on conflict (challenge_date) do nothing`,
+    );
+
+    try {
+      // Nothing is published until somebody opens the screen. This is the call
+      // the store makes.
+      const today = await rpc(token, "ensure_todays_daily_challenge");
+      expect(today.status).toBe(200);
+
+      const verifiable = await rpc(token, "latest_verifiable_daily_challenge");
+      expect(verifiable.status).toBe(200);
+      const row = (Array.isArray(verifiable.body) ? verifiable.body[0] : verifiable.body) as
+        | { challenge_date: string; seed_commitment: string; revealed_seed: string }
+        | undefined;
+      expect(row?.challenge_date).toBe(closedDate);
+
+      // THE CHECK A PLAYER'S DEVICE MAKES, made here in Node against the same
+      // two published strings. If this ever fails, the shoe was not the one
+      // committed to before play.
+      const digest = crypto.createHash("sha256").update(row!.revealed_seed).digest("hex");
+      expect(digest).toBe(row!.seed_commitment);
+
+      // TODAY's seed is still secret. The reveal ran a moment ago and left it
+      // alone, which is the property the whole mode depends on.
+      expect(
+        sql(
+          `select coalesce(revealed_seed, 'NOT-REVEALED')
+           from public.daily_challenges
+           where challenge_date = (now() at time zone 'utc')::date`,
+        ),
+      ).toBe("NOT-REVEALED");
+
+      // And the seed itself is not reachable through the client's own grants,
+      // however it is asked for.
+      const direct = await fetch(
+        `${REST}/daily_challenges?select=seed_secret&challenge_date=eq.${closedDate}`,
+        { headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` } },
+      );
+      expect(direct.status).toBeGreaterThanOrEqual(400);
+    } finally {
+      sql(`delete from public.daily_challenges where challenge_date = '${closedDate}'`);
+    }
+  }, 120_000);
+
+  /**
+   * THE "18 ITEMS versus 20 ITEMS" INTERMITTENT, REPRODUCED ON PURPOSE.
+   *
+   * ------------------------------------------------------------------------
+   * WHAT WAS OBSERVED
+   * ------------------------------------------------------------------------
+   * `deals two different accounts the identical shoe` failed occasionally with
+   *
+   *     expected [ 18 items ] to deeply equal [ 20 items ]
+   *
+   * — a hand-COUNT mismatch with every card that WAS recorded agreeing. It reads
+   * as a defect in the deterministic shoe, which is the most important claim
+   * this mode makes. It is not a card defect at all.
+   *
+   * ------------------------------------------------------------------------
+   * THE MECHANISM
+   * ------------------------------------------------------------------------
+   * From `docker logs supabase_edge_runtime_arc21`, in this order: a CPU soft
+   * limit, then `{"message":"command handled", …,"outcome":"accepted"}`, then
+   * `WorkerAlreadyRetired`. **The command committed and only the reply was
+   * lost.** The caller then saw a 5xx for a command the server had applied.
+   *
+   * That is not something a test can wait for — the retirement is the runtime's
+   * decision — so it is INJECTED here instead: a proxy that forwards each
+   * request to the real function, waits for the real reply, and then throws that
+   * reply away and answers the runtime's own
+   * `{"code":"WORKER_LIMIT", …}` at HTTP 546. Same failure, same order, on
+   * demand.
+   *
+   * ------------------------------------------------------------------------
+   * WHAT THIS FILE THEN ASSERTS
+   * ------------------------------------------------------------------------
+   *   1. The pre-fix CALLER — the one that stopped the loop on a non-200 —
+   *      reproduces the reported symptom exactly: 18 hands against a reference
+   *      attempt's 20, with all 18 identical. Not "a plausible cause": the
+   *      message itself.
+   *   2. The current caller replays the identical body and the attempt
+   *      COMPLETES, with the same twenty hands as an attempt that lost nothing.
+   *   3. Nothing was applied twice: one entry row, one reward, twenty hands —
+   *      which is the property the whole retry rests on, asserted against the
+   *      real server rather than a stub.
+   *
+   * The faults deliberately include the LAST `NEXT_HAND`. That command never
+   * reaches `applyCommand`: it closes the session, marks the seat left and pays
+   * the reward, and its idempotency record is written on a different code path
+   * from every other command's.
+   */
+  it("reproduces the lost-reply truncation, and survives it", async () => {
+    /** How many replies the proxy has thrown away, per command type. */
+    let discarded = 0;
+    const seen = new Map<string, number>();
+
+    /**
+     * Forwards to the real function, waits for the real answer, and then loses
+     * it — the runtime's behaviour, in the runtime's own words.
+     */
+    const start546 = async (lose: (type: string, occurrence: number) => boolean) => {
+      const server = http.createServer((request, response) => {
+        const chunks: Buffer[] = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          const body = Buffer.concat(chunks);
+          void (async () => {
+            const upstream = await fetch(`http://127.0.0.1:54321${request.url ?? ""}`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                ...(request.headers.authorization
+                  ? { Authorization: request.headers.authorization }
+                  : {}),
+              },
+              body,
+            });
+            const raw = await upstream.text();
+
+            let type = "";
+            try {
+              type = String((JSON.parse(body.toString()) as { type?: unknown }).type ?? "");
+            } catch {
+              type = "";
+            }
+            const occurrence = (seen.get(type) ?? 0) + 1;
+            seen.set(type, occurrence);
+
+            if (lose(type, occurrence)) {
+              discarded += 1;
+              response.writeHead(546, { "Content-Type": "application/json" });
+              response.end(
+                JSON.stringify({
+                  code: "WORKER_LIMIT",
+                  message: "request cannot be handled because the worker has already retired",
+                }),
+              );
+              return;
+            }
+            response.writeHead(upstream.status, { "Content-Type": "application/json" });
+            response.end(raw);
+          })();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as { port: number }).port;
+      return { server, base: `http://127.0.0.1:${port}/functions/v1` };
+    };
+
+    // ---- The reference attempt, which loses nothing ------------------------
+    const referenceToken = signToken(await createUser());
+    const reference = await start(referenceToken);
+    const played = await playOut(
+      referenceToken,
+      reference.body.gameId as string,
+      reference.body.seatId as string,
+      reference.body.publicState as PublicSnapshot,
+    );
+    expect(played.dealt).toHaveLength(20);
+
+    // ---- 1. The pre-fix caller, and the exact reported symptom -------------
+    seen.clear();
+    discarded = 0;
+    const truncated = await start546((type, occurrence) => type === "NEXT_HAND" && occurrence === 18);
+    const oldToken = signToken(await createUser());
+    const oldOpened = await start(oldToken);
+    try {
+      const gameId = oldOpened.body.gameId as string;
+      const seatId = oldOpened.body.seatId as string;
+      let state = oldOpened.body.publicState as PublicSnapshot;
+      const dealt: string[] = [];
+
+      /*
+       * `playOut` AS IT WAS: `if (next.status !== 200) break`, and the array
+       * handed back however short it is. Written out rather than imported,
+       * because the point is to show what the old shape DID with this fault.
+       */
+      const send = async (type: string, payload?: Record<string, unknown>) => {
+        // A PLAIN fetch. `callFunctionAt` would replay the body — that IS the
+        // fix — so using it here would prove nothing about what the old caller
+        // did with a lost reply.
+        const response = await fetch(`${truncated.base}/game-command`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${oldToken}` },
+          body: JSON.stringify({
+            gameId,
+            clientActionId: crypto.randomUUID(),
+            type,
+            ...(payload ? { payload } : {}),
+            expectedVersion: state.version,
+            clientSentAt: iso(),
+          }),
+        });
+        const raw = await response.text();
+        let body: Record<string, unknown> = {};
+        try {
+          body = JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          body = {};
+        }
+        if (body.publicState) state = body.publicState as PublicSnapshot;
+        return { status: response.status, body, raw };
+      };
+
+      // `state` is reassigned inside `send`, which the narrowing cannot see.
+      const phaseNow = (): string => state.phase;
+
+      outer: for (let hand = 1; hand <= 25; hand += 1) {
+        if (phaseNow() !== "BETTING_OPEN") break;
+        if ((await send("PLACE_BET", { amount: 100 })).status !== 200) break;
+        if ((await send("LOCK_BET")).status !== 200) break;
+        for (let step = 0; step < 40 && phaseNow() !== "HAND_COMPLETE"; step += 1) {
+          if (phaseNow() === "INSURANCE_OFFER" && state.legalActions[seatId]?.canDeclineInsurance) {
+            if ((await send("DECLINE_INSURANCE")).status !== 200) break outer;
+            continue;
+          }
+          if (phaseNow() === "PLAYER_TURNS" && state.activeSeatId === seatId) {
+            if ((await send("STAND")).status !== 200) break outer;
+            continue;
+          }
+          break;
+        }
+        if (phaseNow() !== "HAND_COMPLETE") break;
+        const snapshot = state as unknown as {
+          seats: Array<{ hands: Array<{ cards: Array<{ id: string }> }> }>;
+          dealer: { cards: Array<{ id?: string }> };
+        };
+        dealt.push(
+          snapshot.seats[0]!.hands.flatMap((h) => h.cards.map((c) => c.id)).join(",") +
+            "|" +
+            snapshot.dealer.cards.map((c) => c.id ?? "hidden").join(","),
+        );
+        if ((await send("NEXT_HAND")).status !== 200) break;
+      }
+
+      // The reported failure, reproduced: a SHORT array whose every entry
+      // agrees. `toEqual` on these two is where "18 items versus 20 items" came
+      // from, and it never mentioned the reply that was lost.
+      expect(discarded).toBe(1);
+      expect(dealt).toHaveLength(18);
+      expect(played.dealt).toHaveLength(20);
+      expect(dealt).toEqual(played.dealt.slice(0, 18));
+
+      /*
+       * And the comparison the old helper made: two arrays of CARDS that differ
+       * only in length. That is the whole of the reported intermittent — a
+       * card-mismatch message for something that was never a card mismatch.
+       *
+       * The message TEXT is deliberately not asserted, and the first attempt to
+       * assert it failed on the fourth run for a reason worth recording: Vitest
+       * renders `[ …(18) ]` when the leading elements differ and
+       * `[ 'd5-4H,d0-6S|d5-QC,d0-9D', …(17) ]` when they agree, so the numbers
+       * in the sentence depend on the shoe. (The version in use when this was
+       * first seen rendered `expected [ 18 items ] to deeply equal
+       * [ 20 items ]`.) The stable claim is the one asserted three lines up:
+       * eighteen hands against twenty, every one of the eighteen identical.
+       */
+      expect(() => {
+        expect(dealt).toEqual(played.dealt);
+      }).toThrow();
+    } finally {
+      await new Promise<void>((resolve) => truncated.server.close(() => resolve()));
+    }
+
+    // ---- 2 and 3. The current caller, through the same faults --------------
+    seen.clear();
+    discarded = 0;
+    const retries: string[] = [];
+    // Four losses, spread across the commands that can each end a hand in a
+    // different way — including the final NEXT_HAND, which closes the session
+    // and pays the reward without ever reaching `applyCommand`.
+    const faulted = await start546(
+      (type, occurrence) =>
+        (type === "LOCK_BET" && occurrence === 3) ||
+        (type === "NEXT_HAND" && (occurrence === 5 || occurrence === 12 || occurrence === 20)),
+    );
+    try {
+      const token = signToken(await createUser());
+      const before = await walletOf(token);
+      const opened = await start(token);
+
+      const survived = await playOut(
+        token,
+        opened.body.gameId as string,
+        opened.body.seatId as string,
+        opened.body.publicState as PublicSnapshot,
+        (body) =>
+          callFunctionAt(faulted.base, "game-command", token, body, (message) =>
+            retries.push(message),
+          ),
+      );
+
+      // The faults fired, and each was absorbed by a replay of the identical
+      // body. Without this assertion the rest of the test could pass by the
+      // proxy having done nothing at all.
+      expect(discarded).toBe(4);
+      expect(retries).toHaveLength(4);
+      for (const message of retries) expect(message).toContain("HTTP 546");
+
+      // The attempt COMPLETED, and it is the same attempt everybody else played.
+      expect(survived.state.phase).toBe("SESSION_COMPLETE");
+      expect(survived.state.handNumber).toBe(20);
+      expect(survived.dealt).toEqual(played.dealt);
+
+      // Nothing was applied twice: twenty hands, one entry, one reward.
+      expect(await walletOf(token)).toBe(before + 1_000);
+      const entries = await fetch(
+        `${REST}/daily_entries?select=status,hands_played,score`,
+        { headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` } },
+      );
+      const rows = (await entries.json()) as Array<{
+        status: string;
+        hands_played: number;
+        score: number;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.status).toBe("completed");
+      expect(rows[0]?.hands_played).toBe(20);
+    } finally {
+      await new Promise<void>((resolve) => faulted.server.close(() => resolve()));
+    }
+  }, 240_000);
 });
 
 /**
@@ -1637,6 +2295,60 @@ suite("decisions and leaderboards", () => {
       expect(own?.rank).toBe(mine.rank);
       expect(own?.value).toBe(mine.value);
     }
+  }, 120_000);
+
+  /**
+   * PAGING, asserted as a relationship for the same reason the test above is.
+   *
+   * A board is global and this database has whoever else has played, so a test
+   * naming "the second row" reports somebody else's account. What paging
+   * promises is narrower and does hold: the pages concatenate back into the
+   * board, in order, with nothing repeated and nothing missed. That is the
+   * property `row_number()` was added for — `rank` alone is not a total order,
+   * and a tie can otherwise put one player on two pages and another on none.
+   */
+  it("pages the weekly XP board without repeating or losing a row", async () => {
+    const token = signToken(await createUser());
+    await playSolo(token, 3);
+
+    const key = (row: Record<string, unknown>) =>
+      `${String(row.rank)}|${String(row.display_name)}|${String(row.value)}`;
+
+    const whole = ((await rpc(token, "leaderboard_weekly_xp", { p_limit: 6, p_offset: 0 }))
+      .body as Array<Record<string, unknown>>).map(key);
+    // Needs at least a few ranked players to be a meaningful comparison; this
+    // suite has created plenty by the time it runs, and `playSolo` above adds
+    // one more.
+    expect(whole.length).toBeGreaterThan(3);
+
+    const first = ((await rpc(token, "leaderboard_weekly_xp", { p_limit: 3, p_offset: 0 }))
+      .body as Array<Record<string, unknown>>).map(key);
+    const second = ((await rpc(token, "leaderboard_weekly_xp", { p_limit: 3, p_offset: 3 }))
+      .body as Array<Record<string, unknown>>).map(key);
+
+    expect(first).toHaveLength(3);
+    expect([...first, ...second]).toEqual(whole);
+
+    // An offset past the end is an empty page, not an error and not a wrap.
+    const beyond = await rpc(token, "leaderboard_weekly_xp", { p_limit: 25, p_offset: 1_000_000 });
+    expect(beyond.status).toBe(200);
+    expect(beyond.body).toHaveLength(0);
+
+    // Every board takes the same pair, so the client's one paging path works for
+    // all four rather than three of them.
+    for (const board of [
+      "leaderboard_tournament_wins",
+      "leaderboard_strategy_accuracy",
+    ]) {
+      const page = await rpc(token, board, { p_limit: 5, p_offset: 0 });
+      expect(page.status).toBe(200);
+    }
+    const daily = await rpc(token, "leaderboard_daily_challenge", {
+      p_date: null,
+      p_limit: 5,
+      p_offset: 0,
+    });
+    expect(daily.status).toBe(200);
   }, 120_000);
 
   it("grants the default cosmetics and refuses to equip an unowned one", async () => {
