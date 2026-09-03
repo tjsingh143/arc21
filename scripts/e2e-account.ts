@@ -162,8 +162,21 @@ async function leaveAnyOpenRoom(userId: string): Promise<void> {
  * the idempotency key is derived from `gameId:seatId`, so this cannot credit
  * twice however many times it runs.
  *
- * A seat that cannot be given up mid-hand is left alone rather than forced: the
- * server refuses SESSION_BUSY and it will settle on its own.
+ * A seat that cannot be given up mid-hand USED TO BE left alone, on the grounds
+ * that "it will settle on its own". That is true of a table with clocks and
+ * false of every table this account actually plays: solo, career and the daily
+ * challenge carry NO clocks on purpose, so `RESOLVE_TIMEOUT` can never fire and
+ * a hand left mid-play stays mid-play for ever. A run of
+ * `online-leave-mid-hand.yaml` that failed at the insurance offer left exactly
+ * that, and the next run of any flow was answered "You are already seated at a
+ * table" — which is the product working, and unstageable.
+ *
+ * So the hand is PLAYED OUT first, through `game-command`, using the same three
+ * branches `reachPlayerTurns` in `tests/server` needs for the same reason: the
+ * cascade after betting closes stops at PLAYER_TURNS, at INSURANCE_OFFER when
+ * the dealer shows an ace, or at HAND_COMPLETE on a natural. Standing and
+ * declining are the server's own absent-player defaults, so nothing here plays
+ * the hand differently from letting a clock run out.
  */
 async function leaveAnyOpenTable(userId: string): Promise<void> {
   const token = signToken(userId);
@@ -198,12 +211,73 @@ async function leaveAnyOpenTable(userId: string): Promise<void> {
       continue;
     }
     const body = await response.text();
-    if (/SESSION_BUSY/.test(body)) {
-      process.stdout.write(`a table is mid-hand and was left to settle itself\n`);
-      continue;
+    if (!/SESSION_BUSY/.test(body)) {
+      throw new Error(`could not cash out ${row.game_session_id}: ${response.status} ${body}`);
     }
-    throw new Error(`could not cash out ${row.game_session_id}: ${response.status} ${body}`);
+
+    // Mid-hand. Play it to a boundary and ask again.
+    await playToBoundary(token, row.game_session_id);
+    const retry = await fetch(`${FUNCTIONS}/create-session`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        action: "CASH_OUT",
+        gameId: row.game_session_id,
+        clientRequestId: crypto.randomUUID(),
+        clientSentAt: new Date().toISOString(),
+      }),
+    });
+    if (!retry.ok) {
+      throw new Error(
+        `played a table to its boundary and still could not cash out ` +
+          `${row.game_session_id}: ${retry.status} ${await retry.text()}`,
+      );
+    }
+    process.stdout.write(`played out a hand left mid-play, then cashed out\n`);
   }
+}
+
+/**
+ * Stand the current hand out until the seat can be given up.
+ *
+ * Every command carries `expectedVersion`, and the version is read back from
+ * the server's own answer rather than counted here — a stale one is answered
+ * with the authoritative snapshot and applies nothing, which is exactly what
+ * the first call wants.
+ */
+async function playToBoundary(token: string, gameId: string): Promise<void> {
+  const command = async (type: string) => {
+    const response = await fetch(`${FUNCTIONS}/game-command`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        gameId,
+        clientActionId: crypto.randomUUID(),
+        type,
+        expectedVersion: version,
+        clientSentAt: new Date().toISOString(),
+      }),
+    });
+    const parsed = (await response.json()) as {
+      publicState?: { version?: number; phase?: string };
+    };
+    if (typeof parsed.publicState?.version === "number") version = parsed.publicState.version;
+    return { ok: response.ok, phase: parsed.publicState?.phase };
+  };
+
+  // A deliberately stale version, answered with the snapshot and nothing else.
+  let version = 0;
+  let phase = (await command("RESOLVE_TIMEOUT")).phase;
+
+  for (let step = 0; step < 24; step += 1) {
+    if (phase === "BETTING_OPEN" || phase === "HAND_COMPLETE" || phase === undefined) return;
+    const answer = await command(
+      phase === "INSURANCE_OFFER" ? "DECLINE_INSURANCE" : "STAND",
+    );
+    if (!answer.ok) throw new Error(`could not play ${gameId} out of ${phase}`);
+    phase = answer.phase;
+  }
+  throw new Error(`twenty-four commands did not end the hand at ${gameId}`);
 }
 
 async function ensureAccount(email: string): Promise<void> {

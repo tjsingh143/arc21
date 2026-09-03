@@ -9,6 +9,13 @@ a real runner for the first time in this project's life and failed both jobs** �
 one of them because every function in `public` shipped executable by `anon` on
 any database whose migrations are applied by the role a current CLI uses.
 
+The device sweep was then repeated against a **Release build** — the first time
+this project has run Maestro against the configuration it actually ships. That
+is what settled the one crash seen in this phase (a data race in a dependency's
+process-global, reachable only while several React Native runtimes wait on
+Metro) and it found four more defects in the harness itself, each invisible to a
+Debug run.
+
 ---
 
 ## What this phase was for
@@ -21,6 +28,49 @@ CI that is supposed to guard all of it has ever actually run.
 The rule throughout was the project's own: **a failure is work, not a report
 entry.** Every finding below was reproduced, fixed at the root, given a
 regression that was proved to fail without the fix, and re-verified.
+
+### What was asked of each part of the surface
+
+Six of these produced findings, listed below. The rest are recorded here because
+"we attacked it and it held" is only worth something if the reader can see what
+the attack actually was.
+
+| surface | asked by | what it had to survive |
+|---|---|---|
+| Replay, command idempotency | `tests/server/game-command.integration.test.ts` | a replayed OPEN returning the first committed result; the same command replayed *concurrently* returning one identical result; a retry with a **fresh** request id not buying a second seat |
+| Economic idempotency | `economy-authority.integration.test.ts` | one buy-in for a replayed OPEN; a career reward paid once and a replay refused ranking; every ledger movement reconciling in both directions |
+| Concurrency and races | `game-command.integration.test.ts`, `tests/contracts/room-lock-order.test.ts` | twenty simultaneous commands of which exactly one is accepted; two racing `LOCK_BET`s not double-dealing; a fixed lock order held as an allowlist so a sixth function fails a test rather than a race |
+| Modified client | `hostile-payloads.integration.test.ts` | `alg:none`, a wrong signing key, an expired token, the publishable **and** service keys offered as player credentials, a validly signed token claiming a privileged role, a non-uuid subject, a 32 MB body, a body that is not JSON at all |
+| Object substitution | `object-substitution.integration.test.ts` | every session command, all twelve game commands and every room RPC, each naming **another player's** game, room or attempt — and the owner's chips and seat read back unchanged afterwards |
+| Bounded work per request | `bounded-reads.integration.test.ts`, `25_bounded_reads.test.sql` | `p_limit = 2147483647`; forty push registrations; a directory walk — findings F-01, F-02, F-03 |
+| Realtime authorization | `realtime.integration.test.ts` | a subscriber holding no seat, and an anonymous one; a **forged state** pushed by an account with no seat; and, as the positive control, one signed-in player's state reaching another |
+| Cross-room isolation | `object-substitution`, `rls-idor.integration.test.ts` | a stranger seeing nothing of a table or room they are not at, asked with **no filter at all** so the sweep cannot pass on emptiness |
+| Local device-state tampering | `tests/features/local-state-authority.test.ts` | the storage-key inventory derived from source rather than listed, every value classified, and no local-persistence module naming a privileged verb |
+| Rate limiting | `19_rate_limits.test.sql`, F-02, F-03 | every window a row in `rate_limit_policies`; no enforcement point carrying one of its own; a refusal never itself recorded |
+| Deep links | see below | a `gameId` or room code granting no authority |
+| Notifications | `notifications.integration.test.ts`, `rls-writes.integration.test.ts` | nobody able to write a notification; only its recipient able to read, mark or remove one — findings F-02, F-04 |
+| Dependencies | `npm audit`, `expo-doctor` in CI, `tests/deep-links/…` | the one advisory phase 10 deferred, measured rather than assumed |
+| Platform surface | `ios/Arc21/Info.plist`, read after the rebuild | `NSAllowsArbitraryLoads = false`; no `UIBackgroundModes`; the only usage description on the whole build is `NSFaceIDUsageDescription`, so the microphone permission phase 10 removed has stayed removed |
+
+### A deep link locates state; it never grants authorization
+
+The app's scheme is `arc21`, and the routes that take an identifier are
+`table/[gameId]`, `room/…`, `profile/…` and the notification deep links. The
+identifier is the entire payload — there is nothing else in the link to forge.
+
+The table route is the one worth stating explicitly, because it looks like the
+dangerous one and is the easiest to reason about wrongly. `app/table/[gameId].tsx`
+renders the server's last snapshot and derives nothing, and the client's **only**
+read of table state is `onlineTableGateway.snapshot()`, which sends
+`RESOLVE_TIMEOUT` for that `gameId`. That command is in the list
+`object-substitution.integration.test.ts` fires at a table the caller does not
+sit at, and it answers **HTTP 403 `NOT_A_PARTICIPANT`** — measured, alongside the
+other eleven. So a deep link carrying somebody else's `gameId` reaches a screen
+that can obtain no state, and every control on it acts through the same gateway.
+Rooms are the same shape through `get_room_state`, and profiles through the RLS
+sweep. A notification's payload cannot even carry an arbitrary string: `data` has
+a CHECK constraint over a fixed key set holding short scalars, which is what F-04
+turned out to be about.
 
 ---
 
@@ -194,6 +244,192 @@ asserts that the live resolver does not go near it — with the vendored copy as
 an upgrade ever re-wires the inbound path onto `queryString.parse`, that file
 fails; `npm audit`'s output would not change by one character.
 
+### The `practice-hand` crash after the rebuild — a data race in a dependency, reachable only from a debug build
+
+The dependency alignment (react-native 0.86.2 → 0.86.3 and twelve others) needed
+a native rebuild, and the first `practice-hand` run against the rebuilt app
+failed like this:
+
+```
+02:29:21.178 [WARN]  XCTestDriver request failed. Status code: 500, path: viewHierarchy,
+                     body: {"code":"internal","errorMessage":"Error getting main window kAXErrorCannotComplete"}
+02:29:21.232 [ERROR] Request for viewHierarchy failed, because of app crash
+02:29:23.454 [INFO]  Assert that id: home-practice is visible FAILED
+```
+
+Every previous failure of that shape in this project has been the **driver**,
+and `CLAUDE.md` records the signature twice — a degraded hierarchy of
+identifier-bearing nodes only, `kAXError`, an idle-machine rerun that passes.
+The host was at load 15.7, above the reliable range, and the rerun three minutes
+later passed. Both facts point at the harness and **both are misleading.**
+
+**The app really had gone.** Maestro saves the hierarchy it asserted against,
+and the one for the failing step is 92 KB of the iOS *springboard* — `Page 2 of
+2`, `2 apps`, the `Arc 21` icon beside Safari and Messages, a `spotlight-pill`.
+Not a degraded dump: a complete one, of a home screen with the app dead behind
+it.
+
+`~/Library/Logs/DiagnosticReports/Arc21-2026-09-03-023020.ips` says why:
+
+```
+exception   EXC_BAD_ACCESS (SIGSEGV)
+            KERN_INVALID_ADDRESS at 0x09be4bead677e1c6 -> 0xffffcbead677e1c6
+            (possible pointer authentication failure)
+procLaunch  2026-09-03 02:28:35.1170     <- the flow's own launchApp
+captureTime 2026-09-03 02:29:21.8108     <- the same second Maestro gave up
+```
+
+Faulting thread 27, `com.facebook.react.runtime.JavaScript`:
+
+```
+-[EXReactNativeFactory host:didInitializeRuntime:]
+  AppContext.registerNativeModules()
+    ModuleRegistry.register(fromProvider:)
+      ModuleHolder.init(appContext:module:name:)
+        ModuleHolder.post(event:)
+          closure #1 in EmitterModule.definition()
+            NotificationCenterManager.addDelegate(_:)
+              Array.append(_:)
+                _ArrayBuffer._consumeAndCreateNew(bufferIsUnique:minimumCapacity:growForAppend:)
+                  RefCounts::doDecrementSlow
+                    _swift_release_dealloc        <- SIGSEGV
+```
+
+`node_modules/expo-notifications/ios/ExpoNotifications/Notifications/NotificationCenterManager.swift`
+is the whole explanation:
+
+```swift
+public class NotificationCenterManager: NSObject, … {
+  @objc public static let shared = NotificationCenterManager()
+  var delegates: [NotificationDelegate] = []
+  public func addDelegate(_ delegate: NotificationDelegate) {
+    delegates.append(delegate)
+```
+
+A process-global singleton holding a plain Swift `Array`, mutated with **no
+synchronisation of any kind**. Append to one of those from two threads at once
+and the buffer's old storage is released twice; releasing a freed object through
+a signed pointer is exactly `_swift_release_dealloc` on a non-canonical address.
+
+And it was being appended from more than one thread. At the instant of the
+crash, **six other threads were inside Expo module registration**: 25 in
+`HandlerModule.init(appContext:)` under `ModuleRegistry.register`, 14, 16, 18
+and 20 building `AsyncFunction` dynamic types inside a `definition()`, 22 in
+Swift's protocol-conformance cast machinery. The process carried **eight**
+`com.facebook.react.runtime.JavaScript` threads and **ten** `hades` — Hermes'
+garbage collector, one per runtime. A shipped app has one of each.
+
+Why a debug build has eight is in the simulator's own log:
+
+```
+02:28:41.317  GET http://localhost:8081/.expo/.virtual-metro-entry.bundle?platform=ios&dev=true&lazy=true…
+02:29:14.749  … cancelled                     (33.4 s later)
+02:29:15.943  … start                         (a second connection)
+```
+
+The dev bundle did not arrive. At the crash instant thread 6 was inside Hermes'
+`ESTreeIRGen`, still compiling JavaScript. A debug build fetches its bundle over
+HTTP from a Metro that was, at that moment, building 2 655 modules on a host at
+load 41 with two simulators on it; a release build has `main.jsbundle` inside
+it, registers its modules once, and never opens that socket.
+
+So this is neither "a product defect" nor "merely host load". It is a real
+memory-safety bug in a dependency, whose precondition — concurrent Expo module
+registration on several React Native runtimes — **the shipping configuration
+cannot reach**, and which host load made likely enough to hit once.
+
+Nothing in `src`, `app` or `supabase/functions` can lock another package's
+global, and there is no in-app mitigation worth shipping: the correct fix is
+upstream, in `expo-notifications`. What this phase owes instead is a measurement
+rather than that argument, so the device QA below was re-run against a **Release
+build** — no Metro, no bundle fetch, one runtime.
+
+### The Release sweep, and the four things only it could find
+
+Every Maestro flow this project has ever run went against a Debug build. The
+sweep was repeated against `--configuration Release` — `main.jsbundle` embedded,
+no `Arc21.debug.dylib`, no Metro socket — and it found four defects, all of them
+in the harness rather than the product, and each of a kind the Debug sweep could
+not have reached.
+
+**The measurement the crash needed.** Fourteen flow runs, and
+`~/Library/Logs/DiagnosticReports/` gained **no Arc21 report at all** — the
+newest is still the 02:29 one analysed above. Concurrent module registration
+cannot happen where modules are registered once.
+
+#### 1 · `online-leave-mid-hand.yaml` assumed the deal lands in PLAYER_TURNS
+
+It bet, waited for cards and tapped "Leave table". A run whose dealer showed an
+ace failed there, and the saved hierarchy had `insurance-decline` and
+`insurance-take` in it and nothing else. `CLAUDE.md` already records this
+assumption failing two SERVER tests — "the cascade after betting closes stops in
+three places, not two" — and the flow I wrote for F-06 this same phase made it
+again, in a file whose whole purpose is a hand that is still live.
+
+About one hand in thirteen. Fixed by answering each state at the top level of an
+iteration and only then asserting `action-stand`, which is what makes the refusal
+that follows a refusal rather than an ordinary between-hands leave. Two
+consecutive runs after the fix: 25 steps, exit 0, at loads 3.9 and 8.2.
+
+#### 2 · `scripts/e2e-account.ts` said a mid-hand table "will settle on its own"
+
+It cashes an account out of any table an earlier run abandoned. A seat refused
+`SESSION_BUSY` was left alone, with that sentence as the reason. It is true of a
+table with clocks and **false of every table this account plays**: solo, career
+and the daily challenge carry no clocks on purpose, so `RESOLVE_TIMEOUT` can
+never fire and a hand left mid-play stays mid-play for ever. Finding 1 left
+exactly that, and the next flow was answered "You are already seated at a
+table" — the product working, and unstageable.
+
+Now the hand is PLAYED OUT first through `game-command`, with the same three
+branches `reachPlayerTurns` needs, and then cashed out. Standing and declining
+are the server's own absent-player defaults, so nothing is played differently
+from letting a clock run out. Measured: `played out a hand left mid-play, then
+cashed out`, and the seat gone.
+
+#### 3 · `sign-in.yaml` still pasted, and the rewrite that fixed pasting never reached it
+
+`mc-sign-in.yaml` types its credential and its comment says why: *"the paste path
+proved unreliable on the second simulator — three taps on Paste reported
+COMPLETED and left both fields empty, which is the failure screenshot that sent
+this flow back to be rewritten."* That rewrite was never carried across to
+`sign-in.yaml`, which **four** server-configured flows use, so the identical
+failure was still waiting there.
+
+`every-screen-online.yaml` found it: both `Tap on "Paste"` steps COMPLETED, and
+the failure screenshot is the Sign in screen with an untouched
+`you@example.com` placeholder. Sixth instance of "a step that COMPLETED did not
+necessarily do anything", and the reason the paste existed does not apply here at
+all — it is the CREATE-ACCOUNT screen whose `textContentType="newPassword"`
+swallows typing; this is the sign-IN screen, which types fine.
+
+Two things were wrong and both are fixed. It types now, erasing first so a
+dropped character is retyped rather than appended — which is what makes the
+surrounding loop a retry instead of a second way to fail. And its exit condition
+was `home-practice`, **which a guest also sees**; a sign-in that quietly failed
+would have satisfied it. It is `header-chips` now, a balance a guest never has,
+which is the distinction `mc-sign-in.yaml` had already drawn. The flow went from
+7 completed steps to 40 on the next run.
+
+#### 4 · The notifications screen was asserted EMPTY, and the account is not fresh
+
+`every-screen-online.yaml` waited for `notifications-empty`, with a comment
+beside it reading "an empty inbox is the honest answer for a fresh account" —
+which names the assumption that expires. `two-client-public-*` seats this account
+at a PUBLIC table, a public table carries clocks, and the server writes a
+`your_turn` notification exactly when it has **applied a default**. One real row,
+written at 18:58:09, and a correct screen failed a correct-looking assertion.
+
+Fourth instance in this project of a test asserting a global, time-dependent fact
+rather than a relationship — after the pgTAP file that counted global rows, the
+leaderboard place, and the daily-challenge superlative.
+
+The screen's actual promise is that it never leaves you looking at nothing:
+either it says WHY it is empty, or it lists what it has. That is now what is
+asserted, and it needed one product change to be assertable at all — the list had
+no stable identifier, because `notifications-mark-all` renders only while
+something is unread. `testID="notifications-list"` is the whole of it.
+
 ---
 
 ## The evidence gap phase 7 deferred, now closed
@@ -272,10 +508,23 @@ the two-job split is real — `checks` EXCLUDES `tests/server/**` and `database`
 runs it with `ARC21_REQUIRE_SERVER_STACK=1`, so a stack that fails to come up
 reports a broken stack rather than a green suite that tested nothing.
 
-**Both jobs failed on the first run, and both failures were real.** Everything
-was green locally; neither of these could be seen on this machine at all. This
-is the whole reason the brief said not to call CI complete because a YAML file
-exists.
+**Both jobs failed on the first run, and every failure was real.** Everything was
+green locally; none of these could be seen on this machine at all. This is the
+whole reason the brief said not to call CI complete because a YAML file exists.
+
+Four runs, and the progression is the evidence:
+
+| run | `checks` | `database` | what it found |
+|---|---|---|---|
+| 1 | fail | fail | F-07 (every `public` function anon-executable) and F-08 (art byte-compare) |
+| 2 | fail | fail | expo-doctor's thirteen drifted packages; a cold-worker timeout |
+| 3 | fail | **pass** | F-09 (the bundle needs a directory only a previous bundle creates) |
+| 4 | **pass** | **pass** | — |
+
+Run 4 is green on both jobs: lint, typecheck, Edge Function typecheck, 2,395
+unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side; and on
+the other `supabase start`, every migration applied from empty, 560 pgTAP
+assertions and all 300 server integration tests against a real stack.
 
 ### F-07 · Every function in `public` shipped anon-executable, depending on who applied the migrations · fixed
 
@@ -385,7 +634,8 @@ bundles again for the result that counts. Verified from a state with no
 | `supabase db reset` + `supabase test db` | **26 files, 560 assertions, all pass, from empty** |
 | `npm run test:server` | **23 files, 300 tests, all pass** (fresh `functions serve`, load 3.6) |
 | `npm run benchmark` | 795 µs/hand at load 4.4 — inside the recorded 752–808 range; heap delta +10 KB over 50 hands |
-| Maestro | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |
+| Maestro, Debug build | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |
+| Maestro, **Release build** | **16 green runs**: practice-hand, practice-analysis, practice-resume, career-node, online-table ×2, online-leave-mid-hand ×2, every-screen-online, mc-sign-in ×2 and all five two-client-public flows — and **no Arc21 crash report written by any of them** |
 
 ### Two server tests were wrong, not the server
 

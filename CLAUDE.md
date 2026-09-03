@@ -330,6 +330,62 @@ One such failure also ran `xcrun simctl uninstall` for five minutes and left the
 app UNINSTALLED — `xcrun simctl get_app_container <udid> com.arc21.app` before
 diagnosing anything else, because a missing app reads as a broken flow.
 
+**...AND SOMETIMES THE APP REALLY DID CRASH, WHICH MAESTRO REPORTS WITH THE SAME
+SENTENCE.** `Request for viewHierarchy failed, because of app crash` is printed
+both when the driver cannot read a live screen and when there is no app left to
+read, and the note above is so much the commoner case that an idle-host rerun
+which passes reads as proof of it. It is not proof: the rerun passing is equally
+consistent with a crash that needed load to be likely. **Two artefacts settle
+it.** First, `~/Library/Logs/DiagnosticReports/Arc21-*.ips` — the `.ips` is JSON
+after its first line, and its `captureTime` against the failure's timestamp is
+the whole answer. Second, the hierarchy Maestro SAVED for the failing step: a
+degraded dump is the eight identifier-bearing nodes described above, whereas
+this one was 92 KB of the iOS springboard — a COMPLETE dump, of the app being
+gone. What crashed was `expo-notifications`' process-global
+`NotificationCenterManager.delegates`, a plain Swift array appended with no lock
+by every module registration, while a DEBUG build whose Metro bundle took 33
+seconds had eight `com.facebook.react.runtime.JavaScript` threads and ten
+`hades` alive at once. A release build embeds `main.jsbundle` and registers its
+modules once, so it cannot happen there — which is the wider lesson: **device QA
+on a debug build is QA of a configuration nobody ships.** Run the flows against
+`--configuration Release` before believing either a crash or a clean sweep.
+
+**`home-practice` IS VISIBLE TO A GUEST, SO IT CANNOT PROVE A SIGN-IN — AND THE
+FIX FOR THAT WAS ALREADY WRITTEN, IN THE OTHER COPY.** `mc-sign-in.yaml` types
+its credential and exits on `header-chips`; `sign-in.yaml` pasted and exited on
+`home-practice`, and FOUR server-configured flows use the second one. Both
+differences are defects. Pasting is unreliable — `mc-sign-in.yaml`'s own comment
+records "three taps on Paste reported COMPLETED and left both fields empty", and
+that is exactly how `every-screen-online.yaml` failed on a Release build, with a
+screenshot of an untouched `you@example.com` placeholder. The reason the paste
+existed does not apply on that screen at all: it is the CREATE-ACCOUNT form whose
+`textContentType="newPassword"` swallows `inputText`; the sign-IN form types
+fine. And `home-practice` is Home, which a GUEST reaches too — only a balance in
+the header (`header-chips`) says the server answered for an account. **When two
+files do the same job and one of them gets fixed, the other is now the bug**;
+`grep -l` for the sibling before calling it done.
+
+**A FLOW THAT ASSERTS AN EMPTY INBOX EXPIRES THE FIRST TIME THE SERVER WRITES
+ONE.** `every-screen-online.yaml` waited for `notifications-empty`, reasoning
+that "an empty inbox is the honest answer for a fresh account". The account stops
+being fresh the moment `two-client-public-*` seats it at a table with clocks,
+because a `your_turn` notification is written precisely when the server APPLIES A
+DEFAULT. Assert the RELATIONSHIP the screen actually promises — it says why it is
+empty, or it lists what it has, and a blank screen is neither. Fourth instance,
+after the pgTAP file that counted global rows, the leaderboard place and the
+daily superlative. Note what it cost: the list had no stable identifier, because
+the "Mark all read" control renders only while something is unread — an
+assertable contract sometimes needs one `testID` added to the product.
+
+**A HARNESS THAT GIVES UP ON A MID-HAND SEAT STRANDS EVERY LATER RUN.**
+`scripts/e2e-account.ts` cashed the account out of tables an earlier run
+abandoned, and left a seat refused `SESSION_BUSY` alone because "it will settle
+on its own". True with clocks, false for solo, career and the daily challenge,
+which carry none on purpose — so `RESOLVE_TIMEOUT` can never fire and the hand
+stays mid-play for ever, and every later flow is answered "You are already seated
+at a table". It plays the hand out through `game-command` now, standing and
+declining, which is what the absent-player default does anyway.
+
 **`create or replace function` silently reverts every LATER redefinition.** Five
 functions gained a rate limit this phase, which meant replacing their bodies —
 and two had already been redefined by a later migration than the one that

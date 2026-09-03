@@ -1,55 +1,53 @@
-# Arc 21 — sign in, from whatever state the app is actually in.
+# Arc 21 — sign in, as a subflow.
 #
-# A SUBFLOW, used by every server-configured flow. It is not a test of sign-in;
-# it is the preamble those flows need, and it is here because getting it wrong
-# costs a run and reads as a broken app.
+# The three states a server-configured flow can start in are the same every
+# time and getting them wrong costs a run, so they are answered in one place:
+# already signed in, sitting on onboarding, or sitting on the auth screen.
+# `clearState: true` does not clear the iOS keychain, so a relaunch can restore
+# the session and land on Home without ever showing an auth field.
 #
-# THREE ENTRY STATES, and the flow cannot know which it will get:
+# TYPED, NOT PASTED. This subflow used to long-press each field and tap the
+# "Paste" callout. The reason it did is real but does not apply here:
+# `inputText` drops characters on this simulator, and the CREATE-ACCOUNT
+# screen's `textContentType="newPassword"` raises the strong-password overlay
+# and swallows typing entirely. This is the SIGN-IN screen, whose plain
+# `textContentType="password"` types fine.
 #
-#   * ONBOARDING — the ordinary one after `clearState: true`.
-#   * THE AUTH SCREEN — a previous attempt got that far.
-#   * ALREADY HOME — and this is the one that cost a run. `clearState: true`
-#     wipes the app's data container; it does NOT clear the iOS KEYCHAIN, which
-#     is where `src/lib/supabase/client.ts` keeps the session. So a relaunch can
-#     show onboarding for a moment, restore the session underneath it, and land
-#     on Home — and a flow that hard-waits for the auth screen fails against an
-#     app that did exactly the right thing.
+# And the paste path is not merely unnecessary, it is unreliable.
+# `mc-sign-in.yaml` was rewritten off it for exactly this, and its comment
+# records "three taps on Paste reported COMPLETED and left both fields empty".
+# That rewrite never reached this file, and four flows kept using it — so the
+# same failure was still waiting. `every-screen-online.yaml` found it on a
+# Release build: both `Tap on "Paste"` steps COMPLETED, the failure screenshot
+# shows an untouched `you@example.com` placeholder, and the `assertVisible`
+# guarding the paste had nothing to see. Sixth instance of "a step that
+# COMPLETED did not necessarily do anything".
 #
-# So the loop runs until HOME is reached rather than through a fixed sequence,
-# and each state is handled at the TOP level of the iteration. `career-node.yaml`
-# deadlocked for a year of runs because its only progress branch was nested
-# inside one state; the fix there was structural and it is the same fix here.
-#
-# Needs `npx tsx scripts/e2e-account.ts` first: it makes the account exist,
-# leaves any table or room a failed run left open, and puts the credential on
-# the simulator pasteboard.
-#
-# IMMEDIATELY BEFORE, not once at the start of a session. Both fields are filled
-# by long-press + "Paste" — `inputText` drops characters and
-# `textContentType="newPassword"` blocks it outright, both recorded in CLAUDE.md
-# — so this flow is only as good as what the pasteboard holds, and the simulator
-# pasteboard does not survive everything an intervening run does to it. Measured
-# in phase 11: `online-table.yaml` failed with `Assert that
-# "e2e-lobby@arc21.test" is visible... FAILED` on a screenshot showing the sign-in
-# form with BOTH FIELDS EMPTY, after three practice flows and a career flow had
-# run in between; re-running `e2e-account.ts` and nothing else made the same
-# commit pass, 41 steps, exit 0. An empty paste reads as a broken auth screen,
-# which is why it is written down here rather than left to be rediscovered.
+# Erased before typing, so a retry after a dropped character retypes the field
+# rather than appending to it — which is what makes the loop a real retry
+# rather than a second way to fail.
 
 appId: com.arc21.app
 ---
 - repeat:
-    times: 6
+    times: 8
     while:
       notVisible:
-        id: "home-practice"
+        id: "header-chips"
     commands:
-      # A leftover deep-link confirmation from an earlier run.
+      # A leftover deep-link confirmation, and iOS's offer to save the
+      # password. Both sit OVER the app, and while either is up every assertion
+      # underneath it fails — which reads as a screen that did not render.
       - runFlow:
           when:
             visible: "Open"
           commands:
             - tapOn: "Cancel"
+      - runFlow:
+          when:
+            visible: "Save Password?"
+          commands:
+            - tapOn: "Not Now"
 
       - runFlow:
           when:
@@ -59,38 +57,31 @@ appId: com.arc21.app
             - tapOn:
                 id: "onboarding-sign-in"
 
-      # PASTED, not typed. `inputText` drops characters on this simulator and a
-      # half-typed password fails a sign-in in a way that reads as a broken auth
-      # screen. The password IS the email, so one pasteboard serves both fields.
       - runFlow:
           when:
             visible:
               id: "auth-email"
           commands:
-            - longPressOn:
+            - tapOn:
                 id: "auth-email"
-            - tapOn: "Paste"
-            - longPressOn:
+            - eraseText
+            - inputText: "e2e-lobby@arc21.test"
+            - tapOn:
                 id: "auth-password"
-            - tapOn: "Paste"
-            # The paste LANDED. A step that COMPLETED did not necessarily do
-            # anything; the password cannot be read back but the email can, and
-            # the two carry the same value.
-            - assertVisible: "e2e-lobby@arc21.test"
+            - eraseText
+            - inputText: "e2e-lobby@arc21.test"
             - tapOn:
                 id: "auth-submit"
 
-      # iOS offers to save the password. It is a SYSTEM alert over the app, it
-      # can arrive a screen or two after the sign-in that caused it, and while
-      # it is up every assertion underneath it fails — which reads as a screen
-      # that did not render.
-      - runFlow:
-          when:
-            visible: "Save Password?"
-          commands:
-            - tapOn: "Not Now"
-
+# THE PROOF, and it is `header-chips` rather than `home-practice`. Home is
+# shown to a GUEST too; a balance in the header is not, because a guest gets
+# the word GUEST and no number. The loop used to exit on `home-practice`, so a
+# sign-in that quietly failed and left the app a guest would have satisfied it
+# and the flow would have gone on to fail somewhere with no auth in it at all.
+# `mc-sign-in.yaml` already drew this distinction; this file had not.
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "header-chips"
     timeout: 60000
+- assertVisible:
+    id: "home-practice"

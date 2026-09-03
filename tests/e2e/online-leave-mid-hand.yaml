@@ -79,17 +79,65 @@ appId: com.arc21.app
     timeout: 60000
 
 # --- A live hand ------------------------------------------------------------
+# THE HAND MUST STILL BE LIVE WHEN THE LEAVE IS ASKED, and the cascade after
+# betting closes stops in THREE places, not one: PLAYER_TURNS; INSURANCE_OFFER
+# whenever the dealer's upcard is an ACE, about one hand in thirteen; and
+# HAND_COMPLETE when either side is dealt a natural. CLAUDE.md records that
+# assumption failing two server tests. This file made it too — it bet, waited
+# for cards and tapped "Leave table" — and a run whose dealer showed an ace
+# failed there with `insurance-decline` and `insurance-take` the only controls
+# in the hierarchy.
+#
+# So each state is answered at the TOP level of an iteration, the shape
+# `career-node.yaml` was restructured into for the same reason: bet when the
+# betting bar is up, decline when an ace is showing, take the next hand when a
+# natural settled it before anybody could act. Nothing here taps an action
+# control, so once the hand IS live every branch skips and the loop parks it
+# exactly where the refusal below needs it.
 - extendedWaitUntil:
     visible:
       id: "chip-50"
     timeout: 45000
-- tapOn:
-    id: "chip-50"
-- tapOn:
-    id: "bet-deal"
+- repeat:
+    times: 8
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-50"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      # Declining is what the server does for an absent player anyway, so this
+      # changes nothing about the hand that follows.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "next-hand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "next-hand"
+
+# The hand is live and it is the player's turn — stand is always legal there.
+# Asserting it is what makes the refusal below a REFUSAL rather than an ordinary
+# leave that happened to be asked between hands.
 - extendedWaitUntil:
-    notVisible: "No cards yet."
-    timeout: 60000
+    visible:
+      id: "action-stand"
+    timeout: 45000
 
 # --- Ask to leave, and be refused -------------------------------------------
 - tapOn: "Leave table"

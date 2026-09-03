@@ -152,9 +152,20 @@ appId: com.arc21.app
 - assertNotVisible: ".*no server configured.*"
 
 # --- Notifications ---------------------------------------------------------
-# The RECORD of what the server said, not a fallback for push. An empty inbox is
-# the honest answer for a fresh account and it says so rather than showing
-# nothing at all.
+# The RECORD of what the server said, not a fallback for push.
+#
+# THIS USED TO ASSERT `notifications-empty`, with a comment beside it reading
+# "an empty inbox is the honest answer for a FRESH account" — which names the
+# assumption that expires. The account is not fresh: `two-client-public-*`
+# seats it at a PUBLIC table, a public table carries clocks, and the server
+# writes a `your_turn` notification exactly when it has APPLIED A DEFAULT. So
+# the first run after that scenario found one real row, and a correct screen
+# failed a correct-looking assertion — the fourth instance in this project of a
+# test asserting a global, time-dependent fact instead of a relationship.
+#
+# What the screen actually promises is that it never leaves you looking at
+# nothing: either it says WHY it is empty, or it lists what it has. Both are a
+# pass, neither may be the unconfigured message, and a blank screen is neither.
 - openLink: arc21://notifications
 - runFlow:
     when:
@@ -162,10 +173,16 @@ appId: com.arc21.app
     commands:
       - tapOn: "Open"
 - extendedWaitUntil:
-    visible:
-      id: "notifications-empty"
+    visible: "Notifications"
     timeout: 30000
 - assertNotVisible: ".*no server configured.*"
+- runFlow:
+    when:
+      notVisible:
+        id: "notifications-empty"
+    commands:
+      - assertVisible:
+          id: "notifications-list"
 
 # --- Statistics ------------------------------------------------------------
 # Its Competition section is server-owned. Offline it states the absence; here it
