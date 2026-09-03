@@ -1,6 +1,6 @@
 # Phase 11 — Adversarial QA, E2E, CI, Runtime QA
 
-**Result: PASS.** Eight defects fixed, each proved to fail by reverting it in the
+**Result: PASS.** Nine defects fixed, each proved to fail by reverting it in the
 running system. One advisory investigated and found NOT reachable — the guard
 written for it was deleted rather than shipped, and replaced by a test that pins
 the reason. The two-simulator public-table lifecycle that phase 7 deferred was
@@ -341,6 +341,36 @@ reader already in the file and compares dimensions and pixels — not weaker,
 because that reader still refuses anything but the exact PNG shape the generator
 writes, so a drift in size, bit depth, colour type, chunk layout or one pixel
 still fails.
+
+### F-09 · The app could only be bundled on a machine that had bundled before · fixed
+
+The third CI run got the whole `database` job green — `supabase start`, every
+migration from empty, pgTAP and the entire server suite on a runner — and
+`checks` failed at the last step:
+
+```
+iOS Bundling failed 30608ms node_modules/expo-router/entry.js (2619 modules)
+Error: Failed to get the SHA-1 for: node_modules/react-native-worklets/.worklets/12466881117457.js
+```
+
+Bundle Mode has the Babel plugin extract every worklet into its own file under
+`node_modules/react-native-worklets/.worklets/`, and `generatedWorkletsDir` is a
+hard-coded constant, so there is nowhere else for them to go. They are written
+DURING the transform, and Metro builds its file map by crawling once before
+transforming anything — so `getSha1` fails for a path the crawl never saw.
+
+On a machine that has bundled before, the directory is already populated when
+the crawl runs and nothing goes wrong. **That is why this was invisible here for
+the entire life of the project and failed on the first clean checkout CI ever
+gave it.** Reproduced locally by moving the directory aside, and the two failure
+modes are different: with the directory ABSENT the plugin cannot write at all
+(`ENOENT … open '.worklets/12466881117457.js'`), and with it EMPTY the write
+succeeds and Metro cannot hash the result — which is the runner's error.
+
+`npm run bundle:check` creates the directory, bundles once to generate the
+artefacts (that pass is expected to fail and its result is discarded), then
+bundles again for the result that counts. Verified from a state with no
+`.worklets` directory at all: pass one leaves 509 files, pass two exits 0.
 
 ---
 

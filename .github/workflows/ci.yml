@@ -121,7 +121,7 @@ jobs:
         # Metro cache that outlives a dependency change points at files that no
         # longer exist. A fresh runner would not usually have that cache, but
         # the command below is the one that was actually run and proved.
-        run: npx expo export --platform ios --output-dir /tmp/arc21-export --clear
+        run: npm run bundle:check
 
   database:
     name: pgTAP and server integration

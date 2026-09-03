@@ -2,7 +2,7 @@
   "name": "arc21",
   "version": "1.0.0",
   "private": true,
-  "description": "Arc 21 — a simulated blackjack game. Virtual chips have no monetary value.",
+  "description": "Arc 21 \u2014 a simulated blackjack game. Virtual chips have no monetary value.",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
@@ -25,7 +25,8 @@
     "career:generate": "tsx scripts/generate-career-nodes.ts",
     "check:functions": "bash scripts/check-functions.sh",
     "test:server": "ARC21_REQUIRE_SERVER_STACK=1 vitest run tests/server --maxWorkers=2",
-    "test:unit": "vitest run --exclude 'tests/server/**'"
+    "test:unit": "vitest run --exclude 'tests/server/**'",
+    "bundle:check": "bash scripts/bundle-check.sh"
   },
   "dependencies": {
     "@expo/metro-runtime": "~57.0.13",
