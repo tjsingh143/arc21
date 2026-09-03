@@ -352,7 +352,7 @@ no `Arc21.debug.dylib`, no Metro socket — and it found four defects, all of th
 in the harness rather than the product, and each of a kind the Debug sweep could
 not have reached.
 
-**The measurement the crash needed.** Fourteen flow runs, and
+**The measurement the crash needed.** Eighteen flow runs, and
 `~/Library/Logs/DiagnosticReports/` gained **no Arc21 report at all** — the
 newest is still the 02:29 one analysed above. Concurrent module registration
 cannot happen where modules are registered once.
@@ -470,6 +470,25 @@ and immediately after one left:
 The ledger closes: each account exactly one `table_buy_in -2000` and one
 `table_cash_out`, no orphaned escrow.
 
+**Walked again, end to end, against the RELEASE build.** All five steps green,
+and the server asked as each account through PostgREST at the moment both were
+seated:
+
+```
+session a52dce04-5d77-4f05-9b17-11b5e7657e61   mode public_table
+  seat 0  p0d2f786d6da0  stack 2020  buy_in 2000  active  connected
+  seat 1  pa6ae05cf32cf  stack 2000  buy_in 2000  active  connected
+wallets: 23 000 and 23 000   (25 000 opening grant, one 2 000 buy-in each)
+```
+
+and the ledger read back per row rather than summed, because a sum over a time
+window clips whatever it starts after — device B has exactly one
+`table_buy_in -2000` at 18:55:55 and exactly one `table_cash_out +2000` at
+18:59:29, and device A's five tables across the whole sweep are five buy-ins and
+five cash-outs, strictly alternating, never two of either in a row. Wallets after
+everyone had left: 25 000 and 25 035, which is the opening grant plus what the
+cards did.
+
 Three things had to be learnt to stage it at all, and each is written into the
 flows:
 
@@ -520,11 +539,18 @@ Four runs, and the progression is the evidence:
 | 2 | fail | fail | expo-doctor's thirteen drifted packages; a cold-worker timeout |
 | 3 | fail | **pass** | F-09 (the bundle needs a directory only a previous bundle creates) |
 | 4 | **pass** | **pass** | — |
+| 5 | **pass** | **pass** | the Release-sweep fixes, re-validated on the runner |
 
-Run 4 is green on both jobs: lint, typecheck, Edge Function typecheck, 2,395
-unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side; and on
-the other `supabase start`, every migration applied from empty, 560 pgTAP
+Runs 4 and 5 are green on both jobs: lint, typecheck, Edge Function typecheck,
+2,395 unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side;
+and on the other `supabase start`, every migration applied from empty, 560 pgTAP
 assertions and all 300 server integration tests against a real stack.
+
+Run 5 matters for a reason beyond being green. The Release sweep changed a
+product file — one `testID` — and the pgTAP and server suites are the two gates
+this machine had not re-run since. Rather than assert they were still valid, the
+runner re-applied every migration from empty and re-ran both suites against the
+exact commit: `33796454953`.
 
 ### F-07 · Every function in `public` shipped anon-executable, depending on who applied the migrations · fixed
 
@@ -635,7 +661,7 @@ bundles again for the result that counts. Verified from a state with no
 | `npm run test:server` | **23 files, 300 tests, all pass** (fresh `functions serve`, load 3.6) |
 | `npm run benchmark` | 795 µs/hand at load 4.4 — inside the recorded 752–808 range; heap delta +10 KB over 50 hands |
 | Maestro, Debug build | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |
-| Maestro, **Release build** | **16 green runs**: practice-hand, practice-analysis, practice-resume, career-node, online-table ×2, online-leave-mid-hand ×2, every-screen-online, mc-sign-in ×2 and all five two-client-public flows — and **no Arc21 crash report written by any of them** |
+| Maestro, **Release build** | **18 green runs**: practice-hand, practice-analysis, practice-resume, career-node, online-table ×2, online-leave-mid-hand ×2, every-screen-online, private-lobby, public-matchmaking, mc-sign-in ×2 and all five two-client-public flows — and **no Arc21 crash report written by any of them** |
 
 ### Two server tests were wrong, not the server
 
