@@ -154,10 +154,26 @@ suite("authentication boundary", () => {
     expect((await call("game-command", signToken(userId, { role: "anon" }), {})).status).toBe(401);
   });
 
+  /*
+   * A LONGER ALLOWANCE, because this pair of calls is where a constrained host
+   * pays for a cold Edge worker.
+   *
+   * It timed out at the suite's 30 s default on the first CI run this project
+   * ever had, while the same file's other 300-odd assertions passed. Nothing is
+   * slow about the assertion — two refused tokens — but `call-function.ts`
+   * replays a reply it could not read, and the Edge runtime RETIRES WORKERS on
+   * a memory limit, so each replay can pay a fresh boot. `supabase functions
+   * serve` accumulates those, which CLAUDE.md already records as the cause of
+   * two phase-3 failures that were not the product.
+   *
+   * Raised here rather than in `vitest.config.mts` deliberately: a global bump
+   * would also slow down every real hang, and this file already gives a longer
+   * timeout to the tests that have earned one.
+   */
   it("rejects a wrong audience and a non-uuid subject", async () => {
     expect((await call("game-command", signToken(userId, { aud: "service_role" }), {})).status).toBe(401);
     expect((await call("game-command", signToken("not-a-uuid"), {})).status).toBe(401);
-  });
+  }, 90_000);
 
   it("never leaks internals in an error", async () => {
     const result = await call("game-command", signToken(userId), { nonsense: true });
