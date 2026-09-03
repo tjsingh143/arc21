@@ -55,10 +55,37 @@ function parsePng(buffer: Buffer): Png {
 }
 
 describe("generated app art", () => {
-  it("regenerating reproduces every committed file byte for byte", () => {
+  it("regenerating reproduces every committed file, pixel for pixel", () => {
+    /*
+     * THE PIXELS, NOT THE COMPRESSED BYTES.
+     *
+     * This compared `build().equals(committed)` and passed on this machine for
+     * the life of the project. The first CI run it ever had failed on it:
+     * `icon.png drifted from its generator`, with 2,394 of 2,395 tests green.
+     *
+     * The generator writes its IDAT with `deflateSync(raw, { level: 9 })` from
+     * `node:zlib`, and Node does not bundle one zlib — the build on a macOS
+     * arm64 host and the build on a Linux x64 runner emit different, equally
+     * valid compressed streams for identical input. So the committed file could
+     * only ever byte-match on the platform it was generated on, and the claim
+     * the test exists to defend — `docs/ASSET_LICENSES.md`'s "originally
+     * generated", checkable only if regenerating reproduces the file — is a
+     * claim about the IMAGE.
+     *
+     * Decoding both sides makes it that claim, and it is not weaker: the reader
+     * below already refuses anything but the exact PNG shape this generator
+     * writes, so a file that differed in dimensions, bit depth, colour type,
+     * chunk layout or a single pixel still fails.
+     */
     for (const [name, build] of Object.entries(IMAGES)) {
-      const committed = readFileSync(join(OUTPUT_DIR, `${name}.png`));
-      expect(build().equals(committed), `${name}.png drifted from its generator`).toBe(true);
+      const committed = parsePng(readFileSync(join(OUTPUT_DIR, `${name}.png`)));
+      const rebuilt = parsePng(build());
+      expect(rebuilt.width, `${name}.png width drifted from its generator`).toBe(committed.width);
+      expect(rebuilt.height, `${name}.png height drifted from its generator`).toBe(committed.height);
+      expect(
+        rebuilt.pixels.equals(committed.pixels),
+        `${name}.png drifted from its generator`,
+      ).toBe(true);
     }
   });
 

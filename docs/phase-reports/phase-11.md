@@ -1,10 +1,13 @@
 # Phase 11 — Adversarial QA, E2E, CI, Runtime QA
 
-**Result: PASS.** Six defects fixed, each proved to fail by reverting it in the
+**Result: PASS.** Eight defects fixed, each proved to fail by reverting it in the
 running system. One advisory investigated and found NOT reachable — the guard
 written for it was deleted rather than shipped, and replaced by a test that pins
 the reason. The two-simulator public-table lifecycle that phase 7 deferred was
-walked end to end on two devices with the server asked at every step.
+walked end to end on two devices with the server asked at every step. **CI ran on
+a real runner for the first time in this project's life and failed both jobs** —
+one of them because every function in `public` shipped executable by `anon` on
+any database whose migrations are applied by the role a current CLI uses.
 
 ---
 
@@ -268,6 +271,76 @@ every `run:` step invokes an npm script that is present in `package.json`, and
 the two-job split is real — `checks` EXCLUDES `tests/server/**` and `database`
 runs it with `ARC21_REQUIRE_SERVER_STACK=1`, so a stack that fails to come up
 reports a broken stack rather than a green suite that tested nothing.
+
+**Both jobs failed on the first run, and both failures were real.** Everything
+was green locally; neither of these could be seen on this machine at all. This
+is the whole reason the brief said not to call CI complete because a YAML file
+exists.
+
+### F-07 · Every function in `public` shipped anon-executable, depending on who applied the migrations · fixed
+
+The `database` job stopped at `20260813121200_hardening.sql` — thirteenth of
+the set — with
+
+```
+ERROR: anon can execute unexpected public function(s): apply_block_side_effects,
+are_friends, create_friendship_on_accept, deny_client_write, deny_truncate,
+guard_daily_challenge_seed, guard_friend_request_transition,
+guard_ledger_append_only, guard_loadout_slots, guard_notification_client_update,
+guard_profile_server_columns, guard_profile_username,
+guard_session_escrow_on_delete, has_blocked, is_session_participant,
+normalise_profile_display_name, sanitise_display_name, set_updated_at,
+username_is_permitted, viewer_has_blocked, viewer_is_blocked_by,
+viewer_is_friend_of, viewer_is_in_tournament (SQLSTATE P0001)
+```
+
+The gate was right, and it had never been asked on a database built the way a
+deployment builds one.
+
+`20260813120000_foundation.sql` revokes default privileges in `private` on
+tables, sequences **and functions**, then says "the same protection for
+`public`" and revokes tables and sequences only. The functions line was missing.
+
+Why that was invisible here: `pg_default_acl` carries one row per (role, schema,
+object type), and the stock image ships **both**
+
+```
+postgres       | public | f | {postgres=X/postgres}
+supabase_admin | public | f | {postgres=X, anon=X, authenticated=X, service_role=X}
+```
+
+So the protection depended entirely on WHICH ROLE applied the migrations. The
+CLI on this machine applies them as `postgres`, where the default grants nobody
+EXECUTE; the newer CLI `supabase/setup-cli@v1` installs applies them as
+`supabase_admin`, where the default grants **anon**. Twenty-three functions —
+the trigger guards and the RLS helper predicates, `deny_client_write`,
+`guard_ledger_append_only` and `guard_session_escrow_on_delete` among them —
+were therefore executable by an unauthenticated caller on any database built
+that way.
+
+Fixed by adding the one line the comment already promised. It is a DEFAULT
+privilege, so the explicit `revoke … from public, anon; grant … to
+authenticated;` pair that every client-facing function carries still does its
+own job — this makes the pair's first half redundant rather than load-bearing,
+which is the right way round.
+
+### F-08 · The app-art test could only ever pass on the machine the art was generated on · fixed
+
+The `checks` job failed with `icon.png drifted from its generator` and 2,394 of
+2,395 tests green.
+
+`scripts/generate-app-art.ts` writes its IDAT with `deflateSync(raw, { level: 9 })`
+from `node:zlib`, and the test compared the whole file byte for byte. Node does
+not bundle one zlib: a macOS arm64 host and a Linux x64 runner emit different,
+equally valid compressed streams for identical input. The committed PNG could
+only ever match on the platform it was generated on.
+
+The claim the test defends is `docs/ASSET_LICENSES.md`'s "originally generated",
+which is a claim about the IMAGE. It now decodes both sides with the strict
+reader already in the file and compares dimensions and pixels — not weaker,
+because that reader still refuses anything but the exact PNG shape the generator
+writes, so a drift in size, bit depth, colour type, chunk layout or one pixel
+still fails.
 
 ---
 

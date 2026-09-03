@@ -60,6 +60,37 @@ alter default privileges in schema public
 alter default privileges in schema public
   revoke all on sequences from anon, authenticated, service_role;
 
+/*
+ * AND FUNCTIONS — the line that was missing, which made the sentence above
+ * ("the same protection for `public`") false for a whole schema.
+ *
+ * `private` three blocks up revokes tables, sequences AND functions. `public`
+ * revoked only the first two, and the difference was invisible on this machine
+ * for the life of the project because it depends on WHICH ROLE APPLIES THE
+ * MIGRATIONS. `pg_default_acl` carries one row per (role, schema, object type):
+ * the stock image ships `supabase_admin | public | f` granting EXECUTE to anon,
+ * authenticated and service_role, and `postgres | public | f` granting it to
+ * nobody. Apply the migrations as `postgres` and every function is private by
+ * default; apply them as `supabase_admin` — which a newer CLI does — and every
+ * function in this schema is EXECUTABLE BY ANON the moment it is created.
+ *
+ * Measured, and only ever by a real runner. The first CI run this project has
+ * had stopped at `20260813121200_hardening.sql`, thirteenth of the set, with
+ * `anon can execute unexpected public function(s)` naming twenty-three of them
+ * — the trigger guards and the RLS helper predicates, including
+ * `deny_client_write`, `guard_ledger_append_only` and
+ * `guard_session_escrow_on_delete`. The gate was right and had never been asked
+ * on a database built the way a deployment builds one.
+ *
+ * `revoke` on a DEFAULT privilege changes only what a NEW function starts with;
+ * the explicit `revoke … from public, anon; grant … to authenticated;` pair
+ * that every client-facing function already carries still does its own job.
+ * This makes the pair's first half redundant rather than load-bearing, which is
+ * the right way round.
+ */
+alter default privileges in schema public
+  revoke all on functions from anon, authenticated, service_role;
+
 -- -----------------------------------------------------------------------------
 -- Enum domains
 --

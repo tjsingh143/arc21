@@ -25,7 +25,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 8 — Sprint Tournament | **PASS** | Seven defects fixed, six proved to fail by reverting the fix in the running system. Betting was not sequential at all — the format's defining mechanic was absent; a settlement-window timeout dealt the next hand with NO boundary, so a tournament could never finish or pay; a paid entry could never be given up; registering did not check for a seat elsewhere, in either direction; and the result vanished in the transaction that created it. |
 | 9 — Daily / Leaderboards / Cosmetics | **PASS** | Five defects fixed, each proved to fail by reverting it in the running system. The "18 vs 20" intermittent was REPRODUCED on purpose against the real functions and is now a regression test; a bankrupt daily attempt could never end; the challenge took a second live seat and hid the first; a mid-challenge reshuffle would have come from the CSPRNG; and the seed was never published, so the commitment could not be checked by anybody. |
 | 10 — Backend/API Security | **PASS** | Six findings, five fixed and each proved to fail by reverting it in the running system. `tournament_entries` was readable by EVERY authenticated account — 152 rows of live stacks and prizes — and the IDOR sweep that classified it "a stranger must see NONE of it" passed on an empty fixture; `service_role` could mint a million chips through `/rest/v1/rpc/` in one request; the app shipped a microphone permission for a game that never records. |
-| 11 — Adversarial QA / E2E / CI | **PASS** | Six defects fixed, each proved to fail by reverting it in the running system. A leaderboard page had no ceiling and answered `p_limit=2147483647` with every ranked row; one account registered **200 push devices in 1.9 s**, and each is an outbound message per notification; `search_players` was an unmetered directory dump — **108 calls enumerated 445 accounts** — whose LIKE metacharacters were unescaped; a notification payload was interpolated into a router path; the Practice assistance pills drew their labels OUTSIDE the pill at accessibility text sizes; and a cash-out the server deferred settled the chips and left the player on a dead screen that had to be force-quit. The `decode-uri-component` advisory phase 10 deferred was measured and found **not runtime-reachable** — the guard written for it was deleted rather than shipped. The two-simulator public-table lifecycle phase 7 deferred was walked end to end. |
+| 11 — Adversarial QA / E2E / CI | **PASS** | Eight defects fixed, each proved to fail by reverting it in the running system. A leaderboard page had no ceiling and answered `p_limit=2147483647` with every ranked row; one account registered **200 push devices in 1.9 s**, and each is an outbound message per notification; `search_players` was an unmetered directory dump — **108 calls enumerated 445 accounts** — whose LIKE metacharacters were unescaped; a notification payload was interpolated into a router path; the Practice assistance pills drew their labels OUTSIDE the pill at accessibility text sizes; and a cash-out the server deferred settled the chips and left the player on a dead screen that had to be force-quit. The `decode-uri-component` advisory phase 10 deferred was measured and found **not runtime-reachable** — the guard written for it was deleted rather than shipped. The two-simulator public-table lifecycle phase 7 deferred was walked end to end. **CI ran on a real runner for the first time and failed both jobs**: every function in `public` shipped executable by `anon` on any database whose migrations are applied by the role a current CLI uses — the foundation revoked default privileges on functions in `private` and, despite saying "the same protection for `public`", not in `public` — and the app-art test compared compressed PNG bytes, which Node's bundled zlib makes platform-dependent. |
 | 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
 
 **IN PROGRESS here means:** substantial implementation exists and is locally
@@ -73,6 +73,21 @@ off. Treat every one as unverified until its own phase runs.
   store's poll; that path settles the seat and returns the chips and does not
   navigate. `shouldExitAfterHeldLeave` is the missing half. The wallet was
   correct throughout, which is exactly why nothing else noticed.
+- **A DEFAULT PRIVILEGE IS PER (ROLE, SCHEMA, OBJECT TYPE), SO "IS THIS LOCKED
+  DOWN" HAS A DIFFERENT ANSWER DEPENDING ON WHO APPLIES THE MIGRATION.** The
+  stock image ships `postgres | public | f` granting EXECUTE to nobody and
+  `supabase_admin | public | f` granting it to anon, authenticated and
+  service_role. The CLI here applies as `postgres`; a newer one applies as
+  `supabase_admin`. `20260813120000_foundation.sql` now revokes the function
+  default in `public` explicitly, which is what its own comment had claimed for
+  the life of the project. Found by the FIRST CI run this repository has ever
+  had, at migration thirteen, naming twenty-three functions.
+- **A BYTE-COMPARE OF COMPRESSED OUTPUT IS A COMPARE OF THE COMPRESSOR.** Node
+  does not bundle one zlib, so `deflateSync(..., { level: 9 })` on macOS arm64
+  and on a Linux x64 runner emit different valid streams for identical input.
+  `tests/art/generated-app-art.test.ts` compares decoded PIXELS now. Whenever a
+  test asserts "regenerating reproduces the file", ask whether the claim is
+  about the file or about the thing inside it.
 - **THE TWO-SIMULATOR PUBLIC TABLE IS STAGEABLE ONLY AGAINST A DRAINED POOL.**
   Allocation is global and a public table keeps taking players, so a room left by
   `npm run test:server` is one the device account is correctly matched into.
