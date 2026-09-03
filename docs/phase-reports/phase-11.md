@@ -542,6 +542,9 @@ Four runs, and the progression is the evidence:
 | 5 | **pass** | **pass** | the Release-sweep fixes, re-validated on the runner |
 | 6 | **pass** | fail | two assertions about a SHARED public table — on a commit that changed two markdown files |
 | 7 | **pass** | **pass** | — |
+| 8 | **pass** | fail | the same two assertions, still racing — the first fix had moved the race, not removed it |
+| 9 | **pass** | fail | a field read off a REFUSAL body: `expected undefined to be 23000` |
+| 10 | **pass** | **pass** | — |
 
 Runs 4 and 5 are green on both jobs: lint, typecheck, Edge Function typecheck,
 2,395 unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side;
@@ -610,7 +613,19 @@ about one hand in thirteen, and nothing to do with contention at all.
 lock, so a stranger who has not bet leaves it open until the 15-second deadline,
 which a snapshot's own `RESOLVE_TIMEOUT` is what asks for.
 
-Run 7 is green on both jobs with those four fixes in it.
+Run 7 was green with those four fixes in it, and run 8 — another docs-only
+commit — was not. The escrow assertion failed the OTHER way round,
+`expected 4000 to be 6000`: summing the seats from one request and comparing
+them with an escrow from another is the identical race one step along, and the
+partner's own buy-in could be refused before it ever held a seat. Both are now
+read as a consistent pair and staged in a retry. Run 9 then failed on
+`expected undefined to be 23000` — a field read off a refusal body by a test that
+had not checked the status — which is how `takeAPublicSeat` came to exist: a
+room is not a seat, and every public test in `game-command` now asserts about a
+seat it actually holds.
+
+**Run 10 is green on both jobs**, and it carries F-10 below — the product defect
+all of this turned up.
 
 **Where the hardening stopped, and why.** Driven harder — a fresh stranger
 seated every three seconds — the suite fails in ways no test change should
@@ -796,9 +811,10 @@ test asks for by name.
 | `npm run check:functions` | all three functions typecheck |
 | `npm run test:unit` | **122 files, 2,395 tests, all pass** |
 | `supabase db reset` + `supabase test db` | **27 files, 567 assertions, all pass, from empty** |
-| `npm run test:server` | **23 files, 300 tests, all pass — four consecutive runs** after the run-6 fixes (fresh `functions serve`) |
+| `npm run test:server` | **23 files, 300 tests, all pass** — and green on the runner, which is the calibration that counts (fresh `functions serve`) |
 | `npm run benchmark` | 795 µs/hand at load 4.4 — inside the recorded 752–808 range; heap delta +10 KB over 50 hands |
 | Maestro, Debug build | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |
+| CI | **run 10 green on both jobs**: ten runs, six of them red, every red one a real defect |
 | Maestro, **Release build** | **18 green runs**: practice-hand, practice-analysis, practice-resume, career-node, online-table ×2, online-leave-mid-hand ×2, every-screen-online, private-lobby, public-matchmaking, mc-sign-in ×2 and all five two-client-public flows — and **no Arc21 crash report written by any of them** |
 
 ### Two server tests were wrong, not the server
