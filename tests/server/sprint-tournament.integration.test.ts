@@ -972,6 +972,91 @@ suite("adversarial commands against a live tournament", () => {
     expect(resync.body.status).toBe("stale");
   }, 180_000);
 
+  /**
+   * WHO MAY READ AN ENTRY, measured with two real tokens.
+   *
+   * `sprint_standings` has always refused a non-participant — it raises 42501,
+   * which PostgREST renders as HTTP 403 — and `tournament_entries` behind it did
+   * not. `tournament_entries_select_visible` carried a third clause,
+   * `exists (select 1 from public.profiles p where p.id = user_id)`, whose
+   * reasoning was that nested access runs as the invoking role so a hidden
+   * profile hides the entry. True in shape, and beside the point: `privacy`
+   * DEFAULTS to `public`, so for an ordinary account the clause is simply TRUE
+   * and every entry in the database was world-readable to any signed-in caller.
+   * Measured before the fix: **152 rows** — `user_id`, live `chips`, `placement`
+   * and `prize_chips` for every entrant — to an account created seconds earlier.
+   *
+   * `tests/server/rls-idor.integration.test.ts` classified the table as OWNED
+   * ("a stranger must see NONE of it") and passed the whole time, because its
+   * fixture never created an entry. This test is the positive half that the file
+   * could not have: a real four-player tournament exists here, so the row it
+   * asserts about is one somebody is actually playing.
+   */
+  it("shows an entry to the field and to nobody else", async () => {
+    const table = await openSprintTable(deps, walletOf);
+    const stranger = signToken(await createUser());
+    const me = table.players[0]!;
+
+    const readAs = async (token: string, path: string): Promise<unknown[]> => {
+      const response = await fetch(`${REST}/${path}`, {
+        headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${token}` },
+      });
+      const raw = await response.text();
+      if (response.status !== 200) {
+        throw new Error(`GET ${path} answered ${response.status}: ${raw}`);
+      }
+      const rows = JSON.parse(raw) as unknown;
+      if (!Array.isArray(rows)) throw new Error(`GET ${path} did not answer a list: ${raw}`);
+      return rows;
+    };
+
+    // A competitor sees the whole field. This is load-bearing for the format —
+    // bankroll-position strategy needs the other stacks — so it is asserted
+    // FIRST: without it every refusal below could be a table returning nothing
+    // to anybody, which is the failure mode a privacy sweep most easily hides.
+    const field = await readAs(
+      me.token,
+      `tournament_entries?select=id,user_id,chips&tournament_id=eq.${table.tournamentId}`,
+    );
+    expect(field.length, "a competitor cannot see the field they are playing").toBe(
+      SPRINT.seats,
+    );
+
+    // The stranger, three ways: by the tournament, by a named opponent, and with
+    // no filter at all. The last is the one that matters — the leak was found by
+    // asking for everything, and a filtered read is exactly what hid it.
+    expect(
+      await readAs(
+        stranger,
+        `tournament_entries?select=id&tournament_id=eq.${table.tournamentId}`,
+      ),
+      "a stranger read the entries of a tournament they are not in",
+    ).toHaveLength(0);
+
+    expect(
+      await readAs(stranger, `tournament_entries?select=id&user_id=eq.${me.userId}`),
+      "a stranger read a named player's entry",
+    ).toHaveLength(0);
+
+    expect(
+      await readAs(stranger, `tournament_entries?select=id,user_id,chips,prize_chips&limit=200`),
+      "a stranger enumerated tournament entries with no filter at all",
+    ).toHaveLength(0);
+
+    // And the sanctioned read path agrees, rather than being stricter than the
+    // table it reads. Those two disagreeing is what the defect WAS.
+    const standings = await rpc(stranger, "sprint_standings", {
+      p_tournament_id: table.tournamentId,
+    });
+    expect(standings.status, JSON.stringify(standings.body)).toBe(403);
+
+    const mine = await rpc(me.token, "sprint_standings", {
+      p_tournament_id: table.tournamentId,
+    });
+    expect(mine.status).toBe(200);
+    expect(Array.isArray(mine.body) ? mine.body.length : -1).toBe(SPRINT.seats);
+  }, 180_000);
+
   it("refuses a stranger's command against a tournament table", async () => {
     const table = await openSprintTable(deps, walletOf);
     const stranger = signToken(await createUser());

@@ -140,6 +140,7 @@ suite("what a second account can actually read", () => {
   let owner = "";
   /** A signed-in stranger. No friendship, no shared table, no block. */
   let stranger = "";
+  let strangerId = "";
 
   let gameId = "";
   let roomId = "";
@@ -148,7 +149,8 @@ suite("what a second account can actually read", () => {
     if (!stackUp) return;
     ownerId = await createUser("idor-owner");
     owner = signToken(ownerId);
-    stranger = signToken(await createUser("idor-stranger"));
+    strangerId = await createUser("idor-stranger");
+    stranger = signToken(strangerId);
 
     /*
      * The owner does enough to write a row into every OWNED and SHARED table
@@ -232,28 +234,44 @@ suite("what a second account can actually read", () => {
   }, 120_000);
 
   /**
-   * Tables whose rows belong to one player, and the filter that finds THAT
-   * player's rows. A stranger must get an empty list — not a 403, because RLS
-   * filters rather than refuses, and an empty list is the correct shape.
+   * Tables whose rows belong to one player.
+   *
+   * `filter` finds THAT player's rows, for the sweep that asks whether a
+   * stranger can see them; `owner` names the column(s) that say whose a row is,
+   * for the unfiltered sweep below. A stranger must get an empty list from the
+   * first — not a 403, because RLS filters rather than refuses, and an empty
+   * list is the correct shape.
    */
-  const OWNED: { table: string; filter: (ownerId: string, gameId: string) => string }[] = [
-    { table: "wallets", filter: (u) => `user_id=eq.${u}` },
-    { table: "wallet_ledger", filter: (u) => `user_id=eq.${u}` },
-    { table: "player_stats", filter: (u) => `user_id=eq.${u}` },
-    { table: "player_mode_stats", filter: (u) => `user_id=eq.${u}` },
-    { table: "player_daily_xp", filter: (u) => `user_id=eq.${u}` },
-    { table: "player_decision_periods", filter: (u) => `user_id=eq.${u}` },
-    { table: "career_attempts", filter: (u) => `user_id=eq.${u}` },
-    { table: "career_progress", filter: (u) => `user_id=eq.${u}` },
-    { table: "daily_entries", filter: (u) => `user_id=eq.${u}` },
-    { table: "loadouts", filter: (u) => `user_id=eq.${u}` },
-    { table: "push_tokens", filter: (u) => `user_id=eq.${u}` },
-    { table: "notifications", filter: (u) => `user_id=eq.${u}` },
-    { table: "user_cosmetics", filter: (u) => `user_id=eq.${u}` },
-    { table: "matchmaking_queue", filter: (u) => `user_id=eq.${u}` },
-    { table: "blocks", filter: (u) => `blocker_id=eq.${u}` },
-    { table: "friendships", filter: (u) => `user_id_a=eq.${u}` },
-    { table: "tournament_entries", filter: (u) => `user_id=eq.${u}` },
+  const OWNED: {
+    table: string;
+    filter: (ownerId: string, gameId: string) => string;
+    owner: readonly string[];
+  }[] = [
+    { table: "wallets", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "wallet_ledger", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "player_stats", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "player_mode_stats", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "player_daily_xp", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "player_decision_periods", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "career_attempts", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "career_progress", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "daily_entries", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "loadouts", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "push_tokens", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "notifications", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "user_cosmetics", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "matchmaking_queue", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
+    { table: "blocks", filter: (u) => `blocker_id=eq.${u}`, owner: ["blocker_id"] },
+    { table: "friendships", filter: (u) => `user_id_a=eq.${u}`, owner: ["user_id_a", "user_id_b"] },
+    /*
+     * The positive half of this one lives in
+     * `tests/server/sprint-tournament.integration.test.ts` ("shows an entry to
+     * the field and to nobody else"), because a real entry needs a real
+     * four-player tournament and creating one here would fight that suite for
+     * the registration pool. The unfiltered sweep below covers it from this
+     * side, and does not need a fixture to mean something.
+     */
+    { table: "tournament_entries", filter: (u) => `user_id=eq.${u}`, owner: ["user_id"] },
   ];
 
   /**
@@ -368,6 +386,59 @@ suite("what a second account can actually read", () => {
     for (const { table, filter } of SHARED) {
       const rows = await readAs(stranger, `${table}?select=id&${filter(ownerId, gameId, roomId)}`);
       expect(rows, `${table} leaked ${rows.length} row(s) to a non-participant`).toHaveLength(0);
+    }
+  });
+
+  /**
+   * THE SAME SWEEP WITH NO FILTER, and it is the one that finds things.
+   *
+   * The filtered sweep above asks "can a stranger see the OWNER's rows", which
+   * needs the owner to HAVE a row before it means anything — and this file's own
+   * header says so: "a sweep over empty tables passes having proved nothing".
+   * The fixture writes a row into most of these tables and in phase 10 it wrote
+   * none into `tournament_entries`, so that table sat in the OWNED list,
+   * classified "a stranger must see NONE of it", passing on emptiness while
+   * `tournament_entries_select_visible` handed **152 rows** — `user_id`, live
+   * `chips`, `placement`, `prize_chips` — to any account that asked.
+   *
+   * Removing the filter removes the dependency on the fixture. The assertion is
+   * RELATIONAL rather than "zero rows", because a stranger legitimately owns
+   * some of these rows themselves — a wallet and a `player_daily_xp` bucket exist
+   * from signup, and asserting zero fails on the stranger's own wallet, which is
+   * the policy working. What must be true is that every row that comes back
+   * belongs to the caller: on a shared local database these tables hold rows
+   * from dozens of accounts, so a policy that leaks answers this immediately.
+   */
+  it("gives a stranger only their OWN rows when they name no filter", async () => {
+    for (const { table, owner } of OWNED) {
+      const rows = (await readAs(
+        stranger,
+        `${table}?select=${owner.join(",")}&limit=200`,
+      )) as Record<string, string | null>[];
+      const foreign = rows.filter(
+        (row) => !owner.some((column) => row[column] === strangerId),
+      );
+      expect(
+        foreign,
+        `${table} answered ${foreign.length} row(s) belonging to somebody else ` +
+          `(of ${rows.length} returned). Every row in it belongs to a player, and ` +
+          `none of those players is this caller.`,
+      ).toHaveLength(0);
+    }
+  });
+
+  /**
+   * And the shared tables, the same way. A stranger holds no seat and is in no
+   * room, so an unfiltered read of a table scoped by participation must be empty
+   * however many live tables the rest of the suite is running.
+   */
+  it("shows a stranger nothing from a shared table they name no filter on", async () => {
+    for (const { table } of SHARED) {
+      const rows = await readAs(stranger, `${table}?select=id&limit=200`);
+      expect(
+        rows,
+        `${table} answered ${rows.length} unfiltered row(s) to a non-participant`,
+      ).toHaveLength(0);
     }
   });
 

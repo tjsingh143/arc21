@@ -1056,6 +1056,75 @@ lack the trigger rather than by remembering, which is the move
 `23_account_lifecycle.test.sql` already makes about cascades, and
 `20_authorization_surface.test.sql` now asks it on every run.
 
+**AN RLS SWEEP THAT FILTERS BY THE OWNER'S ID PASSES ON AN EMPTY TABLE, AND ONE
+OF THEM DID FOR ITS WHOLE LIFE.** `rls-idor.integration.test.ts` classified
+`tournament_entries` as OWNED — "a stranger must see NONE of it" — and its
+fixture never registered for a tournament, so the assertion was
+`readAs(stranger, "tournament_entries?user_id=eq.<owner>")` against zero rows.
+The policy's third clause was `exists (select 1 from profiles p where p.id =
+user_id)` — written deliberately, to delegate visibility to the profile policies
+so the rule lives in one place — and `profiles.privacy` DEFAULTS to `public`, so
+for an ordinary account it is simply TRUE. Measured: a second account created
+seconds earlier read **152 rows** carrying `user_id`, live `chips`, `placement`
+and `prize_chips`, while `sprint_standings` refused a non-participant the same
+numbers with a 42501. The file's own header warns that "a sweep over empty
+tables passes having proved nothing" and it had one inside it. **The fix that
+generalises is in the test, not the policy: read each owned table with NO FILTER
+and assert RELATIONALLY that every row returned belongs to the caller.** That
+needs no fixture — a stranger legitimately owns their own wallet row, so "zero
+rows" is the wrong assertion — and on a shared local database it is being asked
+against hundreds of other accounts' rows.
+
+**`service_role` IS A ROOT CREDENTIAL, WHICH IS A REASON TO TAKE ITS LAST VERB
+AWAY RATHER THAN TO LEAVE IT.** `20260813120000_foundation.sql` revokes default
+table and sequence privileges from `service_role` in `public` and explains why —
+the server reaches this schema as `postgres`, over the Edge Functions' direct
+`SUPABASE_DB_URL` connection, or through a `SECURITY DEFINER` function owned by
+`postgres`. It never said the same about FUNCTIONS, and one grant survived:
+`apply_wallet_delta`. Measured, one POST to `/rest/v1/rpc/apply_wallet_delta`
+carrying nothing but the key answered **HTTP 200** and moved a wallet from 24,450
+to 1,024,450. Stated as "no function at all" in the gate rather than as an
+allowlist, because the correct number is zero and an allowlist is a place for the
+number to grow. Related: a policy written with no `to` clause applies to
+`PUBLIC`, which includes `anon` — five did, all harmless because `anon` holds no
+grant on those tables, which is the FIRST lock, and sixteen migrations have
+broken the first lock by accident.
+
+**A REFUSED REQUEST BODY MUST BE DRAINED, NOT CANCELLED, AND FIXING THE MEMORY
+FIRST BROKE THE ANSWER.** `readJsonBody` used `await request.arrayBuffer()`, so a
+32 MB body was held in full and then rejected — correct answer, 2.5 s, and an
+allocation a runtime that retires workers on a memory limit should never be
+offered. Reading in chunks and CANCELLING at the cap fixed that and turned the
+same request into a 60-second stall and an **HTTP 504**, because the gateway in
+front buffers the request and cannot deliver a reply into a connection whose
+upstream stopped reading. The version that works counts every byte, retains
+nothing past `MAX_BODY_BYTES`, and reads to the end anyway: same request, HTTP
+400 in 0.7 s. Both numbers were measured, and the middle one is a regression I
+introduced and then had to remove — a unit test over a `Request` object would
+have called it a success.
+
+**A CONFIG PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING.** `expo-audio`
+defaults `recordAudioAndroid` and `enableBackgroundPlayback` to true, so a
+blackjack game that never records asked for the **microphone** on both platforms
+(`NSMicrophoneUsageDescription`, `RECORD_AUDIO`) and declared iOS
+`UIBackgroundModes: [audio]` plus two Android foreground-service permissions —
+while its own `configureAudioSession` sets `shouldPlayInBackground: false`.
+`npx expo config --type public` shows what ships and is where this was found;
+`--type introspect` shows what a prebuild WOULD write and merges over the
+existing `ios/` project, so a stale `Info.plist` key survives a corrected
+`app.json` until it is deleted from the plist itself.
+
+**A STATED CONTROL MUST NOT CLAIM MORE THAN THE COLUMN ENFORCES.** Settings' privacy
+note said it controls "who can see your profile and standings". Measured: a
+`private` profile IS hidden from a direct `profiles` read and its statistics ARE
+nulled by `player_public_profile` — and it is still on `leaderboard_weekly_xp`
+under its display name, and still findable by `search_players`. Both are the
+specification working (a global board of "avatar, display name, value"; "search
+exact or partial username", without which nobody can be sent a friend request),
+so the SENTENCE gave way rather than the boards. "Standings" was the word doing
+the damage. Same family as the `credentials.ts` note about a client-side-only
+password rule: when a control's copy describes a scope, go and measure the scope.
+
 **A TEST THAT ASSERTS A FAILURE MESSAGE ASSERTS THE FORMATTER.** The lost-reply
 regression first checked that the reported message named 18 and 20, and passed
 three times before failing on the fourth: Vitest renders `[ …(18) ]` when the

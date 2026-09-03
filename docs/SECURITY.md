@@ -35,15 +35,50 @@ Every Edge Function command authenticates first and derives identity from the
 session. The server never accepts a client-supplied `userId`, wallet balance,
 seat ownership, hand result, shuffle or tournament placement.
 
+## The trust boundary, item by item
+
+Assume the client is hostile: the bundle is readable, `EXPO_PUBLIC_*` values are
+public, the code can be modified, local storage can be rewritten, Supabase can be
+called directly with hand-crafted payloads, any object id can be substituted, and
+no UI restriction exists. Client secrecy is not a boundary. Each row below names
+what OWNS the value and where the client's copy comes from; the third column is
+how it was checked in phase 10, not how it was intended.
+
+| State | Owner | Verified by |
+|---|---|---|
+| **Wallet balance** | `public.wallets`, written only by `apply_wallet_delta` as `postgres` | No client grant, no write policy, `deny_client_write`, and no API role holds EXECUTE — `service_role` lost the last one this phase. A player calling the RPC gets 403 |
+| **Ledger** | `public.wallet_ledger`, append-only, unique idempotency key per entry | `guard_ledger_append_only`; `SELECT`-only for its owner; no column-level write grant, which a table-level check cannot see and the gate checks separately |
+| **The online shoe** | `private.game_state_private.engine_state` | The `private` schema has no USAGE for any API role. Measured on a live table: 312 cards, 304 undealt, and **not one of their ids** appears in the create-session reply, the public state, `game_sessions`, `game_session_seats`, `game_events`, `player_actions`, `hand_records` or `hand_players` |
+| **Shoe index** | same row, same schema | Same sweep. `toPublicState` carries the shoe's *penetration*, never its position in a card list |
+| **The dealer's hidden card** | same row | Measured at PLAYER_TURNS with `holeCardRevealed: false`: the card's id appears in none of the eight readable surfaces, and the public state carries `{"hidden":true}` in its place. The three cards the seat HAD been dealt do appear — the positive control, so the sweep is not passing on a mismatch |
+| **Game version** | `private.game_state_private.version`, bumped inside the command transaction | A client sends `expectedVersion` and is answered `stale` with the authoritative snapshot; nothing is applied. A negative or fractional one is a 400 |
+| **The active actor** | the engine's `activeSeatId` on authoritative state | `assertCommandIsLegal` re-runs `getLegalActions` server-side. `isBettingTurn` is the one definition of whose turn it is to stake, and the sequential Sprint table answers `NOT_YOUR_TURN` |
+| **Legal actions** | `shared/blackjack/legal-actions.ts`, run on the row, not on the request | The seat id comes from the DB lookup; the request has no seat field to confuse |
+| **Competitive statistics** | `player_stats`, `player_mode_stats`, `player_decision_periods`, `player_daily_xp` | server-owned, `deny_client_write`, and attacked over HTTP with a real token in `tests/server/rls-writes.integration.test.ts` — including a forged `repeatable_xp: 999999`, which is how the missing trigger was found in phase 9 |
+| **Career rewards** | `career_progress`, `career_attempts`, paid by `settleCareerReward` under `reward_claimed_at` | A drill's scenarios are REGENERATED from a secret in `private.career_drill_seeds` and graded server-side; a client may send any answers and cannot send a different question. `SUBMIT_CAREER_DRILL` against another account's `attemptId` is `NOT_A_PARTICIPANT` |
+| **Tournament state** | `private.game_state_private` plus `tournaments`, moved only by `_shared/session-boundary.ts` | server-owned tables; the boundary runs inside the command transaction, before the engine deals |
+| **Tournament placement** | `tournament_entries.placement`, written by the boundary | server-owned; a forged `placement: 1` over PostgREST is refused, and since this phase the row is not even readable by a stranger |
+| **Daily state and seed** | `daily_challenges.seed_secret` | Excluded from the column grant, so `select *`, `select=seed_secret`, `order=seed_secret` and `seed_secret=like.*` are all **HTTP 403 from the privilege system** rather than filtered by a policy — a filter would leave a blind oracle. Measured, all four |
+| **Leaderboards** | four `SECURITY DEFINER` functions over server-owned inputs | The inputs carry `deny_client_write`; the six functions that write them are revoked from every client role, checked over HTTP rather than inferred |
+| **Cosmetic ownership** | `user_cosmetics`, granted by `grant_earned_cosmetics_for` from level and career progress | `SELECT`-only for its owner; a forged `INSERT` is refused, and `equip_cosmetic` re-checks ownership in a trigger, so equipping an unowned item fails at the database |
+
+No client-authoritative shortcut was found to remove: nothing in `src` or `app`
+writes any of the above, and `tests/wallet/no-write-path.test.ts` scans four
+directories for the attempt rather than waiting for a behavioural test to trip
+over it.
+
 ## Row Level Security — the full audit
 
 Every table in `public` is listed. Not a sample, not the interesting ones: all
 of them, so that a table added tomorrow is missing from this document rather
 than quietly absent from the review.
 
-Audited 2026-08-18 (phase 14, session 2) against the running database, and
-re-derivable at any time from `supabase/tests/20_authorization_surface.test.sql`,
-which asserts the same claims mechanically.
+Audited 2026-08-18 (phase 14, session 2) and re-audited 2026-09-02 (phase 10)
+against the running database, and re-derivable at any time from
+`supabase/tests/20_authorization_surface.test.sql`, which asserts the same claims
+mechanically. **The phase 10 pass read rows rather than grants**, with two real
+tokens against the live stack, and that is what found the one table below whose
+policy did not match this document — see `tournament_entries`.
 
 **Two rules cover the whole table and are worth stating once rather than
 thirty-four times.**
@@ -90,8 +125,8 @@ is ever loosened.
 | `room_members` | yes | select same room | `SELECT` to `authenticated` | Who else is at your table. Membership is resolved by a `SECURITY DEFINER` helper, because a policy on `room_members` that queries `room_members` recurses |
 | `rooms` | yes | select member | `SELECT` to `authenticated` | Your own table. There is deliberately **no** policy allowing a room to be found by code, so a client cannot enumerate live codes with a range query — joining goes through `join_private_room` |
 | `rulesets` | yes | select active | `SELECT` to `anon` + `authenticated` | The rules of the game are a Fair Play claim and are meant to be readable |
-| `tournament_entries` | yes | select visible | `SELECT` to `authenticated` | Entries in a tournament you are in |
-| `tournament_matches` | yes | select visible | `SELECT` to `authenticated` | Matches in a tournament you are in |
+| `tournament_entries` | yes | select own **or** in the same tournament | `SELECT` to `authenticated` | Your own entry, and the entries of the field you are playing. Competitors must see each other's stacks — that is what bankroll-position strategy is — and nobody else may. **Phase 10 narrowed this**: see below |
+| `tournament_matches` | yes | select in the same tournament | `SELECT` to `authenticated` | Matches in a tournament you are in. V1.1 shape; nothing writes the table yet |
 | `tournaments` | yes | select all | `SELECT` to `anon` + `authenticated` | The tournament schedule is a listing, not a person |
 | `user_cosmetics` | yes | select own | `SELECT` to `authenticated` | What you own. Granting is server-side, from level and career progress |
 | `wallet_ledger` | yes | select own | `SELECT` to `authenticated` | Append-only history of your own chips. **No client write of any kind, at table or column level** |
@@ -103,13 +138,89 @@ one. The other twenty-seven are server-owned. That list is asserted, not
 described: adding a seventh fails
 `supabase/tests/20_authorization_surface.test.sql`.
 
+### The one row of that table the database disagreed with, and how it was found
+
+`tournament_entries_select_visible` shipped with a third clause:
+
+```sql
+or exists (select 1 from public.profiles p where p.id = tournament_entries.user_id)
+```
+
+The reasoning it carried was sound in shape — nested access inside a policy is
+evaluated as the invoking role, so a hidden profile yields no row and the entry
+stays hidden, which keeps visibility rules in one place instead of restating them.
+What it missed is that `profiles.privacy` **defaults to `public`**, so for an
+ordinary account the subquery is simply true and the clause collapses to "anyone
+signed in".
+
+Measured before the fix: a second account created seconds earlier, with no
+friendship, no shared table and no tournament of its own, read **152 entry rows**
+— `user_id`, live `chips`, `placement` and `prize_chips` for every entrant in the
+database. `public.sprint_standings` refuses a non-participant exactly those
+numbers with a `42501`, so the sanctioned read path and the table underneath it
+disagreed about the same data.
+
+Three artefacts described the tighter rule and only the policy did otherwise:
+this document, `sprint_standings`, and
+`tests/server/rls-idor.integration.test.ts`, which classified the table as OWNED
+— "a stranger must see NONE of it" — and passed the whole time **because its
+fixture never created an entry**. The file's own header warns that "a sweep over
+empty tables passes having proved nothing", and it had one inside it. Both halves
+are now covered: that sweep reads every OWNED table with **no filter at all** and
+asserts relationally that every row it gets back belongs to the caller, and
+`tests/server/sprint-tournament.integration.test.ts` holds the positive proof —
+a real four-player tournament, where a competitor sees the whole field and a
+stranger sees none of it.
+
+### What the profile privacy setting does, and what it does not do
+
+`profiles.privacy` is the column behind Settings → "Statistics visibility", and
+phase 10 measured all three of its effects rather than reading them off the
+policy:
+
+* a direct read of `profiles` returns **nothing** to a stranger — measured;
+* `player_public_profile` answers `stats_visible = false` with every statistic
+  NULL rather than zero — measured;
+* and it does **not** take the player off the leaderboards, or hide them from
+  `search_players`. Measured: a `private` account with 4,242 weekly XP came back
+  on `leaderboard_weekly_xp` under its display name, to a stranger, and came back
+  from `search_players` on a six-character prefix of its handle.
+
+Both of those are the specification working. Its leaderboard section asks for a
+global board carrying "avatar, display name, value" and forbids only exposing "a
+private email or account identifiers"; friend search is specified as "search
+exact or partial username", and a player nobody can find is a player nobody can
+befriend. What was wrong was the SENTENCE on the Settings screen, which claimed
+the control governed "your profile and standings" — and a leaderboard placement
+is precisely a standing. `STATS_VISIBILITY_NOTE` now states what the column
+enforces, and `tests/settings/privacy-copy.test.ts` pins the claim to it.
+
 ### The function surface
 
 `anon` can execute **one** function in `public`: `is_client_role()`, which the
 guard triggers call and which reports the caller's own role back to the caller.
-`authenticated` can execute 54, each one either a relationship predicate an RLS
+`authenticated` can execute 61, each one either a relationship predicate an RLS
 policy needs, a guard or CHECK helper that runs with the invoker's rights, or an
 RPC the app actually calls.
+
+**`service_role` can execute ZERO**, and until phase 10 it could execute one:
+`apply_wallet_delta`. The foundation migration had already revoked its default
+table and sequence privileges and written down the reason — the server reaches
+this schema as `postgres`, over the Edge Functions' direct database connection,
+or through a `SECURITY DEFINER` function owned by `postgres`, so the key needs
+nothing here — and that sentence was simply never applied to functions. It was
+measured before it was removed: a POST to `/rest/v1/rpc/apply_wallet_delta`
+carrying nothing but the service key answered **HTTP 200** and moved a wallet
+from 24,450 to 1,024,450. A service key is a root credential and this was
+defence in depth rather than a client-reachable hole, but "root" is a reason to
+take the last verb away rather than to leave it. A leaked service key now reads
+no table, writes no table and executes no function in `public`.
+
+**Every parameterised function a client may execute derives identity from
+`auth.uid()`** — asked of the catalogue, not remembered: of the 38 that take an
+argument, 34 reference `auth.uid()` in their own body and the other four are
+pure (`level_from_total_xp`, `notification_data_is_safe`, `sanitise_display_name`,
+`username_is_permitted`). None of them takes a user id it then trusts.
 
 **This was not true before this session, and the reason is worth knowing.** A
 newly created function carries Postgres's default ACL, which is `EXECUTE TO
@@ -151,10 +262,21 @@ migration that changes a grant should call it as its last line.** It enforces:
    with its owner's rights and launder RLS
 8. no client grant without a policy to permit it, so a dead grant cannot sit
    around looking like a feature somebody should finish
+9. **no privilege of any kind for `service_role` in `public`** — not a table
+   grant and not a function EXECUTE. Stated as "nothing" rather than as an
+   allowlist, because the correct number is zero and an allowlist is a place for
+   the number to grow
+10. **no policy on a `public` table names the `PUBLIC` role.** A policy written
+    without a `to` clause applies to every role, `anon` included. Five did, and
+    all five were harmless because `anon` holds no grant on those tables — which
+    is the FIRST lock, and this repository has added a client grant by accident
+    sixteen times. Naming the role is the second
 
 Each of those is proved to FAIL when breached, in
 `supabase/tests/20_authorization_surface.test.sql`. A gate nobody has watched
-fail is a gate nobody should trust.
+fail is a gate nobody should trust — and that applies one rule at a time: this
+sentence was here before phase 10 and was true of eight of the ten, because
+rules 7 and 8 had no breach case. They have one each now.
 
 ### The second lock: `deny_client_write`
 
@@ -216,6 +338,51 @@ inferred from the grants.
 - Room codes: 6 uppercase characters excluding visually ambiguous glyphs
   (`O`/`0`, `I`/`1`), giving sufficient entropy against guessing
 - A room code alone is never treated as authorization
+
+**TypeScript does not validate an attacker, so phase 10 sent the payloads
+instead of reading the schemas.** Every one of these went to the live
+`game-command` with a valid session token, and every one was refused 4xx —
+never 5xx, which would mean it reached something that was not expecting it:
+
+| Sent | Answer |
+|---|---|
+| `gameId: "not-a-uuid"` | 400 `INVALID_REQUEST` |
+| no `clientActionId` | 400 `INVALID_REQUEST` |
+| a `userId` field alongside a valid command | 400 `INVALID_REQUEST` (strict schemas reject an unknown key rather than stripping it) |
+| `amount: -100` / `10.5` / `1e18` / `"NaN"` | 400 `INVALID_REQUEST` |
+| `type: "ADVANCE"` — the engine's own cascade command | 400 `INVALID_REQUEST`; it is not in the request union at all |
+| `type: "SETTLE"` | 400 `INVALID_REQUEST` |
+| `expectedVersion: -1` / `1.5` | 400 `INVALID_REQUEST` |
+| `expectedVersion: 999999` | not an error: `stale`, with the authoritative snapshot and nothing applied |
+| `clientSentAt: "yesterday"` | 400 `INVALID_REQUEST` |
+| a payload on a payload-free command | 400 `INVALID_REQUEST` |
+| a JSON array, `null`, or a bare string as the whole body | 400 `INVALID_REQUEST` |
+| a 32 MB body | 400 `INVALID_REQUEST` |
+
+And over PostgREST, against the constraints rather than the application:
+
+| Sent | Answer |
+|---|---|
+| a 500-character `display_name` | 400, `profiles_display_name_ch…` CHECK |
+| a 300-character `username` | 400, the username CHECK |
+| `display_name` of only spaces | 400, "display\_name must contain at least one visible character" |
+| a `NUL` inside `display_name` | 400 `22P05` — Postgres refuses the escape; nothing stores a truncated name |
+| a bidi override inside `display_name` | accepted and **sanitised**: the override is stripped by `sanitise_display_name` and the remaining text stored |
+| `join_private_room('; drop table public.wallets; --')` | 200 with a null row — the same answer an unknown code gets — and `public.wallets` still there afterwards, checked rather than assumed |
+| `search_players('%')` | 0 rows; a query under two characters returns nothing by design |
+| `search_players('%_%')` | 25 rows, the function's own cap. `like` metacharacters are data, not structure |
+
+**The request body is bounded on what it RETAINS, not on what it is told.**
+`MAX_BODY_BYTES` is 8 KB and `readJsonBody` reads the stream in chunks, counting
+every byte and keeping none once the cap is passed — so no caller can choose how
+much memory a Function allocates, and `content-length` is not consulted at all,
+because a client controls it and there is no work to save by believing it. The
+body is also **drained** rather than cancelled, which is not optional: a first
+attempt that cancelled at the cap turned a 32 MB request from "HTTP 400 in 2.5 s"
+into a 60-second stall and an HTTP 504, because the gateway in front buffers the
+request and then waits for a reply that a blocked upstream write never lets it
+collect. All three numbers were measured; draining without retaining has neither
+problem, and the same 32 MB request is now refused in 0.7 s.
 
 ## Rate limiting
 
@@ -295,6 +462,23 @@ correct: a refusal must not be recorded.
 
 - **Never** place a service-role key or any server secret in an `EXPO_PUBLIC_*`
   variable. Those are compiled into the client bundle and are public by definition.
+- `src/lib/supabase/config.ts` **refuses to start online play** if the value it
+  was handed looks like one: an `sb_secret_`/`sbp_` prefix, a database URL, or a
+  JWT whose decoded payload claims a role other than `anon` or `authenticated`.
+  A leak that ships is not something a code review catches afterwards.
+- The whole tree, the configuration, the scripts and the git history were swept
+  in phase 10 for service keys, database passwords, JWT signing secrets, APNs and
+  FCM credentials, API tokens, private keys and hardcoded passwords. **No real
+  credential is present and none has ever been committed** — the only long
+  secrets in the repository are the published Supabase local-development
+  defaults (`iss: supabase-demo`, `postgres:postgres@127.0.0.1`,
+  `super-secret-jwt-token-with-at-least-32-characters-long`), which are identical
+  on every machine and useless against anything else, and they appear only in
+  `tests/` and `scripts/`. `.env.local` is gitignored and has never been tracked;
+  `.env.example` carries names with empty values.
+- `npx expo config --type public` — what actually ships — carries the app name,
+  the scheme, the icons, the plugin list and the "virtual chips" disclaimer. No
+  key, no URL, no secret.
 - Mobile environment variables carry only publishable client configuration:
   `EXPO_PUBLIC_SUPABASE_URL`, `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
 - Server secrets live in Supabase Function secret storage.

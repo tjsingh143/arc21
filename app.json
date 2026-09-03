@@ -35,7 +35,15 @@
       ],
       "expo-secure-store",
       "expo-sqlite",
-      "expo-audio",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundPlayback": false,
+          "enableBackgroundRecording": false
+        }
+      ],
       "expo-notifications",
       "expo-asset"
     ],

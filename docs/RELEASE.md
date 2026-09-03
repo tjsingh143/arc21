@@ -58,6 +58,27 @@ written.
   GoTrue refuses to redirect anywhere not on that list, so the value the client
   passes and the value the project allows must agree by more than convention.
 
+### Four auth settings that are local-development values today
+
+Phase 10 measured each of these against the running GoTrue rather than reading
+them off `supabase/config.toml`, and each is a deliberate local convenience that
+must change with the project. None can be validated locally, because three of
+them do nothing until real SMTP exists — which is itself blocked on a credential.
+
+| Setting | Local value | What it must be, and why |
+|---|---|---|
+| `auth.email.enable_confirmations` | `false` | **`true`.** Two things follow from it and both matter. It stops anybody claiming an email address they do not own — with confirmations off, `/auth/v1/signup` returns a live session for any address on the first request. And it closes the one user-enumeration oracle this project has: with confirmations off GoTrue must answer a duplicate signup honestly, and it does — measured, **HTTP 422 `user_already_exists`, "User already registered"** — while sign-in is already indistinguishable for a wrong password and an unknown account (measured: byte-identical `invalid_credentials` for both). With confirmations on, a duplicate signup returns the ordinary "check your email" shape and the address is told about the attempt instead of the caller. |
+| `auth.captcha` | absent | **Enabled** (hCaptcha or Turnstile). `[auth.rate_limit]` already caps sign-ups and sign-ins at 30 per five minutes **per IP address**, which is a speed limit rather than an identity check. |
+| `auth.email.secure_password_change` | `false` | **`true`.** With it off, a stolen access token can set a new password without knowing the old one. It is worth knowing that the blast radius is already bounded: a password change DOES revoke every other refresh token, measured — the second device's next refresh answered `refresh_token_not_found` — so the attacker locks the owner out rather than sitting alongside them, and the owner recovers by email. |
+| `auth.sessions.timebox` / `inactivity_timeout` | unset | A decision, not an oversight. A blackjack app that signs a player out every 24 hours is worse for most people than one that does not, and `jwt_expiry` is already one hour with rotation on. Record whichever way it goes; do not leave it unstated. |
+
+What was measured and needs no change: the eight-character minimum is enforced
+on **both** paths that set a password (signup answered 422 "Password should be at
+least 8 characters", and so did `PUT /auth/v1/user`); `signOut({ scope: "local" })`
+ends this device's session and leaves another device signed in; and a deleted
+account's refresh token is dead immediately while its unexpired access token
+reads nothing at all.
+
 ---
 
 ## Not blocked on anything

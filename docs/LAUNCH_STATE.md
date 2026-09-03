@@ -1,8 +1,8 @@
 # Arc 21 Launch State
 
-**Current Phase:** 10 — Backend/API Security (not started)
-**Last Completed Phase:** 9 — Daily / Leaderboards / Cosmetics / Notifications
-(**PASS, 2026-09-02**; see `docs/phase-reports/phase-09.md`)
+**Current Phase:** 11 — Adversarial QA / E2E / CI (not started)
+**Last Completed Phase:** 10 — Backend / API Security
+(**PASS, 2026-09-02**; see `docs/phase-reports/phase-10.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -24,7 +24,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 7 — Public Multiplayer | **PASS** | Eight defects fixed, each regression proved to fail without its fix by reverting it in the running system. A public table did not take a second player at all; nobody ever observed `waiting`, so three specified controls were unreachable; a public room's code admitted anyone; its accidental host could kick strangers; a leave racing a join deadlocked. Two TEST defects were hiding real ones. |
 | 8 — Sprint Tournament | **PASS** | Seven defects fixed, six proved to fail by reverting the fix in the running system. Betting was not sequential at all — the format's defining mechanic was absent; a settlement-window timeout dealt the next hand with NO boundary, so a tournament could never finish or pay; a paid entry could never be given up; registering did not check for a seat elsewhere, in either direction; and the result vanished in the transaction that created it. |
 | 9 — Daily / Leaderboards / Cosmetics | **PASS** | Five defects fixed, each proved to fail by reverting it in the running system. The "18 vs 20" intermittent was REPRODUCED on purpose against the real functions and is now a regression test; a bankrupt daily attempt could never end; the challenge took a second live seat and hid the first; a mid-challenge reshuffle would have come from the CSPRNG; and the seed was never published, so the commitment could not be checked by anybody. |
-| 10 — Backend/API Security | IN PROGRESS | Built; IDOR sweep over 32 tables with two real JWTs. |
+| 10 — Backend/API Security | **PASS** | Six findings, five fixed and each proved to fail by reverting it in the running system. `tournament_entries` was readable by EVERY authenticated account — 152 rows of live stacks and prizes — and the IDOR sweep that classified it "a stranger must see NONE of it" passed on an empty fixture; `service_role` could mint a million chips through `/rest/v1/rpc/` in one request; the app shipped a microphone permission for a game that never records. |
 | 11 — Adversarial QA / E2E / CI | IN PROGRESS | 4 Maestro flows exist; **CI has never run on a runner**. |
 | 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
 
@@ -317,6 +317,46 @@ off. Treat every one as unverified until its own phase runs.
   something the player can do, because `WITHDRAW_SPRINT` now exists: an entry
   whose field never fills is refundable, and a `registering` tournament older
   than thirty minutes is cancelled and refunded through the ledger.
+- **AN ASSERTION OVER AN EMPTY TABLE IS NOT AN ASSERTION.**
+  `tests/server/rls-idor.integration.test.ts` classified `tournament_entries` as
+  OWNED — "a stranger must see NONE of it" — and passed for its whole life
+  because its fixture never registered for a tournament. The policy handed
+  **152 rows** of `user_id`, live `chips`, `placement` and `prize_chips` to any
+  signed-in account, because its third clause was
+  `exists (select 1 from profiles p where p.id = user_id)` and `profiles.privacy`
+  DEFAULTS to `public`, so the clause is simply true. The file's own header warns
+  about exactly this ("a sweep over empty tables passes having proved nothing")
+  and had one inside it. The fix in the TEST is the one that generalises: sweep
+  each owned table with **no filter at all** and assert RELATIONALLY that every
+  row returned belongs to the caller. That needs no fixture, and on a shared
+  database it is being asked against hundreds of other accounts' rows.
+- **`service_role` MUST REACH NOTHING IN `public`, AND THE FOUNDATION MIGRATION
+  ONLY SAID IT ABOUT TABLES.** It kept `EXECUTE` on `apply_wallet_delta` —
+  measured minting 1,000,000 chips through `/rest/v1/rpc/` with nothing but the
+  key. Every real caller reaches that function as `postgres`, over the Edge
+  Functions' direct database connection, so nothing legitimate wanted the grant.
+  The gate now states it as "no function at all" rather than as an allowlist,
+  because the correct number is zero.
+- **A POLICY WITH NO `to` CLAUSE APPLIES TO `PUBLIC`, WHICH INCLUDES `anon`.**
+  Five did. All five were harmless — the first lock is that `anon` holds no grant
+  — and this repository has broken the first lock by accident sixteen times. The
+  gate refuses a sixth.
+- **A REFUSED REQUEST BODY MUST BE DRAINED, NOT CANCELLED.** The cap is on what is
+  RETAINED: `readJsonBody` counts every byte and keeps none past 8 KB, so no
+  caller chooses how much memory a Function allocates. It must still read to the
+  end, because the gateway in front buffers the request and then waits for a
+  reply — an upstream that stops reading blocks that write, and the same 32 MB
+  request went from "HTTP 400 in 2.5 s" to "HTTP 504 after 60 s" when the first
+  version of this fix cancelled at the cap. Both numbers measured; the second was
+  a regression I introduced and then had to un-introduce.
+- **A PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING.** `expo-audio` defaults
+  `recordAudioAndroid` and `enableBackgroundPlayback` to true, so a blackjack game
+  that never records asked for the **microphone** on both platforms and declared
+  iOS `UIBackgroundModes: [audio]` — while its own `configureAudioSession` sets
+  `shouldPlayInBackground: false`. `npx expo config --type public` is where you
+  see it; `--type introspect` shows what a prebuild would write, and it merges
+  over the EXISTING `ios/` project, so a stale key survives a fixed `app.json`
+  until it is deleted from the plist.
 - **A UNIT TEST CANNOT SEE A SHAPE.** `HandSelector`'s chip row rendered as two
   ELLIPSES with the labels spilling out of them — a `ScrollView` with no
   `flexGrow: 0` expanded to fill `playerArea`, its children stretched, and
@@ -326,8 +366,18 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260903140000_server_owned_write_guards.sql`
-(53 migrations, all applied from scratch cleanly on 2026-09-02).
+`supabase/migrations/20260904120000_least_privilege_and_entry_visibility.sql`
+(54 migrations, all applied from scratch cleanly on 2026-09-02).
+
+Phase 10 added one:
+
+- `20260904120000_least_privilege_and_entry_visibility.sql` — narrows
+  `tournament_entries_select_visible` to "your own entry, or the field you are
+  playing" and `tournament_matches_select_visible` to the same; revokes
+  `service_role`'s last privilege in `public`; names `authenticated` in the five
+  policies that named `PUBLIC`; and adds gate blocks 10 and 11 for the last two.
+  Both new blocks are proved to FAIL on a deliberate breach in
+  `20_authorization_surface.test.sql`.
 
 Phase 9 added three:
 
@@ -441,6 +491,23 @@ Phase 6 added three:
   Sprint Tournament. Drains the waiting pool first, and never assumes a betting
   order: it reads the one the server published, which is also the only way a
   test can notice if that order stops being enforced.
+- `public.assert_client_authorization_surface()` — the deploy-time gate, ten
+  rules. A migration that changes a grant calls it as its last line, and
+  `20_authorization_surface.test.sql` runs it again and proves **every one of the
+  ten** fails on a deliberate breach. Two are new in phase 10 — `service_role`
+  reaches nothing in `public`, and no policy on a `public` table names the
+  `PUBLIC` role — and two that already existed had no breach test until now (a
+  view without `security_invoker`, and a grant with no policy behind it), so the
+  claim in `docs/SECURITY.md` that each rule is proved to fail was true of eight
+  of the ten and is now true of all of them.
+- `tests/server/object-substitution.integration.test.ts` — the BOLA sweep. Every
+  id the wire contract lets a client name, named by a stranger, with the victim's
+  stack, seat, wallet and room membership read back afterwards and a CONTROL
+  proving the endpoints do not simply refuse everybody.
+- `tests/server/hostile-payloads.integration.test.ts` — every malformed payload
+  and forged credential, over the wire. Its rule is **4xx, never 5xx**, and its
+  32 MB case is a TIMING assertion as much as a status one: the version of
+  `readJsonBody` that cancelled at the cap answered 504 after 64 seconds.
 
 ## Known unresolved defects
 
@@ -461,9 +528,13 @@ None blocking. Recorded observations, all assigned onward:
    the process and the gateway then answers 503.
 2. **`rate_limit_events` FK violation for a non-existent user** — a validly
    signed token for an account that does not exist cannot have its rate limit
-   recorded (`rate_limit_events_user_id_fkey`). Logged as a warning and handled;
-   unreachable in production, where tokens are minted only for real accounts.
-   → **Phase 10.**
+   recorded (`rate_limit_events_user_id_fkey`). Logged as a warning and handled.
+   **Phase 10 looked at it and is leaving it**: reaching that branch needs a
+   token signed by the project's own key for a `sub` that has no row in
+   `auth.users`, which only somebody holding the signing secret can produce — and
+   that person does not need a rate-limit bypass. It fails closed (the command is
+   already being refused), it is logged, and it cannot be triggered by any real
+   credential. Not a defect; a stated consequence.
 3. **`supabase start` reports containers unhealthy on this host** (`vector`,
    `analytics`, `storage`) while the containers themselves work. Use
    `supabase start --ignore-health-check`. Environment, not repo.
@@ -481,7 +552,27 @@ None blocking. Recorded observations, all assigned onward:
    completing. Bringing the machine back to idle first and re-running the same
    commit passed. Nothing product-side changed between the two. The rule stands:
    **build, wait for `uptime` below ~10, then run flows.**
-7. **The simulator reached a broken install state twice in phase 5.**
+7. **An unauthenticated caller sending a large body holds a gateway connection.**
+   The Function answers 401 before reading a byte, which is the correct server
+   behaviour — but the gateway in front has already buffered the request and
+   cannot deliver a reply into a connection the upstream stopped reading, so the
+   caller waits 60 s and gets a 504. Measured at 8 MB and 32 MB. With a token the
+   same bodies are refused in under a second, because the body is then read (and
+   discarded past the cap). Supabase Cloud caps request size before a function
+   sees it. → **Phase 11**, to confirm against a cloud gateway.
+8. **One runtime-reachable dependency advisory**, `decode-uri-component` via
+   `expo-router` → `query-string`, which parses incoming deep links. The
+   advisory's shape does not reproduce at the installed version (20,000 bare
+   percent signs decode in 0.63 ms), and the "fix" would break the app —
+   `decode-uri-component@0.5.0` is pure ESM and `query-string@7` `require()`s it.
+   The other four advisories are build-time only, traced to their paths rather
+   than counted. → **Phase 11**, dynamic supply-chain testing.
+9. **Four GoTrue settings are local-development values** — `enable_confirmations`
+   off, no captcha, `secure_password_change` off, no session timebox. The first
+   is also the project's one user-enumeration oracle (`/auth/v1/signup` answers
+   `user_already_exists`). None can be validated without SMTP. → **Phase 12**,
+   itemised in `docs/RELEASE.md`.
+10. **The simulator reached a broken install state twice in phase 5.**
    `simctl get_app_container` returned a `com.arc21.app-<timestamp>.app`
    placeholder and every launch failed `FBSOpenApplicationServiceErrorDomain
    code=1`; separately the XCUITest driver refused to start with a repeating
@@ -496,7 +587,33 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-09-02 (end of phase 9)
+## Last known green verification — 2026-09-02 (end of phase 10)
+
+Against a database reset from empty, with `functions serve` already up:
+
+```
+npx tsc --noEmit                    exit 0
+npm run check:functions             all 3 Edge Functions typecheck
+npm run lint                        0 errors, 37 warnings (baseline unchanged)
+npm run test:unit                 119 files / 2,366 tests PASS  (phase 9: 118 / 2,359)
+npm run test:server                22 files /   294 tests PASS  (phase 9:  20 /   250)
+supabase test db                   25 files /   539 tests PASS  (phase 9:  25 /   532)
+npm run test:coverage              per-area gates pass, exit 0
+npm run contrast:check             50 pairings, 0 failing
+supabase db reset                  54 migrations applied from empty, exit 0
+```
+
+Plus the phase's own adversarial probe against the live stack — **59 probes,
+0 failures**: 4 cross-user reads, 13 object substitutions, 21 malformed payloads,
+8 forged credentials and 2 least-privilege checks — and a separate leak probe
+that plays a hand to PLAYER_TURNS, reads the authoritative row out of
+`private.game_state_private` by superuser, and finds **every undealt card id and
+the down hole card absent from all eight surfaces a client can read**, with the
+cards that seat HAS been dealt present as the control. Maestro was NOT re-run: no
+client screen changed this phase beyond one sentence of Settings copy, which has
+its own test.
+
+## Previous green verification — 2026-09-02 (end of phase 9)
 
 Against a database reset from empty, with `functions serve` restarted first:
 

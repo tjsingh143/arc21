@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(23);
+select plan(30);
 
 -- ---------------------------------------------------------------------------
 -- The gate, run as a test
@@ -95,6 +95,79 @@ select throws_ok(
   $$ select public.assert_client_authorization_surface() $$,
   'P0001', null,
   'the gate refuses a client role reaching the private schema'
+);
+rollback to savepoint breach;
+
+-- Phase 10. `service_role` is a root credential, and the argument for taking its
+-- last verb away is the same one `20260813120000_foundation.sql` already makes
+-- about tables: the server reaches this schema as `postgres`, so the key needs
+-- nothing here. It kept EXECUTE on `apply_wallet_delta` until phase 10 measured
+-- the key minting a million chips through `/rest/v1/rpc/` in one request.
+savepoint breach;
+grant execute on function public.apply_wallet_delta(
+  uuid, bigint, public.ledger_reason, text, text, uuid, jsonb
+) to service_role;
+select throws_ok(
+  $$ select public.assert_client_authorization_surface() $$,
+  'P0001', null,
+  'the gate refuses service_role EXECUTE on a public function'
+);
+rollback to savepoint breach;
+
+savepoint breach;
+grant select on table public.wallets to service_role;
+select throws_ok(
+  $$ select public.assert_client_authorization_surface() $$,
+  'P0001', null,
+  'the gate refuses service_role a table privilege in public'
+);
+rollback to savepoint breach;
+
+-- A policy written with no `to` clause applies to PUBLIC, which includes `anon`.
+-- Five shipped that way and all five were harmless, because `anon` holds no
+-- grant on those tables — the FIRST lock. This repository has added a client
+-- grant by accident sixteen times, so the second lock is worth having.
+savepoint breach;
+drop policy player_daily_xp_select_own on public.player_daily_xp;
+create policy player_daily_xp_select_own
+  on public.player_daily_xp for select using (user_id = auth.uid());
+select throws_ok(
+  $$ select public.assert_client_authorization_surface() $$,
+  'P0001', null,
+  'the gate refuses a policy on a public table that names the PUBLIC role'
+);
+rollback to savepoint breach;
+
+-- The last two rules had no breach test until phase 10, which meant the sentence
+-- in `docs/SECURITY.md` — "each of those is proved to FAIL when breached" — was
+-- true of eight of the ten. A gate nobody has watched fail is a gate nobody
+-- should trust, and that applies one rule at a time.
+--
+-- A view owned by a privileged role runs with THAT OWNER's rights unless it is
+-- declared `security_invoker`, so a client-readable one launders RLS. Nothing
+-- else in the gate looks at a view: every other block filters `relkind = 'r'`.
+savepoint breach;
+create view public.zz_view_without_security_invoker as select 1 as x;
+grant select on public.zz_view_without_security_invoker to authenticated;
+select throws_ok(
+  $$ select public.assert_client_authorization_surface() $$,
+  'P0001', null,
+  'the gate refuses a client-readable view that would run with its owner''s rights'
+);
+rollback to savepoint breach;
+
+-- A grant with no policy behind it is dead today and is exactly what somebody
+-- later "fixes" by adding a permissive policy, because the grant implies the
+-- feature was meant to work. `rate_limit_events` is the right subject: it is
+-- deliberately RLS-on-no-policy-no-grant, so a SELECT grant on it is caught by
+-- this rule and by nothing else — the unexpected-write rule does not look at
+-- SELECT at all.
+savepoint breach;
+grant select on table public.rate_limit_events to authenticated;
+select throws_ok(
+  $$ select public.assert_client_authorization_surface() $$,
+  'P0001', null,
+  'the gate refuses a client grant with no policy to permit it'
 );
 rollback to savepoint breach;
 
@@ -347,6 +420,46 @@ select is(
      )),
   7,
   'and all seven exempt tables exist, so a rename cannot silently exempt nothing'
+);
+
+-- ---------------------------------------------------------------------------
+-- Phase 10: a tournament entry is visible to its owner and to the field
+-- ---------------------------------------------------------------------------
+--
+-- `tournament_entries_select_visible` carried a third clause —
+-- `exists (select 1 from public.profiles p where p.id = user_id)` — whose
+-- reasoning was that nested access is evaluated as the invoking role, so a
+-- hidden profile would hide the entry. True, and beside the point: `privacy`
+-- DEFAULTS to `public`, so for an ordinary account the clause is simply TRUE.
+-- Measured before the fix: a fresh second account read 152 entry rows, with
+-- `user_id`, live `chips`, `placement` and `prize_chips` for every entrant in
+-- the database, while `sprint_standings` refused a non-participant the same
+-- numbers with a 42501.
+--
+-- Asserted from the catalogue rather than from rows, because this file has no
+-- session to be a stranger in. `tests/server/rls-idor.integration.test.ts` and
+-- `tests/server/sprint-tournament.integration.test.ts` do it with two real
+-- tokens.
+select is(
+  (select count(*)::int
+   from pg_policy p
+   join pg_class c on c.oid = p.polrelid
+   join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+   where c.relname in ('tournament_entries', 'tournament_matches')
+     and pg_get_expr(p.polqual, p.polrelid) like '%profiles%'),
+  0,
+  'no tournament policy delegates its visibility to whether a profile exists'
+);
+
+select is(
+  (select count(*)::int
+   from pg_policy p
+   join pg_class c on c.oid = p.polrelid
+   join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+   where c.relname in ('tournament_entries', 'tournament_matches')
+     and pg_get_expr(p.polqual, p.polrelid) like '%viewer_is_in_tournament%'),
+  2,
+  'and both of them ask viewer_is_in_tournament instead'
 );
 
 select * from finish();

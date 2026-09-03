@@ -139,10 +139,38 @@ export const STATS_VISIBILITY_LABELS: Record<StatsVisibility, string> = {
  * which is the whole reason leaderboards can be trusted. A privacy note is the
  * single worst place in a product for a sentence that has quietly expired.
  */
+/*
+ * WHAT THIS SENTENCE USED TO CLAIM, and why it is worded the way it is now.
+ *
+ * It read "who can see your profile and standings", and phase 10 measured what
+ * `privacy = 'private'` actually does. Two of the three claims held and one did
+ * not:
+ *
+ *   held    a direct read of `profiles` returns nothing to a stranger, and
+ *           `player_public_profile` answers `stats_visible = false` with every
+ *           statistic null rather than zero;
+ *   did NOT the player is still on the global leaderboards under their display
+ *           name — measured, a `private` account with 4,242 weekly XP was on
+ *           the board a fresh stranger read — and still findable by handle in
+ *           `search_players`.
+ *
+ * Both of those are the specification working. Its leaderboard section asks for
+ * a global board of "avatar, display name, value" and forbids only exposing "a
+ * private email or account identifier"; friend search is specified as "search
+ * exact or partial username", and a player nobody can find is a player nobody
+ * can befriend. Quietly narrowing either to fit a sentence would have broken a
+ * specified feature to protect a wording.
+ *
+ * So the SENTENCE gave way, and it now says exactly what the column enforces.
+ * "Standings" was the word doing the damage: a leaderboard placement is
+ * precisely a standing, and it is the one thing this control has never governed.
+ * `tests/settings/privacy-copy.test.ts` pins the claim to the enforcement.
+ */
 export const STATS_VISIBILITY_NOTE =
-  "This controls who can see your profile and standings once you have an account. " +
-  "It is sent to the server when you are signed in. Practice on this device is " +
-  "never uploaded and is not covered by this setting.";
+  "This controls who can see your statistics on your profile — hands, accuracy, " +
+  "career and tournament record. It is sent to the server when you are signed in. " +
+  "Your display name still appears on leaderboards and in player search. Practice " +
+  "on this device is never uploaded and is not covered by this setting.";
 
 // ---------------------------------------------------------------------------
 // Validation

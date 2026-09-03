@@ -4,7 +4,9 @@
  * The database already guarantees this four ways: `authenticated` holds `SELECT`
  * and nothing else on `wallets` and `wallet_ledger`, neither table has an
  * INSERT/UPDATE/DELETE policy, a guard trigger refuses client writes underneath,
- * and `apply_wallet_delta` is executable by `service_role` only.
+ * and `apply_wallet_delta` is executable by NO API role at all — phase 10 took
+ * the last grant, `service_role`, away after measuring the key mint a million
+ * chips through `/rest/v1/rpc/` in one request.
  *
  * So why test the client at all? Because those are the controls that stop an
  * attack, and this is the control that stops an *accident*. The realistic
@@ -131,7 +133,7 @@ describe("no client write reaches the database", () => {
 
     expect(source, `${file} calls .insert()`).not.toMatch(/\.insert\s*\(/);
     expect(source, `${file} calls .upsert()`).not.toMatch(/\.upsert\s*\(/);
-    // `apply_wallet_delta` is executable by service_role only, so naming it
+    // `apply_wallet_delta` is reachable only as `postgres`, so naming it
     // here could only ever be a mistake.
     expect(source, `${file} names apply_wallet_delta`).not.toContain("apply_wallet_delta");
 
