@@ -649,8 +649,30 @@ async function joinPublicTable(
         (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
       values
         (${gameId}::uuid,
-         (select coalesce(max(seat_index) + 1, 0) from public.game_session_seats
-          where game_session_id = ${gameId}::uuid),
+         /*
+          * The LOWEST index no live seat holds, not max(seat_index) + 1.
+          *
+          * A departed seat keeps its row -- display_name is a copy taken when
+          * the seat opened, and a game other people played is not deleted under
+          * them -- so counting from the highest index ever used made the eighth
+          * arrival at a public table index 7, which the 0..6 check refuses. That
+          * reached the player as HTTP 500, and because a public table stays
+          * active while anybody is at it, it kept being allocated and kept
+          * answering 500 with seats visibly free. See the migration
+          * 20260906120000_seat_index_reuse.sql for the measurement.
+          *
+          * No coalesce needed: the occupancy guard above runs with the room row
+          * locked and refuses TABLE_FULL unless fewer than max_seats live seats
+          * exist, and live seats hold distinct indices, so one of the max_seats
+          * candidates is always free by pigeonhole.
+          */
+         (select min(candidate.seat_index)
+          from generate_series(0, ${room.max_seats}::int - 1) as candidate(seat_index)
+          where not exists (
+            select 1 from public.game_session_seats held
+            where held.game_session_id = ${gameId}::uuid
+              and held.seat_index = candidate.seat_index
+              and held.status <> 'left')),
          ${userId}::uuid, ${profile.displayName}, ${tier.buyIn}::bigint,
          ${tier.buyIn}::bigint, 'active')
       returning id

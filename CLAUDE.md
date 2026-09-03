@@ -389,6 +389,28 @@ loop that waits a stranger out for longer than the 12 s window legitimately
 finds `BETTING_OPEN` — which is a fine place to stop, because a cash-out is
 refused only while a wager is live.
 
+**A MONOTONIC INDEX OVER ROWS THAT ARE NEVER DELETED IS A COUNTDOWN.**
+`JOIN_PUBLIC_TABLE` allocated `coalesce(max(seat_index) + 1, 0)` over every seat
+row the session had ever held, and `seat_index` is `check (seat_index between 0
+and 6)` — so the EIGHTH person ever to sit at a public table got index 7 and the
+insert was refused by the check, which the function surfaces as **HTTP 500**.
+Not the full-table case, which is guarded and answers TABLE_FULL: measured with
+two live seats and five departed, so three seats were advertised and nobody could
+take one, and a public table stays `active` while anybody is at it, so
+matchmaking kept allocating a table that answered 500 to everybody for the rest
+of its life. Turnover of seven is an ordinary evening. The fix is to ask what the
+uniqueness is FOR: two people must not hold one index AT THE SAME TIME, so the
+constraint is a PARTIAL unique index over `status <> 'left'` and the allocator
+takes the lowest index no LIVE seat holds. A departed row stays as history —
+`display_name` is a copy no foreign key touches.
+
+**AND IT WAS FOUND BY A LOAD GENERATOR AIMED AT SOMETHING ELSE.** The test said
+`expected 500 to be 200` and nothing more; the whole diagnosis was in
+`supabase functions serve`'s own log, which names the constraint. **When a test
+reports an unexpected 5xx, read the runtime log before reading the test** — a
+500 is our handler failing, never a refusal, and `call-function.ts` deliberately
+does not retry one.
+
 **A DOCS-ONLY COMMIT THAT FAILS CI IS TELLING YOU ABOUT THE SUITE.** Two markdown
 files changed and `pgTAP and server integration` failed:
 `expected 6000 to be 4000` on a public table's escrow (three seats of 2,000, not

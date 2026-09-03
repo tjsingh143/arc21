@@ -1,6 +1,6 @@
 # Phase 11 — Adversarial QA, E2E, CI, Runtime QA
 
-**Result: PASS.** Nine defects fixed, each proved to fail by reverting it in the
+**Result: PASS.** Ten defects fixed, each proved to fail by reverting it in the
 running system. One advisory investigated and found NOT reachable — the guard
 written for it was deleted rather than shipped, and replaced by a test that pins
 the reason. The two-simulator public-table lifecycle that phase 7 deferred was
@@ -717,6 +717,76 @@ bundles again for the result that counts. Verified from a state with no
 
 ---
 
+### F-10 · A public table became unjoinable once seven players had passed through it · fixed
+
+Found by accident, which is the point: the load generator written to reproduce a
+FLAKY TEST produced eleven HTTP 500s from the product, and the test log said
+only `expected 500 to be 200`. The runtime log said the rest:
+
+```
+{"level":"error","message":"session command failed","fn":"create-session",
+ "commandType":"JOIN_PUBLIC_TABLE","code":"INTERNAL",
+ "detail":"PostgresError: new row for relation \"game_session_seats\"
+           violates check constraint \"game_session_seats_seat_index_check\""}
+```
+
+`JOIN_PUBLIC_TABLE` allocated its seat as
+
+```sql
+(select coalesce(max(seat_index) + 1, 0) from public.game_session_seats
+ where game_session_id = …)
+```
+
+over **every row the session had ever held**, and `game_session_seats_unique_index`
+reserved an index for a seat that had long since left. `seat_index` is
+`check (seat_index between 0 and 6)`. So the **eighth person ever to sit at a
+public table** was handed index 7 and the insert was refused by the check —
+which the function turns into HTTP 500 INTERNAL, not a refusal a player can act
+on.
+
+**It is not the full-table case.** That one is handled correctly, by a guard
+that counts live seats under the room lock and answers `TABLE_FULL`. The shape
+that matters has seats FREE. Reproduced deliberately in SQL, two live seats and
+five departed:
+
+```
+ live_seats | rows_ever | highest
+          2 |         7 |       6
+ERROR:  new row for relation "game_session_seats" violates check constraint
+        "game_session_seats_seat_index_check"
+```
+
+Three of five seats advertised, and nobody able to take one. And a public table
+stays `active` while anybody is sitting at it, so matchmaking keeps allocating
+it: from the eighth arrival onwards it offered seats to everyone and answered
+500 to all of them, **for the life of the table**. Turnover of seven is an
+ordinary evening at a five-seat table, not an attack.
+
+The uniqueness that matters is over LIVE seats. A departed seat's row is kept on
+purpose — `display_name` is a copy taken when the seat opened, and a game other
+people played is not deleted under them — but it is history, not an occupant. So
+the constraint became a **partial** unique index over `status <> 'left'`, and the
+allocator picks the lowest index no live seat holds. No `coalesce` is needed:
+the occupancy guard runs with the room row locked, live seats hold distinct
+indices, and one of the `max_seats` candidates is therefore always free.
+
+`26_seat_index_reuse.test.sql` pins both halves, because a file that only proved
+a freed index is reusable would pass against a table with no uniqueness at all:
+the eighth arrival is given seat 0, the departed player's row is still there, and
+**two live seats on one index are still refused with 23505**.
+
+Measured across two runs of the whole server suite under the same load:
+
+| | `JOIN_PUBLIC_TABLE` → HTTP 500 |
+|---|---|
+| before | **11** |
+| after | **0** |
+
+The only INTERNAL errors left in the runtime log are the two a fault-injection
+test asks for by name.
+
+---
+
 ## Gates
 
 | gate | result |
@@ -725,7 +795,7 @@ bundles again for the result that counts. Verified from a state with no
 | `npm run lint` | 0 errors, 37 warnings (unchanged baseline) |
 | `npm run check:functions` | all three functions typecheck |
 | `npm run test:unit` | **122 files, 2,395 tests, all pass** |
-| `supabase db reset` + `supabase test db` | **26 files, 560 assertions, all pass, from empty** |
+| `supabase db reset` + `supabase test db` | **27 files, 567 assertions, all pass, from empty** |
 | `npm run test:server` | **23 files, 300 tests, all pass — four consecutive runs** after the run-6 fixes (fresh `functions serve`) |
 | `npm run benchmark` | 795 µs/hand at load 4.4 — inside the recorded 752–808 range; heap delta +10 KB over 50 hands |
 | Maestro, Debug build | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |

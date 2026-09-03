@@ -440,7 +440,11 @@ async function bet(seat: Seated, amount: number): Promise<PublicState> {
  * player's clock would answer it, and a natural is dealt past.
  */
 async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
-  for (let attempt = 0; attempt < 12; attempt += 1) {
+  // Twenty-four rather than twelve, because an attempt is now also spent on a
+  // hand this file did not get to play: a betting window that closed while the
+  // bets were going in, or one a stranger left open past its deadline. Naturals
+  // alone would never need this many.
+  for (let attempt = 0; attempt < 24; attempt += 1) {
     /*
      * THE ENGINE PARKS AT HAND_COMPLETE BY DESIGN, so a settlement is never
      * animated over, and it expects the caller to advance. Starting a hand from
@@ -460,7 +464,27 @@ async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
       }
     }
 
-    for (const seat of seats) await bet(seat, amount);
+    /*
+     * A BET IS READ-THEN-ACT, and at a shared table the phase can move between
+     * the two: `bet` takes a snapshot to learn the version, and by the time the
+     * command lands the betting deadline may have closed the round. The server
+     * answers WRONG_PHASE or ILLEGAL_ACTION, which is correct, and the right
+     * response is the one this loop already exists to make — go round and try
+     * the next window. Anything else is rethrown, so a genuine refusal still
+     * fails the test rather than spinning twelve times.
+     */
+    let raced = false;
+    for (const seat of seats) {
+      try {
+        await bet(seat, amount);
+      } catch (problem) {
+        const message = problem instanceof Error ? problem.message : String(problem);
+        if (!/WRONG_PHASE|ILLEGAL_ACTION/.test(message)) throw problem;
+        raced = true;
+        break;
+      }
+    }
+    if (raced) continue;
 
     let state = await snapshot(seats[0]!.player, seats[0]!.gameId);
 
@@ -519,7 +543,10 @@ async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
       throw new Error(`could not deal again from HAND_COMPLETE: ${next.raw.slice(0, 300)}`);
     }
   }
-  throw new Error("twelve consecutive naturals: the shoe is not fair");
+  throw new Error(
+    "twenty-four attempts and never reached PLAYER_TURNS: either the shoe is not " +
+      "fair, or this table is taking new players faster than a hand takes to play",
+  );
 }
 
 /**
@@ -892,7 +919,6 @@ suite("the public buy-in is one atomic escrow", () => {
       });
     }
 
-    // The chips are AT THE TABLE, not gone: escrow equals the sum of the stacks.
     const sessions = (await readAs(
       alice.player.token,
       `game_sessions?select=mode,status,escrow_chips,tier,max_seats&id=eq.${alice.gameId}`,
@@ -915,22 +941,33 @@ suite("the public buy-in is one atomic escrow", () => {
     expect(seatOf(state, bob).stack).toBe(CASUAL.buyIn);
 
     /*
-     * ESCROW EQUALS THE SUM OF THE STACKS AT THE TABLE — not `buyIn * 2`.
+     * THE CHIPS ARE AT THE TABLE, NOT GONE: escrow equals the sum of the
+     * stacks. Not `buyIn * 2` — a public table keeps taking players while it
+     * has room, which is the phase 7 fix working as specified, and allocation
+     * is GLOBAL, so a third seat belonging to a file running beside this one is
+     * legitimate and `buyIn * 2` is then an assertion about somebody else's
+     * chips. CI answered `expected 6000 to be 4000`.
      *
-     * A public table keeps taking players while it has room, which is the phase
-     * 7 fix working as specified, and allocation is GLOBAL. So a third seat
-     * belonging to a file running beside this one is legitimate, and
-     * `buyIn * 2` is then an assertion about somebody else's chips. CI answered
-     * `expected 6000 to be 4000`: a stranger had bought in between this file's
-     * two players sitting down and this line reading the row.
-     *
-     * Summing the seats asserts the thing that actually matters — nothing is
-     * minted or stranded on the way into escrow — and it holds however many
-     * players are at the table. Third instance of the lesson `CLAUDE.md`
-     * records as "a shared public table is not your test's table".
+     * AND THE TWO READS MUST BE OF THE SAME MOMENT. The first version of this
+     * fix summed the seats from one request and compared them with an escrow
+     * from another, which is the identical race one step along: CI answered
+     * `expected 4000 to be 6000` when a stranger bought in between them. So
+     * both are re-read together until they agree, which is what asserting an
+     * INVARIANT of a moving table actually requires — and if they never do,
+     * the failure says so rather than printing two numbers.
      */
-    const stacks = state.seats.reduce((total, seat) => total + seat.stack, 0);
-    expect(Number(sessions[0]?.escrow_chips)).toBe(stacks);
+    let escrow = -1;
+    let stacks = -2;
+    for (let attempt = 0; attempt < 8 && escrow !== stacks; attempt += 1) {
+      const seen = await snapshot(alice.player, alice.gameId);
+      stacks = seen.seats.reduce((total, seat) => total + seat.stack, 0);
+      const row = (await readAs(
+        alice.player.token,
+        `game_sessions?select=escrow_chips&id=eq.${alice.gameId}`,
+      )) as { escrow_chips: number }[];
+      escrow = Number(row[0]?.escrow_chips);
+    }
+    expect(escrow, "escrow never agreed with the stacks over eight reads").toBe(stacks);
 
     await closeTable(seats);
   }, 90_000);
@@ -969,35 +1006,62 @@ suite("the public buy-in is one atomic escrow", () => {
 
 suite("a second live seat is refused before any chips move", () => {
   it("refuses a public buy-in while a SOLO table is live", async () => {
-    const player = await createPlayer();
-    const partner = await createPlayer();
-    const room = await matchIntoAPublicRoom(rpc, [player.token, partner.token], "casual", async () =>
-      (await createPlayer()).token,
-    );
-
     /*
      * THE PARTNER SITS DOWN FIRST, and that is what makes the refusal below a
      * statement about the PLAYER rather than about the room.
      *
-     * Allocation is global, so the room this test was matched into is one any
+     * Allocation is global, so the room this test is matched into is one any
      * file running beside it can be matched into as well — and a room closes
      * when the last seat at its table leaves. `JOIN_PUBLIC_TABLE` checks the
      * room's status BEFORE it looks at who is asking, correctly, because a
-     * closed room must take no more buy-ins. So a room that strangers had
-     * finished with answered `SESSION_CLOSED` and CI reported
-     * `expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'` — two correct
-     * refusals, and the test had assumed which one it would get.
+     * closed room must take no more buy-ins. So a room strangers had finished
+     * with answered `SESSION_CLOSED` and CI reported
+     * `expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'`: two correct
+     * refusals, and a test that had assumed which one it would get.
      *
-     * A seat nobody has given up cannot be closed out from under this, so the
-     * guard under test becomes the only thing left that can refuse.
+     * STAGED IN A RETRY rather than asserted first time, because the room can
+     * be gone before the partner sits too — the first version of this fix put
+     * the same race one step earlier and CI answered `expected 409 to be 200`
+     * on the partner's own buy-in. A seat nobody has given up cannot be closed
+     * out from under this, so once one is held the guard under test is the only
+     * thing left that can refuse. Same shape as `openPublicTable` above.
      */
-    const held = await call("create-session", partner.token, {
-      action: "JOIN_PUBLIC_TABLE",
-      clientRequestId: crypto.randomUUID(),
-      roomId: room,
-      clientSentAt: iso(),
-    });
-    expect(held.status, held.raw).toBe(200);
+    let player: Player | null = null;
+    let partner: Player | null = null;
+    let room: string | null = null;
+    let heldGameId: string | null = null;
+
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const candidate = await createPlayer();
+      const mate = await createPlayer();
+      const allocated = await matchIntoAPublicRoom(
+        rpc,
+        [candidate.token, mate.token],
+        "casual",
+        async () => (await createPlayer()).token,
+      );
+      const sat = await call("create-session", mate.token, {
+        action: "JOIN_PUBLIC_TABLE",
+        clientRequestId: crypto.randomUUID(),
+        roomId: allocated,
+        clientSentAt: iso(),
+      });
+      if (sat.status === 200) {
+        player = candidate;
+        partner = mate;
+        room = allocated;
+        heldGameId = sat.body.gameId as string;
+        break;
+      }
+      for (const account of [candidate, mate]) await rpc(account.token, "leave_matchmaking");
+    }
+
+    if (!player || !partner || !room || !heldGameId) {
+      throw new Error(
+        "six matched rooms and none stayed open long enough to seat a partner: the " +
+          "shared pool was closing tables faster than this could take a seat at one",
+      );
+    }
 
     const solo = await call("create-session", player.token, {
       action: "OPEN",
@@ -1023,7 +1087,7 @@ suite("a second live seat is refused before any chips move", () => {
     // allocated to whoever queues next — including the rest of this file.
     await call("create-session", partner.token, {
       action: "CASH_OUT",
-      gameId: held.body.gameId,
+      gameId: heldGameId,
       clientRequestId: crypto.randomUUID(),
       clientSentAt: iso(),
     });
