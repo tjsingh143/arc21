@@ -540,6 +540,7 @@ Four runs, and the progression is the evidence:
 | 3 | fail | **pass** | F-09 (the bundle needs a directory only a previous bundle creates) |
 | 4 | **pass** | **pass** | — |
 | 5 | **pass** | **pass** | the Release-sweep fixes, re-validated on the runner |
+| 6 | **pass** | fail | two assertions about a SHARED public table — on a commit that changed two markdown files |
 
 Runs 4 and 5 are green on both jobs: lint, typecheck, Edge Function typecheck,
 2,395 unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side;
@@ -551,6 +552,70 @@ product file — one `testID` — and the pgTAP and server suites are the two ga
 this machine had not re-run since. Rather than assert they were still valid, the
 runner re-applied every migration from empty and re-ran both suites against the
 exact commit: `33796454953`.
+
+### Run 6 · a DOCS-ONLY commit failed the database job
+
+The commit after run 5 changed two markdown files and nothing else, and
+`pgTAP and server integration` **failed**. That is the strongest evidence a
+failure can carry that it is not about the change: it is about the suite.
+
+```
+FAIL tests/server/public-table.integration.test.ts
+  › the public buy-in is one atomic escrow › debits once, records one ledger row…
+    AssertionError: expected 6000 to be 4000
+  › a second live seat is refused before any chips move › refuses a public buy-in while a SOLO table is live
+    AssertionError: expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'
+```
+
+Both are the lesson this file's own helper already carries in a doc comment —
+**a shared public table is not your test's table** — reaching two assertions
+that had not been told.
+
+`6000` is three seats of 2 000. The line asserted `escrow_chips === buyIn * 2`,
+which is a claim about the WHOLE table, and a public table keeps taking players
+while it has room: that is the phase 7 fix working as specified, and allocation
+is global, so a file running beside this one is legitimately entitled to the
+third seat. It now asserts `escrow === Σ stacks` — the invariant that actually
+matters, nothing minted or stranded on the way in — which holds for any number
+of players and is strictly stronger than what it replaced.
+
+The second is two correct refusals and a test that assumed which one it would
+get. A room closes when the last seat at its table leaves, and
+`JOIN_PUBLIC_TABLE` checks the room's status **before** it looks at who is
+asking — correctly, because a closed room must take no more buy-ins. So
+strangers finishing with the room made `SESSION_CLOSED` the true answer. The
+fix is to make the premise real rather than assumed: the partner takes their
+seat first, a seat nobody has given up cannot be closed out from under the test,
+and the guard under test becomes the only thing left that can refuse.
+
+**The first reproduction attempt proved nothing, and said so only in its own
+log.** A seeder was written to seat a stranger into the casual pool on a loop;
+the test then passed, which looked like evidence. It was not: the seeder had
+died instantly on `Top-level await is currently not supported with the "cjs"
+output format`. Reading the seeder's own output rather than the test's is what
+caught it — the same rule as every "COMPLETED but did nothing" note in
+`CLAUDE.md`, one layer out.
+
+**Then the faithful condition found a third.** Rather than tune the synthetic
+seeder, the reproduction that matters is CI's own invocation —
+`npm run test:server`, which is `--maxWorkers=2` and therefore two files sharing
+the pool exactly as the runner does. It threw
+`unexpected phase while standing out a hand: INSURANCE_OFFER` from inside
+`closeTable`: `standToSettlement` handled PLAYER_TURNS, HAND_COMPLETE and
+SESSION_COMPLETE, and a dealer ace is none of them. **Third helper in this
+project to make that assumption**, after the two `CLAUDE.md` already records —
+about one hand in thirteen, and nothing to do with contention at all.
+`dealAHand` needed the neighbouring fix: betting closes on the LAST seat to
+lock, so a stranger who has not bet leaves it open until the 15-second deadline,
+which a snapshot's own `RESOLVE_TIMEOUT` is what asks for.
+
+**Where the hardening stopped, and why.** Driven harder — a fresh stranger
+seated every three seconds — the suite fails in ways no test change should
+address: a five-seat pool saturates, and `expected 409 to be 200` on a public
+buy-in is a player being told a table is full, which is the product working.
+That is past the condition CI creates, so it was not chased. The calibration
+that counts is CI's own, and against it the suite ran **four consecutive times,
+300 of 300, exit 0.**
 
 ### F-07 · Every function in `public` shipped anon-executable, depending on who applied the migrations · fixed
 
@@ -658,7 +723,7 @@ bundles again for the result that counts. Verified from a state with no
 | `npm run check:functions` | all three functions typecheck |
 | `npm run test:unit` | **122 files, 2,395 tests, all pass** |
 | `supabase db reset` + `supabase test db` | **26 files, 560 assertions, all pass, from empty** |
-| `npm run test:server` | **23 files, 300 tests, all pass** (fresh `functions serve`, load 3.6) |
+| `npm run test:server` | **23 files, 300 tests, all pass — four consecutive runs** after the run-6 fixes (fresh `functions serve`) |
 | `npm run benchmark` | 795 µs/hand at load 4.4 — inside the recorded 752–808 range; heap delta +10 KB over 50 hands |
 | Maestro, Debug build | practice ×3, career-node, online-table, every-screen ×2, online-leave-mid-hand, two-client-public ×5 |
 | Maestro, **Release build** | **18 green runs**: practice-hand, practice-analysis, practice-resume, career-node, online-table ×2, online-leave-mid-hand ×2, every-screen-online, private-lobby, public-matchmaking, mc-sign-in ×2 and all five two-client-public flows — and **no Arc21 crash report written by any of them** |

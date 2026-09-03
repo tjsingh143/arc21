@@ -377,6 +377,38 @@ daily superlative. Note what it cost: the list had no stable identifier, because
 the "Mark all read" control renders only while something is unread — an
 assertable contract sometimes needs one `testID` added to the product.
 
+**THE THIRD DESTINATION AFTER BETTING CLOSES HAS NOW CAUGHT THREE HELPERS.**
+`reachPlayerTurns`, then `dealAHand`, then `standToSettlement` — which threw
+`unexpected phase while standing out a hand: INSURANCE_OFFER` from inside
+`closeTable` on an ordinary `npm run test:server`. A dealer ace is about one
+hand in thirteen and has nothing to do with load, so it presents as a suite that
+fails once in several runs. **Any helper that drives a hand must answer all
+three**, and `standToSettlement` needed a fourth branch besides: a snapshot
+sends `RESOLVE_TIMEOUT`, a settlement-window timeout STARTS THE NEXT HAND, so a
+loop that waits a stranger out for longer than the 12 s window legitimately
+finds `BETTING_OPEN` — which is a fine place to stop, because a cash-out is
+refused only while a wager is live.
+
+**A DOCS-ONLY COMMIT THAT FAILS CI IS TELLING YOU ABOUT THE SUITE.** Two markdown
+files changed and `pgTAP and server integration` failed:
+`expected 6000 to be 4000` on a public table's escrow (three seats of 2,000, not
+two) and `expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'` (a room
+strangers had finished with). Both are "a shared public table is not your test's
+table", which this very file's own helper already carried in a doc comment.
+Assert `escrow === Σ stacks` rather than `buyIn * n`, and make a premise real
+rather than assumed — a partner holding a seat is what keeps a room open, so the
+refusal under test becomes the only one available.
+
+**AND WHEN YOU BUILD A LOAD GENERATOR TO REPRODUCE ONE, READ ITS OWN LOG BEFORE
+BELIEVING THE TEST.** A stranger-seeding script died instantly on
+`Top-level await is currently not supported with the "cjs" output format`; the
+test then passed and looked like evidence that the fix worked. It was evidence of
+nothing. Two further calibration points: CI's contention is reproduced by CI's
+own invocation — `npm run test:server` is `--maxWorkers=2` and shares the pool
+exactly as the runner does — and driving it much harder than that stops being
+useful, because a five-seat pool saturates and `expected 409 to be 200` on a
+buy-in is a player correctly being told the table is full.
+
 **A HARNESS THAT GIVES UP ON A MID-HAND SEAT STRANDS EVERY LATER RUN.**
 `scripts/e2e-account.ts` cashed the account out of tables an earlier run
 abandoned, and left a seat refused `SESSION_BUSY` alone because "it will settle

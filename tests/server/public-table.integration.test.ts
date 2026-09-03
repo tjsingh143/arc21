@@ -464,6 +464,29 @@ async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
 
     let state = await snapshot(seats[0]!.player, seats[0]!.gameId);
 
+    /*
+     * A PUBLIC TABLE IS NOT THIS FILE'S TABLE, and betting closes on the LAST
+     * seat to lock rather than the first — deliberately, because closing on the
+     * first is a defect this project has already fixed and written down. So a
+     * stranger matched into this table after `openPublicTable` returned leaves
+     * betting OPEN once every one of OUR seats has locked, and what ends it is
+     * the betting DEADLINE (15 s), not the predicate.
+     *
+     * Snapshotting is how the app itself asks: `snapshot()` sends
+     * `RESOLVE_TIMEOUT`, which the server acts on once the deadline has passed.
+     * So this waits the stranger out through the product's own clock rather
+     * than through anything test-only. Same lesson as `standEveryHandOut`
+     * below, which already carries it.
+     *
+     * Reproduced deliberately rather than retried: seating a stranger into the
+     * casual pool every 1.2 s for the length of the run gave
+     * `betting closed into BETTING_OPEN, which is not one of the three`.
+     */
+    for (let waited = 0; waited < 25 && state.phase === "BETTING_OPEN"; waited += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      state = await snapshot(seats[0]!.player, seats[0]!.gameId);
+    }
+
     if (state.phase === "INSURANCE_OFFER") {
       for (const seat of seats) {
         const current = await snapshot(seat.player, seat.gameId);
@@ -475,6 +498,17 @@ async function dealAHand(seats: Seated[], amount = 100): Promise<PublicState> {
     }
 
     if (state.phase === "PLAYER_TURNS") return state;
+
+    /*
+     * STILL OPEN AFTER THE DEADLINE SHOULD HAVE PASSED, which happens when a
+     * table is taking new players faster than a hand takes to play: each
+     * arrival opens the next betting window and there is always somebody who
+     * has not bet. That is the product working, so this goes round the outer
+     * loop and bets again rather than throwing — the loop's own twelve-attempt
+     * guard still bounds it, and the message below still names any phase that
+     * is genuinely unexpected.
+     */
+    if (state.phase === "BETTING_OPEN") continue;
 
     if (state.phase !== "HAND_COMPLETE") {
       throw new Error(`betting closed into ${state.phase}, which is not one of the three`);
@@ -510,6 +544,44 @@ async function standToSettlement(seats: Seated[]): Promise<PublicState> {
   for (let guard = 0; guard < 60; guard += 1) {
     const state = await snapshot(seats[0]!.player, seats[0]!.gameId);
     if (state.phase === "HAND_COMPLETE" || state.phase === "SESSION_COMPLETE") return state;
+
+    /*
+     * A DEALER ACE, which is about one hand in thirteen. The cascade after
+     * betting closes stops in THREE places and this helper knew two of them —
+     * the same assumption `CLAUDE.md` records costing a phase of "unreproduced,
+     * not diagnosed", made here in a third helper. `npm run test:server` threw
+     * `unexpected phase while standing out a hand: INSURANCE_OFFER` from inside
+     * `closeTable`, so a correct table failed a correct-looking suite.
+     *
+     * Declining is the right answer rather than waiting: it is what the
+     * absent-player default does, it costs nothing, and it leads to the two
+     * phases this already handled. A stranger's decision cannot be answered
+     * here, so their insurance clock is left to the next pass — which is how
+     * this loop already waits out a stranger's turn.
+     */
+    if (state.phase === "INSURANCE_OFFER") {
+      let answered = false;
+      for (const seat of seats) {
+        const current = await snapshot(seat.player, seat.gameId);
+        if (current.legalActions[seat.seatId]?.canDeclineInsurance) {
+          await command(seat.player, seat.gameId, "DECLINE_INSURANCE", current.version);
+          answered = true;
+        }
+      }
+      if (!answered) await new Promise((resolve) => setTimeout(resolve, 1_000));
+      continue;
+    }
+
+    /*
+     * BETTING IS OPEN AGAIN, which means the round settled while this loop was
+     * waiting a stranger out. `snapshot` sends `RESOLVE_TIMEOUT`, and a
+     * settlement-window timeout STARTS THE NEXT HAND — 12 s against this loop's
+     * 60. Nothing is committed in a fresh betting window, which is precisely
+     * the state every caller is here to reach: a cash-out is refused only while
+     * a wager is live.
+     */
+    if (state.phase === "BETTING_OPEN") return state;
+
     if (state.phase !== "PLAYER_TURNS") {
       throw new Error(`unexpected phase while standing out a hand: ${state.phase}`);
     }
@@ -837,11 +909,28 @@ suite("the public buy-in is one atomic escrow", () => {
       tier: "casual",
       max_seats: MAX_SEATS,
     });
-    expect(Number(sessions[0]?.escrow_chips)).toBe(CASUAL.buyIn * 2);
 
     const state = await snapshot(alice.player, alice.gameId);
     expect(seatOf(state, alice).stack).toBe(CASUAL.buyIn);
     expect(seatOf(state, bob).stack).toBe(CASUAL.buyIn);
+
+    /*
+     * ESCROW EQUALS THE SUM OF THE STACKS AT THE TABLE — not `buyIn * 2`.
+     *
+     * A public table keeps taking players while it has room, which is the phase
+     * 7 fix working as specified, and allocation is GLOBAL. So a third seat
+     * belonging to a file running beside this one is legitimate, and
+     * `buyIn * 2` is then an assertion about somebody else's chips. CI answered
+     * `expected 6000 to be 4000`: a stranger had bought in between this file's
+     * two players sitting down and this line reading the row.
+     *
+     * Summing the seats asserts the thing that actually matters — nothing is
+     * minted or stranded on the way into escrow — and it holds however many
+     * players are at the table. Third instance of the lesson `CLAUDE.md`
+     * records as "a shared public table is not your test's table".
+     */
+    const stacks = state.seats.reduce((total, seat) => total + seat.stack, 0);
+    expect(Number(sessions[0]?.escrow_chips)).toBe(stacks);
 
     await closeTable(seats);
   }, 90_000);
@@ -886,6 +975,30 @@ suite("a second live seat is refused before any chips move", () => {
       (await createPlayer()).token,
     );
 
+    /*
+     * THE PARTNER SITS DOWN FIRST, and that is what makes the refusal below a
+     * statement about the PLAYER rather than about the room.
+     *
+     * Allocation is global, so the room this test was matched into is one any
+     * file running beside it can be matched into as well — and a room closes
+     * when the last seat at its table leaves. `JOIN_PUBLIC_TABLE` checks the
+     * room's status BEFORE it looks at who is asking, correctly, because a
+     * closed room must take no more buy-ins. So a room that strangers had
+     * finished with answered `SESSION_CLOSED` and CI reported
+     * `expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'` — two correct
+     * refusals, and the test had assumed which one it would get.
+     *
+     * A seat nobody has given up cannot be closed out from under this, so the
+     * guard under test becomes the only thing left that can refuse.
+     */
+    const held = await call("create-session", partner.token, {
+      action: "JOIN_PUBLIC_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room,
+      clientSentAt: iso(),
+    });
+    expect(held.status, held.raw).toBe(200);
+
     const solo = await call("create-session", player.token, {
       action: "OPEN",
       clientRequestId: crypto.randomUUID(),
@@ -901,11 +1014,19 @@ suite("a second live seat is refused before any chips move", () => {
       roomId: room,
       clientSentAt: iso(),
     });
-    expect(refused.status).toBe(409);
-    expect(refused.body.code).toBe("SESSION_ALREADY_ACTIVE");
+    expect(refused.status, refused.raw).toBe(409);
+    expect(refused.body.code, refused.raw).toBe("SESSION_ALREADY_ACTIVE");
     expect(await balanceOf(player)).toBe(afterSolo);
     expect((await seatsOf(player)).filter((r) => r.status !== "left")).toHaveLength(1);
 
+    // Give the partner's seat back, or this room stays open and keeps being
+    // allocated to whoever queues next — including the rest of this file.
+    await call("create-session", partner.token, {
+      action: "CASH_OUT",
+      gameId: held.body.gameId,
+      clientRequestId: crypto.randomUUID(),
+      clientSentAt: iso(),
+    });
     for (const account of [player, partner]) await rpc(account.token, "leave_matchmaking");
   }, 90_000);
 
@@ -1054,12 +1175,41 @@ suite("joining mid-shoe", () => {
      * `joinPublicTable` appends to a live engine state — written, typechecked
      * and correct — was unreachable.
      */
-    const latecomer = await createPlayer();
-    await rpc(latecomer.token, "join_matchmaking", { p_tier: "casual" });
-    const placed = one((await rpc(latecomer.token, "poll_matchmaking")).body) as {
-      status: string;
-      room_id: string;
-    };
+    /*
+     * ALLOCATION IS GLOBAL, so "the newcomer lands at OUR table" is STAGING and
+     * not the subject of this test. `poll_matchmaking` offers the oldest public
+     * table still short of players, and on a pool this file shares with
+     * whatever runs beside it that can legitimately be somebody else's — which
+     * answered a bare uuid mismatch, reading exactly like the phase 7 defect
+     * described above coming back.
+     *
+     * So it is retried with a fresh account rather than asserted first time,
+     * and if the pool never offers this table the failure NAMES why instead of
+     * printing two uuids.
+     */
+    let latecomer: Player | null = null;
+    let placed: { status: string; room_id: string } | null = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const candidate = await createPlayer();
+      await rpc(candidate.token, "join_matchmaking", { p_tier: "casual" });
+      const row = one((await rpc(candidate.token, "poll_matchmaking")).body) as {
+        status: string;
+        room_id: string;
+      };
+      if (row.status === "matched" && row.room_id === alice.roomId) {
+        latecomer = candidate;
+        placed = row;
+        break;
+      }
+      await rpc(candidate.token, "leave_matchmaking");
+    }
+    if (!latecomer || !placed) {
+      throw new Error(
+        `six accounts queued for casual and none was offered ${alice.roomId}: an ` +
+          `older public table still had room, which is allocation working and ` +
+          `makes this scenario unstageable rather than broken`,
+      );
+    }
     expect(placed.status).toBe("matched");
     expect(placed.room_id).toBe(alice.roomId);
 
@@ -1397,9 +1547,21 @@ suite("concurrent commands at one public table", () => {
      */
     expect(replay.body.publicState).toEqual(first.body.publicState);
 
-    const after = await snapshot(alice.player, alice.gameId);
-    expect(seatOf(after, alice).originalBet).toBe(100);
-    expect(seatOf(after, alice).stack).toBe(CASUAL.buyIn - 100);
+    /*
+     * ASSERTED ON THE COMMAND'S OWN ANSWER, not on a later re-read.
+     *
+     * `snapshot()` sends `RESOLVE_TIMEOUT`, so a read taken after a betting
+     * deadline has passed can itself close betting, deal the hand and settle
+     * it — and `openBetting` clears `originalBet` for the next window. At a
+     * table this file shares with whoever else was matched into it, that is an
+     * ordinary sequence of events rather than a replay defect, and it answered
+     * `expected +0 to be 100`. What this test is about is that the replay
+     * changed nothing, which is a statement about the moment the command was
+     * applied.
+     */
+    const applied = first.body.publicState as PublicState;
+    expect(seatOf(applied, alice).originalBet).toBe(100);
+    expect(seatOf(applied, alice).stack).toBe(CASUAL.buyIn - 100);
 
     await closeTable(seats);
   }, 120_000);
