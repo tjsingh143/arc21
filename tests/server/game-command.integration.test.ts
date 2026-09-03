@@ -1605,12 +1605,48 @@ suite("the daily challenge", () => {
       const today = await rpc(token, "ensure_todays_daily_challenge");
       expect(today.status).toBe(200);
 
+      /*
+       * THE FIXTURE'S OWN ROW IS REVEALED. This is what the insert above is
+       * for, and it is true no matter what else the database holds.
+       *
+       * It used to assert that this row was the one
+       * `latest_verifiable_daily_challenge()` returned — which is a claim about
+       * every OTHER row in the table, not about this one. That function answers
+       * with the most recent revealed challenge, so the assertion held only
+       * while nothing later existed. `scripts/e2e-account.ts` creates
+       * yesterday's challenge (deliberately: the reveal needs something to
+       * publish), and the moment it had been run before this suite a correct
+       * answer failed a correct-looking test — `expected '2026-09-02' to be
+       * '2019-07-04'`. The same mistake as the pgTAP file that counted global
+       * rows and the leaderboard test that asserted a place: assert the
+       * relationship you own, never the global superlative.
+       */
+      expect(
+        sql(
+          `select coalesce(revealed_seed, 'NOT-REVEALED')
+           from public.daily_challenges where challenge_date = '${closedDate}'`,
+        ),
+      ).not.toBe("NOT-REVEALED");
+
       const verifiable = await rpc(token, "latest_verifiable_daily_challenge");
       expect(verifiable.status).toBe(200);
       const row = (Array.isArray(verifiable.body) ? verifiable.body[0] : verifiable.body) as
         | { challenge_date: string; seed_commitment: string; revealed_seed: string }
         | undefined;
-      expect(row?.challenge_date).toBe(closedDate);
+      expect(row, "nothing is publishable, so the fairness view has nothing to show").toBeDefined();
+
+      /*
+       * WHATEVER row it is, it must be a CLOSED one. This is the safety
+       * property the function exists to hold, and asserting it about the row
+       * actually returned is stronger than asserting an identity — it is
+       * checked against whichever challenge the database really considers
+       * latest, including a real one created by another test or by the e2e
+       * account script.
+       */
+      const todayUtc = sql(`select (now() at time zone 'utc')::date::text`);
+      expect(row!.challenge_date < todayUtc, `${row!.challenge_date} is not before ${todayUtc}`).toBe(
+        true,
+      );
 
       // THE CHECK A PLAYER'S DEVICE MAKES, made here in Node against the same
       // two published strings. If this ever fails, the shoe was not the one

@@ -1,0 +1,110 @@
+# Arc 21 — PUBLIC TABLE, two clients, step 4: device B leaves, and the table
+# MUST NOT CLOSE for device A.
+#
+# THE INVARIANT. "A seat closing and a TABLE closing are different events. One
+# player leaving a five-seat table must not end it for the other four."
+# `settleTableClosure` returns `sessionEnded` true only when no other connected
+# seat remains — and that had been proved by `tests/server` alone. This is the
+# first time the second player's SCREEN has been asked.
+#
+#   maestro test --device <B> tests/e2e/two-client-public-leave.yaml
+#   maestro test --device <A> tests/e2e/two-client-public-survives.yaml
+#
+# Between the two, the server is asked as well:
+#   npx tsx scripts/two-client-public.ts --email e2e-guest@arc21.test --what state
+#   npx tsx scripts/two-client-public.ts --email e2e-lobby@arc21.test --what state
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+# THE SEAT MUST BE ADDRESSABLE AFTER A RELAUNCH, and this flow reaches the table
+# that way rather than assuming the app is still on it.
+#
+# A cold launch does not restore the table screen — it was reached by
+# `router.replace` from matchmaking, so a relaunch lands on Home. CLAUDE.md
+# records what that used to mean: the game id reached the client exactly once,
+# lived only in an `expo-router` parameter, and killing the app mid-hand left
+# every mode answering `409 SESSION_ALREADY_ACTIVE` for ever with the buy-in
+# stranded. `my_active_session()` is the answer, and the Play tab is where it is
+# rendered — so walking it here is the device-side proof that a live public seat
+# can still be found by the player holding it.
+#
+# The wait is generous because a Debug build over Metro takes twenty-odd seconds
+# to hydrate the session: the first version of this flow asserted immediately
+# after launch and photographed the ONBOARDING screen, which is what this app
+# shows until the stored session has been read back.
+- extendedWaitUntil:
+    visible:
+      id: "header-chips"
+    timeout: 90000
+
+- openLink: arc21://play
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible:
+      id: "play-resume-card"
+    timeout: 45000
+- assertVisible: "Still at a table"
+# TAPPED INSIDE A `repeat`, for the reason recorded throughout this repository:
+# a tap issued while the screen is still settling is swallowed, and the step
+# still reports COMPLETED. Measured here — `Tap on id: play-resume ...
+# COMPLETED` with the app still on the Play tab a minute later. The loop is
+# guarded on the card itself, so it stops the moment the table opens.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "play-resume"
+    commands:
+      - tapOn:
+          optional: true
+          id: "play-resume"
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+
+# The confirmation is real, and it states the amount coming back from the
+# server's snapshot rather than a local guess.
+- tapOn: "Leave table"
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 20000
+- assertVisible: ".*chips return to your balance.*"
+
+# The DESTRUCTIVE button, not the cancel one. "Stay" is `style: cancel`.
+- tapOn:
+    text: "Leave table"
+    index: 1
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 60000
+
+# THE SEAT WAS ACTUALLY GIVEN UP, asked of the SERVER rather than of the client
+# that just said so. A live seat answers the matchmaking screen with a refusal;
+# a released one lets the tiers be offered again.
+- openLink: arc21://table/public
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-tier-casual"
+    timeout: 45000

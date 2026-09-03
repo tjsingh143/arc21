@@ -195,6 +195,12 @@ export function createUnconfiguredFriendsGateway(message: string): FriendsGatewa
 /** Postgres `insufficient_privilege` — every RPC raises it with no session. */
 const NO_SESSION_CODE = "42501";
 
+/**
+ * `enforce_rate_limit`'s refusal. `PTnnn` is the SQLSTATE PostgREST maps to HTTP
+ * nnn, so this arrives as a 429 with the server's own sentence in `message`.
+ */
+const RATE_LIMITED_CODE = "PT429";
+
 export function createSupabaseFriendsGateway(
   client: ArcSupabaseClient,
   options: { readonly timeoutMs?: number } = {},
@@ -294,6 +300,16 @@ export function createSupabaseFriendsGateway(
       if (result.error) {
         if (result.error.code === NO_SESSION_CODE) {
           return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+        }
+        /*
+         * The search is rate-limited, and a limit that says nothing is
+         * indistinguishable from a broken server. The refusal carries the
+         * server's own sentence — which names the ceiling and when it clears —
+         * exactly as `rooms-gateway.ts` does for a room join. It is the only
+         * refusal `search_players` raises that a player can act on.
+         */
+        if (result.error.code === RATE_LIMITED_CODE) {
+          return { ok: false, reason: "refused", message: result.error.message };
         }
         return { ok: false, reason: "refused", message: SEARCH_REFUSED };
       }

@@ -78,3 +78,30 @@ export type TypographyToken = keyof typeof typeMetrics;
  * chosen by eye from a spec.
  */
 export const MAX_FIXED_CONTROL_FONT_SCALE = 1.6;
+
+/**
+ * The text scale at which iOS's own "accessibility sizes" begin, and therefore
+ * the point above which a row of FIXED-COUNT controls should reflow onto more
+ * rows instead of squeezing each one narrower.
+ *
+ * It lives here, on the React-Native-free side of the wall, because two
+ * components need the same number: `ScreenHeader` stacks its title above the
+ * balance, and `AssistanceModeSelector` goes from four pills across to two.
+ * `CLAUDE.md` asks for a test whenever a constant is duplicated; sharing one
+ * export is the version that cannot drift.
+ *
+ * Measured on the simulator at `accessibility-extra-extra-extra-large`, not
+ * chosen from a table.
+ */
+export const STACK_ABOVE_FONT_SCALE = 1.5;
+
+/**
+ * Whether a fixed-count control row should reflow at this text scale.
+ *
+ * A predicate rather than a bare comparison at each call site, so the rule can
+ * be asserted by a test that never imports React Native — the shape
+ * `betting-affordance.ts` and `lobby-affordance.ts` already use.
+ */
+export function rowStacksAtFontScale(fontScale: number): boolean {
+  return Number.isFinite(fontScale) && fontScale > STACK_ABOVE_FONT_SCALE;
+}

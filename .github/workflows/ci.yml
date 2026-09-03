@@ -3,12 +3,23 @@
 # The specification's rule is the whole point of this file: "A pull request must
 # not pass with TypeScript errors or failing engine tests."
 #
-# WHAT HAS ACTUALLY BEEN RUN. There is no remote and no CI runner has ever
-# executed this workflow, so every step below was instead run locally, in this
-# order, and its output pasted into the session report. A workflow whose steps
-# have never been run is a wish. What has NOT been exercised is the runner
-# plumbing itself — `actions/checkout`, `actions/setup-node` and
-# `supabase/setup-cli` — because that cannot exist on this machine.
+# WHAT HAS ACTUALLY BEEN RUN. Every step below is run locally, in this order,
+# and its output recorded in the phase report — a workflow whose steps have
+# never been run is a wish.
+#
+# The line that used to sit here said "there is no remote and no CI runner has
+# ever executed this workflow". That was true when it was written and is not
+# now: `origin` is a private GitHub repository holding both `main` and the
+# working branch, `gh` is authenticated with the `workflow` scope, and phase 11
+# pushed a branch and opened a pull request specifically so the `pull_request`
+# trigger below would fire on a real runner. Its result is in
+# `docs/phase-reports/phase-11.md`. A comment asserting something about the
+# build that has stopped being true is the kind of claim this repository keeps a
+# list of, so it is corrected here rather than left to be read as current.
+#
+# The half that only a runner can exercise is the plumbing — `actions/checkout`,
+# `actions/setup-node` and `supabase/setup-cli` — none of which can exist on a
+# developer machine.
 #
 # TWO JOBS, AND WHY THE SPLIT MATTERS. `tests/server/**` talks to real Edge
 # Functions over HTTP and SKIPS when no stack is reachable. A skip is not a

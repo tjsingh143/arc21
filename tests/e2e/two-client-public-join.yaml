@@ -1,0 +1,93 @@
+# Arc 21 — PUBLIC TABLE, two clients, step 2: device B queues and is MATCHED.
+#
+# Device A is already waiting at the casual tier. `poll_matchmaking` opens a
+# room only when there is somebody to share it with — the phase 7 fix that made
+# `waiting` a real state — so B queueing at the same tier is what creates the
+# table both accounts are then offered.
+#
+# WHAT THIS PROVES that no server test can: the SCREEN moves from the wait card
+# to the "Seat found" card, the buy-in leaves the wallet when the seat is taken
+# and not before, and the table opens on a device that has never seen A's.
+#
+#   maestro test --device <B> tests/e2e/two-client-public-join.yaml
+#
+# See `two-client-public-queue.yaml` for the full running order.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Cancel"
+
+- openLink: arc21://table/public
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-tier-casual"
+    timeout: 45000
+# TAPPED INSIDE A `repeat`, not once.
+#
+# A tap issued while the screen is still settling can be swallowed: measured
+# here as `Tap on id: matchmaking-tier-casual ... COMPLETED` with the screenshot
+# still showing the tier chooser and NO queue row ever written — which then
+# presents as the other device never being matched, a minute and a half later
+# and on the other simulator. COMPLETED means Maestro found something matching
+# the selector and sent a tap at it; it does not mean anything happened.
+#
+# The loop is guarded on the tier list itself, because choosing a tier replaces
+# it with either the wait card or the seat offer. So it stops as soon as the tap
+# has landed, whichever of the two states follows.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "matchmaking-tier-casual"
+    commands:
+      - tapOn:
+          optional: true
+          id: "matchmaking-tier-casual"
+
+# THE MATCH. A room exists now because two accounts are queued at one tier, and
+# the card that offers the seat is the one no device had ever rendered.
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-take-seat"
+    timeout: 60000
+- assertVisible: "Seat found"
+
+# "You are first at this table." — and it is B that is first, NOT A, even though
+# A has been queueing since step 1.
+#
+# That is worth writing down because it looks wrong and is not. A waiting entry
+# is not a seat: `poll_matchmaking` creates the room during the poll that finds
+# a companion, and inserts only THAT caller into `room_members`. So B's own poll
+# opens the table and B is its first member; A is allocated to the same room on
+# its next poll, which is where the cross-client evidence lives — see
+# `two-client-public-seat.yaml`, whose "1 already seated" can only come from
+# this seat existing.
+#
+# The count itself arrives in a column called `queued_at_tier`, which is a
+# misnomer: `poll_matchmaking` returns `v_seated` in that position and the
+# client reads it as `seatedBefore`. The value is right and the name is not.
+- assertVisible: ".*first at this table.*"
+
+- tapOn:
+    id: "matchmaking-take-seat"
+
+# The buy-in is charged HERE, and the table opens. `takeSeat` is the only thing
+# in the app that spends a public-table buy-in.
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- assertVisible:
+    id: "table-my-stack"

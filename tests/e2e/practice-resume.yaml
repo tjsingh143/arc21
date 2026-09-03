@@ -84,8 +84,28 @@ appId: com.arc21.app
     visible:
       id: "home-practice"
     timeout: 30000
-- tapOn:
-    id: "home-practice"
+# THE TAP THAT OPENS PRACTICE, INSIDE A `repeat`.
+#
+# It failed once in phase 11 at load average 9.2: `Tap on id: home-practice...
+# COMPLETED`, and the next assertion's screenshot showed Home with the card
+# still on it. That is CLAUDE.md's "a step that COMPLETED did not necessarily do
+# anything" — a tap issued while the screen was still settling after onboarding,
+# swallowed with no error. The same commit passed on the re-run at load 7.6.
+#
+# `repeat` is the fix CLAUDE.md already prescribes for the onboarding tap above,
+# and it is self-limiting here for the same reason: once the tap lands, the app
+# is on Practice and `home-practice` is no longer visible, so the remaining
+# iterations skip.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "home-practice"
+          commands:
+            - tapOn:
+                id: "home-practice"
 
 - extendedWaitUntil:
     visible: "Place a bet to be dealt in."

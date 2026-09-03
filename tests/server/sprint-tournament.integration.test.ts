@@ -639,11 +639,40 @@ suite("a whole sprint tournament", () => {
       expect(buttons[index]).not.toBe(buttons[index - 1]);
     }
 
-    // Twelve scheduled hands were actually played and bet on.
-    expect(bettingOrders).toHaveLength(12);
-    // Four bettors before the elimination, three after it.
+    /*
+     * TWELVE SCHEDULED HANDS WERE PLAYED AND BET ON — PLUS ANY SUDDEN-DEATH
+     * HANDS, WHICH ARE EXTRA HANDS AT A BOUNDARY.
+     *
+     * This used to be `toHaveLength(12)` and failed as
+     * `expected [ … ] to have a length of 12 but got 13` on a run where
+     * everything else passed: the cards left two players level at the final
+     * boundary, the server played a tie-break hand to separate them, and that
+     * hand has a betting round like any other. A correct server, a fair deal,
+     * and a test that assumed no tie.
+     *
+     * The comment fifteen lines above already says "a sudden-death hand is an
+     * extra hand at its boundary" — the `ceilings` assertion was written to
+     * tolerate it and this one was not. `tie_break_hands_used` is the server's
+     * own count of them, so the relationship is asserted rather than a constant.
+     */
+    expect(bettingOrders).toHaveLength(row.scheduled_hands_played + row.tie_break_hands_used);
+
+    // Four bettors before the elimination — no tie-break can precede hand six's
+    // boundary, so these six are all scheduled hands.
     expect(bettingOrders.slice(0, 6).every((order) => order.length === 4)).toBe(true);
-    expect(bettingOrders.slice(6).every((order) => order.length === 3)).toBe(true);
+
+    /*
+     * And three after it. A sudden-death hand deals only the tied players, so
+     * it is a subset of the field and never larger — which is why the bound is
+     * "at most three", and why the count of full rounds is asserted as at least
+     * one per scheduled hand rather than exactly, in case all three remaining
+     * players tie.
+     */
+    const afterElimination = bettingOrders.slice(6);
+    expect(afterElimination.every((order) => order.length <= 3)).toBe(true);
+    expect(afterElimination.filter((order) => order.length === 3).length).toBeGreaterThanOrEqual(
+      row.scheduled_hands_played - 6,
+    );
 
     // --- The result --------------------------------------------------------
     const entries = entryRows(tournamentId);

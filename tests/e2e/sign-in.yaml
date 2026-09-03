@@ -23,6 +23,18 @@
 # Needs `npx tsx scripts/e2e-account.ts` first: it makes the account exist,
 # leaves any table or room a failed run left open, and puts the credential on
 # the simulator pasteboard.
+#
+# IMMEDIATELY BEFORE, not once at the start of a session. Both fields are filled
+# by long-press + "Paste" — `inputText` drops characters and
+# `textContentType="newPassword"` blocks it outright, both recorded in CLAUDE.md
+# — so this flow is only as good as what the pasteboard holds, and the simulator
+# pasteboard does not survive everything an intervening run does to it. Measured
+# in phase 11: `online-table.yaml` failed with `Assert that
+# "e2e-lobby@arc21.test" is visible... FAILED` on a screenshot showing the sign-in
+# form with BOTH FIELDS EMPTY, after three practice flows and a career flow had
+# run in between; re-running `e2e-account.ts` and nothing else made the same
+# commit pass, 41 steps, exit 0. An empty paste reads as a broken auth screen,
+# which is why it is written down here rather than left to be rediscovered.
 
 appId: com.arc21.app
 ---

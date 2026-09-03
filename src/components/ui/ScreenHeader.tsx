@@ -26,6 +26,7 @@ import Svg, { Circle, Path } from "react-native-svg";
 import { useAuthStore } from "../../features/auth/auth-store";
 import { useWalletStore } from "../../features/wallet";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
+import { rowStacksAtFontScale } from "../../design/type-metrics";
 import { formatChips } from "../../design/typography";
 import { AppText } from "./AppText";
 
@@ -34,20 +35,16 @@ export interface ScreenHeaderProps {
   subtitle?: string;
 }
 
-/**
- * Above this text scale the header stacks instead of sitting in one row.
- *
- * 1.5 is where iOS's own "accessibility sizes" begin. Below it the row has
- * room for both halves; above it the fixed-width balance and avatar squeeze
- * the title block to a few characters and "Blackjack, without the noise."
- * wraps mid-word beside the GUEST badge — verified on the simulator at
- * `accessibility-extra-extra-extra-large`.
- */
-const STACK_ABOVE_FONT_SCALE = 1.5;
-
 export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
+  /*
+   * Above this text scale the header stacks instead of sitting in one row: the
+   * fixed-width balance and avatar otherwise squeeze the title block to a few
+   * characters and "Blackjack, without the noise." wraps mid-word beside the
+   * GUEST badge. The threshold is shared with the assistance selector, which
+   * reflows at the same point — see `rowStacksAtFontScale`.
+   */
   const { fontScale } = useWindowDimensions();
-  const stacked = fontScale > STACK_ABOVE_FONT_SCALE;
+  const stacked = rowStacksAtFontScale(fontScale);
 
   /*
    * Subscribed, then derived — never read through a store getter during

@@ -235,3 +235,37 @@ export function shouldCompleteLeave(input: {
   if (!input.leavingWhenSafe || input.pending || !input.table) return false;
   return canCloseSeat(input.table, input.seatId);
 }
+
+/**
+ * WHETHER THE SCREEN SHOULD NOW TAKE THE PLAYER OFF A TABLE THEY ASKED TO LEAVE.
+ *
+ * `shouldCompleteLeave` above answers when the STORE should send the held
+ * cash-out. This answers what the SCREEN does once it has been sent and the seat
+ * is gone — and the two were not connected, which is the defect.
+ *
+ * A cash-out refused mid-hand is held as `leavingWhenSafe` and completed by the
+ * poll at the first safe boundary. That path calls `forgetTable()`; it does not
+ * navigate, because navigation belongs to the screen. So the seat settled, the
+ * chips came back, and the table screen re-rendered into its "Reading the
+ * table…" branch and stayed there for ever: the only control left was "Leave
+ * table", which cashes out an already-settled seat and goes nowhere. Measured on
+ * two simulators at a public table and then reproduced with one, the wallet
+ * correct throughout and the app unusable until it was force-quit.
+ *
+ * `askedToLeave` has to be REMEMBERED by the caller rather than read from the
+ * store, because completing the leave clears `leavingWhenSafe` in the same
+ * update that drops the seat: at the only moment this question can be answered,
+ * the state that would justify it is already gone.
+ *
+ * Both conditions are needed and the seat is the one that says "now". A player
+ * who asked to leave and is still seated is watching out a live hand, which is
+ * exactly what the hold is for.
+ */
+export function shouldExitAfterHeldLeave(input: {
+  /** The player asked to leave and the server held the request. */
+  askedToLeave: boolean;
+  /** Whether the seat is still held. */
+  holdsSeat: boolean;
+}): boolean {
+  return input.askedToLeave && !input.holdsSeat;
+}

@@ -41,6 +41,7 @@ import {
   mayLeaveTable,
   STAY_AT_TABLE_LABEL,
   shouldConfirmLeavingTable,
+  shouldExitAfterHeldLeave,
   TABLE_EXIT_ROUTE,
   tableExitSequence,
 } from "../../src/features/table/leave-guard";
@@ -776,6 +777,7 @@ export default function SharedTable() {
 function Frame({ children }: { children: React.ReactNode }) {
   const leaveTable = useOnlineTableStore((state) => state.leaveTable);
   const status = useOnlineTableStore((state) => state.status);
+  const leavingWhenSafe = useOnlineTableStore((state) => state.leavingWhenSafe);
   const { settings } = useSettings();
   const navigation = useNavigation();
   /*
@@ -906,6 +908,54 @@ function Frame({ children }: { children: React.ReactNode }) {
     },
     [navigation],
   );
+
+  /*
+   * THE EXIT FOR A LEAVE THAT THE PLAYER ASKED FOR AND THE POLL COMPLETED.
+   *
+   * A cash-out refused mid-hand is HELD — `leavingWhenSafe` — and finished by
+   * the store's poll at the first boundary where `canCloseSeat` agrees, which
+   * is the whole point of that flag: a player who taps leave and puts the phone
+   * down must not stay seated with their buy-in in escrow.
+   *
+   * But `finishLeaving` lives here, and until now only the two INTERACTIVE
+   * paths called it. So the poll settled the seat, returned the chips and
+   * called `forgetTable()`, the screen re-rendered into its "Reading the
+   * table…" branch, and stayed there: the seat was gone, so the only control on
+   * screen — "Leave table" — cashed out an already-settled seat and navigated
+   * nowhere. Measured on two simulators at a public table, then reproduced
+   * alone: the wallet was credited and correct while the app was unusable until
+   * it was force-quit.
+   *
+   * The store owns WHEN the seat closes; this owns what the screen does about
+   * it. Same division as everywhere else in this file, and the same lesson as
+   * the `RESET_PRIVATE_STACK` command that no client ever sent — a mechanism
+   * with only one half is a mechanism that does not work.
+   *
+   * `asked` is a ref because the flag cannot be observed at the moment it
+   * matters: completing the leave CLEARS `leavingWhenSafe` in the same update
+   * that drops the seat, so by the time this can see "no seat" there is nothing
+   * left in state saying why. Remembering the request is the only version that
+   * survives its own completion.
+   */
+  const askedToLeaveAtBoundary = useRef(false);
+  useEffect(() => {
+    if (leavingWhenSafe) askedToLeaveAtBoundary.current = true;
+  }, [leavingWhenSafe]);
+
+  useEffect(() => {
+    // The rule lives in `leave-guard.ts` with the others, so it can be asserted
+    // without React Navigation — the screen owns only the effect.
+    if (
+      !shouldExitAfterHeldLeave({
+        askedToLeave: askedToLeaveAtBoundary.current,
+        holdsSeat: status.kind === "at-table",
+      })
+    ) {
+      return;
+    }
+    askedToLeaveAtBoundary.current = false;
+    finishLeaving(() => router.back());
+  }, [status.kind, finishLeaving]);
 
   useEffect(() => {
     const unsubscribe = navigation.addListener("beforeRemove", (event) => {

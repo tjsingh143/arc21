@@ -1,8 +1,8 @@
 # Arc 21 Launch State
 
-**Current Phase:** 11 — Adversarial QA / E2E / CI (not started)
-**Last Completed Phase:** 10 — Backend / API Security
-(**PASS, 2026-09-02**; see `docs/phase-reports/phase-10.md`)
+**Current Phase:** 12 — Production Release Candidate (EXTERNAL BLOCKER)
+**Last Completed Phase:** 11 — Adversarial QA / E2E / CI
+(**PASS, 2026-09-03**; see `docs/phase-reports/phase-11.md`)
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -25,12 +25,61 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 8 — Sprint Tournament | **PASS** | Seven defects fixed, six proved to fail by reverting the fix in the running system. Betting was not sequential at all — the format's defining mechanic was absent; a settlement-window timeout dealt the next hand with NO boundary, so a tournament could never finish or pay; a paid entry could never be given up; registering did not check for a seat elsewhere, in either direction; and the result vanished in the transaction that created it. |
 | 9 — Daily / Leaderboards / Cosmetics | **PASS** | Five defects fixed, each proved to fail by reverting it in the running system. The "18 vs 20" intermittent was REPRODUCED on purpose against the real functions and is now a regression test; a bankrupt daily attempt could never end; the challenge took a second live seat and hid the first; a mid-challenge reshuffle would have come from the CSPRNG; and the seed was never published, so the commitment could not be checked by anybody. |
 | 10 — Backend/API Security | **PASS** | Six findings, five fixed and each proved to fail by reverting it in the running system. `tournament_entries` was readable by EVERY authenticated account — 152 rows of live stacks and prizes — and the IDOR sweep that classified it "a stranger must see NONE of it" passed on an empty fixture; `service_role` could mint a million chips through `/rest/v1/rpc/` in one request; the app shipped a microphone permission for a game that never records. |
-| 11 — Adversarial QA / E2E / CI | IN PROGRESS | 4 Maestro flows exist; **CI has never run on a runner**. |
+| 11 — Adversarial QA / E2E / CI | **PASS** | Six defects fixed, each proved to fail by reverting it in the running system. A leaderboard page had no ceiling and answered `p_limit=2147483647` with every ranked row; one account registered **200 push devices in 1.9 s**, and each is an outbound message per notification; `search_players` was an unmetered directory dump — **108 calls enumerated 445 accounts** — whose LIKE metacharacters were unescaped; a notification payload was interpolated into a router path; the Practice assistance pills drew their labels OUTSIDE the pill at accessibility text sizes; and a cash-out the server deferred settled the chips and left the player on a dead screen that had to be force-quit. The `decode-uri-component` advisory phase 10 deferred was measured and found **not runtime-reachable** — the guard written for it was deleted rather than shipped. The two-simulator public-table lifecycle phase 7 deferred was walked end to end. |
 | 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
 
 **IN PROGRESS here means:** substantial implementation exists and is locally
 green — it does NOT mean this launch sequence has validated or signed the phase
 off. Treat every one as unverified until its own phase runs.
+
+---
+
+## What phase 11 established that a later phase must not undo
+
+- **A CEILING ON WHAT ONE REQUEST MAY ASK THE SERVER TO PRODUCE.**
+  `leaderboard_page_maximum()` and `push_tokens_per_account_maximum()` are each
+  stated once, revoked from every client role, and READ by the functions that
+  need them. Testing either is the hard part: a local database is far below both,
+  so `25_bounded_reads.test.sql` MOVES the constant inside the transaction and
+  asserts the answer follows. Asserting that `p_limit = 2147483647` returns
+  "everything" would pass identically with the clamp present and absent.
+- **A `LIKE` PATTERN BUILT FROM USER INPUT NEEDS `escape`, AND A SEARCH NEEDS A
+  LIMIT.** `search_players` had neither: `%%` matched every profile and 108 calls
+  enumerated 445 accounts unrefused. The limit lives INSIDE the function, which
+  is why it is `volatile` — a wrapper that spends the limit while the unlimited
+  function stays granted is a stated policy, not an enforced one.
+- **`now()` IS FIXED FOR A TRANSACTION**, so "keep the newest N" cannot mean
+  "and therefore the row I just wrote survives". Forty registrations in one
+  statement tie exactly, and a random uuid decides. Name the row you must keep.
+- **A DEEP LINK'S PAYLOAD IS NOT A PATH SEGMENT.** `destinationFor` shape-checks
+  a room code and a game id before either reaches the router; `../../settings`
+  in a push payload used to produce `/room/../../settings`.
+- **AN ADVISORY IS A CLAIM ABOUT A DEPENDENCY, NOT ABOUT THIS APP.**
+  `decode-uri-component` is genuinely catastrophic — 22 s for three kilobytes —
+  and `expo-router`'s live resolver never calls it: the file that does is a
+  vendored upstream copy imported by nothing. Measured on the device as well as
+  read. **The guard written for it was deleted rather than shipped**, because
+  code justified by a false claim is worse than no code. What remains is
+  `tests/deep-links/decode-uri-component-reachability.test.ts`, which fails if an
+  upgrade ever re-wires the inbound path — something `npm audit` would not
+  report by one character.
+- **A ROW OF FIXED-COUNT CONTROLS MUST REFLOW ABOVE `STACK_ABOVE_FONT_SCALE`,
+  AND `flexWrap` DOES NOT DO IT.** A `flex: 1` child has a flex-basis of 0, so it
+  never overflows its line and never wraps — it only shrinks. The row COUNT is
+  what changes. The threshold is one export in `type-metrics.ts`, read by both
+  `ScreenHeader` and the assistance selector.
+- **NAVIGATION AFTER A DEFERRED LEAVE BELONGS TO THE SCREEN, AND THE POLL IS NOT
+  A CALLER OF IT.** A cash-out refused mid-hand is held and completed by the
+  store's poll; that path settles the seat and returns the chips and does not
+  navigate. `shouldExitAfterHeldLeave` is the missing half. The wallet was
+  correct throughout, which is exactly why nothing else noticed.
+- **THE TWO-SIMULATOR PUBLIC TABLE IS STAGEABLE ONLY AGAINST A DRAINED POOL.**
+  Allocation is global and a public table keeps taking players, so a room left by
+  `npm run test:server` is one the device account is correctly matched into.
+  `scripts/e2e-public-drain.ts` is the narrow form of the `db reset` that
+  `public-matchmaking.yaml` demands. A waiting queue entry expires in five
+  minutes and an expiry RELEASES the room seat — as does a relaunch between
+  being allocated and taking the seat.
 
 ---
 

@@ -117,19 +117,65 @@ describe("where a notification leads", () => {
   it("never reads a path out of the payload", () => {
     // The whole point. A payload naming `/settings` or an external URL changes
     // nothing about where the notification goes.
-    const destination = destinationFor({
-      kind: "friend_request",
-      data: { room_code: "../../settings" } as never,
-    });
-    expect(pathFor(destination)).toBe("/social");
+    //
+    // ASKED OF `table_invite`, not of `friend_request`. This assertion used to
+    // name `friend_request` — a kind whose branch ignores `room_code` entirely —
+    // so it passed without the parameter ever reaching `pathFor`. The same shape
+    // as the empty-fixture sweep phase 10 found: a control asserted where it
+    // could not be exercised.
+    for (const kind of ["friend_request", "table_invite"] as const) {
+      const destination = destinationFor({ kind, data: { room_code: "../../settings" } });
+      expect(pathFor(destination), kind).toBe("/social");
+    }
   });
 
-  it("puts a room code straight into the path, so the route must validate it", () => {
-    // Documented rather than defended here: `app/room/[code].tsx` normalises and
-    // shape-checks the code, and `join_private_room` re-checks everything that
-    // matters server-side. A code is an address, not a key.
-    expect(pathFor(destinationFor({ kind: "table_invite", data: { room_code: "zz" } }))).toBe(
-      "/room/zz",
+  it("refuses a payload parameter that is not the shape of what it claims to be", () => {
+    /*
+     * A push arrives through APNs/FCM, so the sender is whoever holds the
+     * device's Expo token — `notifications.data`'s CHECK constraint bounds what
+     * THIS server writes and cannot bound what arrives. Before this, both
+     * parameters were interpolated into the path untouched, so `room_code`
+     * carrying `../../settings` produced `/room/../../settings`: the open
+     * redirect `use-notification-routing.ts` says in its own header that it
+     * prevents, entering through the parameter rather than through the kind.
+     */
+    const hostileCodes = [
+      "../../settings",
+      "/settings",
+      "https://example.invalid/x",
+      "ABC12",
+      "ABC1234",
+      "ABC-12",
+      "zz",
+      "",
+    ];
+    for (const room_code of hostileCodes) {
+      expect(pathFor(destinationFor({ kind: "table_invite", data: { room_code } })), room_code).toBe(
+        "/social",
+      );
+    }
+
+    for (const game_id of ["../../settings", "not-a-uuid", "", "0".repeat(36)]) {
+      expect(pathFor(destinationFor({ kind: "your_turn", data: { game_id } })), game_id).toBe(
+        "/notifications",
+      );
+    }
+  });
+
+  it("still routes a well-formed code and game id, normalising the code", () => {
+    // The route is an ADDRESS: `app/room/[code].tsx` hands it to
+    // `join_private_room`, which re-checks capacity, expiry, blocks and status.
+    // Validating the shape here is what stops it being a path; it is not what
+    // decides whether the player may sit down.
+    expect(pathFor(destinationFor({ kind: "table_invite", data: { room_code: "QW9RGX" } }))).toBe(
+      "/room/QW9RGX",
+    );
+    expect(pathFor(destinationFor({ kind: "table_invite", data: { room_code: "qw9 rgx" } }))).toBe(
+      "/room/QW9RGX",
+    );
+    const gameId = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
+    expect(pathFor(destinationFor({ kind: "your_turn", data: { game_id: gameId } }))).toBe(
+      `/table/${gameId}`,
     );
   });
 

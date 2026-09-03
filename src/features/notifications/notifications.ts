@@ -15,6 +15,8 @@
 
 import { z } from "zod";
 
+import { looksLikeRoomCode, normaliseRoomCode } from "../rooms/rooms.js";
+
 export const NOTIFICATION_KINDS = [
   "friend_request",
   "friend_accepted",
@@ -102,11 +104,48 @@ export type Destination =
   | { readonly screen: "career" }
   | { readonly screen: "notifications" };
 
+/** `crypto.randomUUID()`'s shape, which is every id this app hands out. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The room code in a payload, or nothing.
+ *
+ * A PUSH PAYLOAD IS ATTACKER-CONTROLLED. `use-notification-routing.ts` says so
+ * and validates the KIND against a closed list for exactly that reason — but the
+ * two parameters were passed through untouched and then interpolated into a
+ * router path by `pathFor`, so a payload carrying `room_code: "../../settings"`
+ * produced the path `/room/../../settings`. That is the open redirect the
+ * routing module's own header says it is preventing, arriving through the
+ * parameter rather than through the kind.
+ *
+ * A push reaches a device through APNs/FCM, so the sender is whoever holds that
+ * device's Expo token, not necessarily this server. `notifications.data`'s CHECK
+ * constraint bounds what WE write; it cannot bound what arrives.
+ *
+ * Nothing is granted by a route in this app — `/room/<code>` hands the code to
+ * `join_private_room`, which decides — so the damage a forged route can do is to
+ * open the wrong screen. It is still a route the payload chose, and the fix is
+ * one line: a value that is not the shape of the thing it claims to be is not
+ * that thing.
+ */
+function roomCodeIn(data: { room_code?: string }): string | null {
+  const raw = data.room_code;
+  if (typeof raw !== "string" || !looksLikeRoomCode(raw)) return null;
+  return normaliseRoomCode(raw);
+}
+
+/** The same rule for a game id, which is always a uuid this server generated. */
+function gameIdIn(data: { game_id?: string }): string | null {
+  const raw = data.game_id;
+  return typeof raw === "string" && UUID_PATTERN.test(raw) ? raw : null;
+}
+
 /**
  * Where tapping this notification should go.
  *
- * Every branch reads only the parameters its own kind defines. A `table_invite`
- * without a room code leads to Social rather than to a broken route: the
+ * Every branch reads only the parameters its own kind defines, and reads them
+ * through a validator rather than raw — see `roomCodeIn`. A `table_invite`
+ * without a USABLE room code leads to Social rather than to a broken route: the
  * notification is still true — somebody did invite you — and the lobby is one
  * tap away.
  */
@@ -118,19 +157,19 @@ export function destinationFor(notification: {
     case "friend_request":
     case "friend_accepted":
       return { screen: "social" };
-    case "table_invite":
-      return notification.data.room_code
-        ? { screen: "room", code: notification.data.room_code }
-        : { screen: "social" };
+    case "table_invite": {
+      const code = roomCodeIn(notification.data);
+      return code ? { screen: "room", code } : { screen: "social" };
+    }
     case "tournament_starting":
     case "tournament_result":
       return { screen: "tournament" };
     case "daily_challenge":
       return { screen: "daily" };
-    case "your_turn":
-      return notification.data.game_id
-        ? { screen: "table", gameId: notification.data.game_id }
-        : { screen: "notifications" };
+    case "your_turn": {
+      const gameId = gameIdIn(notification.data);
+      return gameId ? { screen: "table", gameId } : { screen: "notifications" };
+    }
     case "career_unlocked":
       return { screen: "career" };
     case "system":

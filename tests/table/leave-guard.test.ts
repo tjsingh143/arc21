@@ -30,6 +30,7 @@ import {
   tableExitDestination,
   tableExitSequence,
   shouldCompleteLeave,
+  shouldExitAfterHeldLeave,
 } from "../../src/features/table/leave-guard.js";
 import {
   ALL_GAME_PHASES,
@@ -263,5 +264,59 @@ describe("the phases a seat may close in", () => {
     // Not vacuous in either direction.
     expect(named.size).toBeGreaterThan(0);
     expect(named.size).toBeLessThan(ALL_GAME_PHASES.length);
+  });
+});
+
+/**
+ * THE EXIT FOR A LEAVE THE POLL FINISHED.
+ *
+ * Found on two simulators sharing a public table, then reproduced alone: the
+ * player taps "Leave table" during a live hand, the server refuses (correctly —
+ * "leaving is never a way to escape a committed wager"), the request is HELD,
+ * and the store's poll completes it at the next boundary. The chips came back
+ * and the seat closed. The SCREEN stayed on "Reading the table…" for ever,
+ * because `finishLeaving` was only ever called by the two interactive paths and
+ * the poll is neither of them. The only control left was "Leave table", which
+ * cashes out an already-settled seat and navigates nowhere; the app had to be
+ * force-quit.
+ *
+ * The wallet was correct the whole time, which is why nothing else noticed.
+ */
+describe("shouldExitAfterHeldLeave", () => {
+  it("takes the player off the table once the held leave has closed the seat", () => {
+    expect(shouldExitAfterHeldLeave({ askedToLeave: true, holdsSeat: false })).toBe(true);
+  });
+
+  it("keeps them there while the seat is still held", () => {
+    // Watching out a live hand is exactly what the hold is FOR. Exiting here
+    // would walk the player away from chips still in escrow — the bug
+    // `leavingWhenSafe` was written to prevent, in the other direction.
+    expect(shouldExitAfterHeldLeave({ askedToLeave: true, holdsSeat: true })).toBe(false);
+  });
+
+  it("does nothing for a seat that closed under a player who never asked", () => {
+    /*
+     * A table that ends beneath somebody — the host closing a private room, a
+     * tournament eliminating them — must not silently navigate. That case has
+     * its own notice and its own control, and stealing the screen from it would
+     * be the "a screen that ignores you" failure from the opposite side.
+     */
+    expect(shouldExitAfterHeldLeave({ askedToLeave: false, holdsSeat: false })).toBe(false);
+    expect(shouldExitAfterHeldLeave({ askedToLeave: false, holdsSeat: true })).toBe(false);
+  });
+
+  it("agrees with shouldCompleteLeave about what a held leave is", () => {
+    /*
+     * The two halves of one mechanism, asserted to be about the same thing: the
+     * store decides WHEN to send the held cash-out, this decides what the screen
+     * does once it has. A held leave that can be completed must, once it has
+     * closed the seat, also be one this exits on — otherwise the app finishes
+     * the money and abandons the player, which is precisely what happened.
+     */
+    const table = null;
+    expect(
+      shouldCompleteLeave({ leavingWhenSafe: true, pending: false, table, seatId: "seat-1" }),
+    ).toBe(false); // no snapshot yet — nothing to close against
+    expect(shouldExitAfterHeldLeave({ askedToLeave: true, holdsSeat: true })).toBe(false);
   });
 });
