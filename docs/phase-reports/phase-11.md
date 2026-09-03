@@ -541,6 +541,7 @@ Four runs, and the progression is the evidence:
 | 4 | **pass** | **pass** | — |
 | 5 | **pass** | **pass** | the Release-sweep fixes, re-validated on the runner |
 | 6 | **pass** | fail | two assertions about a SHARED public table — on a commit that changed two markdown files |
+| 7 | **pass** | **pass** | — |
 
 Runs 4 and 5 are green on both jobs: lint, typecheck, Edge Function typecheck,
 2,395 unit tests, coverage, `expo-doctor` 21/21 and the iOS bundle on one side;
@@ -608,6 +609,8 @@ about one hand in thirteen, and nothing to do with contention at all.
 `dealAHand` needed the neighbouring fix: betting closes on the LAST seat to
 lock, so a stranger who has not bet leaves it open until the 15-second deadline,
 which a snapshot's own `RESOLVE_TIMEOUT` is what asks for.
+
+Run 7 is green on both jobs with those four fixes in it.
 
 **Where the hardening stopped, and why.** Driven harder — a fresh stranger
 seated every three seconds — the suite fails in ways no test change should
