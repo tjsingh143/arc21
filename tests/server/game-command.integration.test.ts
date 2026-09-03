@@ -638,17 +638,41 @@ suite("public tables", () => {
     );
   }
 
+  /**
+   * A seat at a public table, actually TAKEN.
+   *
+   * `seatedAt` gets a room; sitting down in it can still be refused, because
+   * allocation is global and this pool is shared with whatever file is running
+   * beside this one — the room can fill up or close between the match and the
+   * buy-in. CI answered `expected undefined to be 23000`, which is a field read
+   * off a REFUSAL body by a test that had not looked at the status first.
+   *
+   * So the staging is retried and the answer comes back with its status already
+   * checked, and every caller below is then asserting about a seat it holds.
+   */
+  async function takeAPublicSeat(
+    token: string,
+  ): Promise<{ roomId: string; take: Awaited<ReturnType<typeof call>> }> {
+    let last = "no attempt was made";
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const roomId = await seatedAt(token);
+      const take = await call("create-session", token, {
+        action: "JOIN_PUBLIC_TABLE",
+        clientRequestId: crypto.randomUUID(),
+        roomId,
+        clientSentAt: iso(),
+      });
+      if (take.status === 200) return { roomId, take };
+      last = `${take.status} ${take.raw.slice(0, 200)}`;
+    }
+    throw new Error(`six matched public rooms and none could be sat at: ${last}`);
+  }
+
   it("debits the buy-in once and conserves every chip", async () => {
     const userId = await createUser();
     const token = signToken(userId);
 
-    const roomId = await seatedAt(token);
-    const take = await call("create-session", token, {
-      action: "JOIN_PUBLIC_TABLE",
-      clientRequestId: crypto.randomUUID(),
-      roomId,
-      clientSentAt: iso(),
-    });
+    const { take } = await takeAPublicSeat(token);
 
     expect(take.status).toBe(200);
     expect(take.body.status).toBe("public_seat_taken");
@@ -664,19 +688,14 @@ suite("public tables", () => {
   it("does not buy a second seat when the request is retried with a fresh id", async () => {
     const userId = await createUser();
     const token = signToken(userId);
-    const roomId = await seatedAt(token);
+    const { roomId, take: first } = await takeAPublicSeat(token);
 
-    const body = { action: "JOIN_PUBLIC_TABLE", roomId };
-    const first = await call("create-session", token, {
-      ...body,
-      clientRequestId: crypto.randomUUID(),
-      clientSentAt: iso(),
-    });
     // A DIFFERENT client id, which is what a retry after a dropped response
     // looks like. The idempotency key is derived from the game and the player,
     // never from this, so it must still charge only once.
     const retry = await call("create-session", token, {
-      ...body,
+      action: "JOIN_PUBLIC_TABLE",
+      roomId,
       clientRequestId: crypto.randomUUID(),
       clientSentAt: iso(),
     });
@@ -690,14 +709,8 @@ suite("public tables", () => {
   it("returns the stack when the player leaves", async () => {
     const userId = await createUser();
     const token = signToken(userId);
-    const roomId = await seatedAt(token);
-
-    const take = await call("create-session", token, {
-      action: "JOIN_PUBLIC_TABLE",
-      clientRequestId: crypto.randomUUID(),
-      roomId,
-      clientSentAt: iso(),
-    });
+    const { take } = await takeAPublicSeat(token);
+    expect(take.status, take.raw).toBe(200);
     expect(take.body.walletBalance).toBe(23_000);
 
     const cashOut = await call("create-session", token, {
