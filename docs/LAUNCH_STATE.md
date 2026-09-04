@@ -3,6 +3,10 @@
 **Current Phase:** 12 — Production Release Candidate (EXTERNAL BLOCKER)
 **Last Completed Phase:** 11 — Adversarial QA / E2E / CI
 (**PASS, 2026-09-03**; see `docs/phase-reports/phase-11.md`)
+**Phase 11 — PASS (independently reverified, 2026-09-04)** —
+`docs/phase-reports/phase-11-verification.md`. Every phase-11 finding re-checked
+and F-10 re-proved by reverting it in the running function; three further product
+defects found on the path that fix opened up, and fixed.
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -26,6 +30,7 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 9 — Daily / Leaderboards / Cosmetics | **PASS** | Five defects fixed, each proved to fail by reverting it in the running system. The "18 vs 20" intermittent was REPRODUCED on purpose against the real functions and is now a regression test; a bankrupt daily attempt could never end; the challenge took a second live seat and hid the first; a mid-challenge reshuffle would have come from the CSPRNG; and the seed was never published, so the commitment could not be checked by anybody. |
 | 10 — Backend/API Security | **PASS** | Six findings, five fixed and each proved to fail by reverting it in the running system. `tournament_entries` was readable by EVERY authenticated account — 152 rows of live stacks and prizes — and the IDOR sweep that classified it "a stranger must see NONE of it" passed on an empty fixture; `service_role` could mint a million chips through `/rest/v1/rpc/` in one request; the app shipped a microphone permission for a game that never records. |
 | 11 — Adversarial QA / E2E / CI | **PASS** | Ten defects fixed, each proved to fail by reverting it in the running system. A leaderboard page had no ceiling and answered `p_limit=2147483647` with every ranked row; one account registered **200 push devices in 1.9 s**, and each is an outbound message per notification; `search_players` was an unmetered directory dump — **108 calls enumerated 445 accounts** — whose LIKE metacharacters were unescaped; a notification payload was interpolated into a router path; the Practice assistance pills drew their labels OUTSIDE the pill at accessibility text sizes; and a cash-out the server deferred settled the chips and left the player on a dead screen that had to be force-quit. The `decode-uri-component` advisory phase 10 deferred was measured and found **not runtime-reachable** — the guard written for it was deleted rather than shipped. The two-simulator public-table lifecycle phase 7 deferred was walked end to end. **CI ran on a real runner for the first time, and kept earning its place: a commit that changed two MARKDOWN FILES failed the database job**, on two assertions that treated a shared public table as the test's own — the escrow of a table three players were sitting at, and a room strangers had already finished with. The load generator written to reproduce that then produced **eleven HTTP 500s from the product**: a public table allocated seat indices as `max + 1` over every row it had ever held against a `0..6` check, so the eighth player ever to sit there was refused by a constraint — and the table stayed active, advertising free seats and answering 500 to everyone, for the rest of its life. It failed both jobs at first: every function in `public` shipped executable by `anon` on any database whose migrations are applied by the role a current CLI uses — the foundation revoked default privileges on functions in `private` and, despite saying "the same protection for `public`", not in `public` — the app-art test compared compressed PNG bytes, which Node's bundled zlib makes platform-dependent; thirteen packages had drifted from the versions Expo SDK 57 expects; and the app could only be bundled on a machine that had bundled before. The device QA was then re-run against a **Release** build, because the one crash seen in this phase was a data race in `expo-notifications`' unsynchronised process-global delegate array — real, and reachable only by a debug build standing up several React Native runtimes while it waits on Metro. |
+| 11 — reverification | **PASS** (independent) | Phase 11's ledger re-checked item by item and F-10 re-proved by reverting the allocator in the running function — the eighth arrival answered HTTP 500 again. Three further defects, all on the path that fix opened up: **a public table's engine seat list grew without bound** (twelve seats on a five-seat table after ten ordinary arrivals and departures, the snapshot 2,040 B → 6,442 B, every departed player drawn on every remaining screen under "Disconnected — their clock keeps running"); **leaving left a `matched` matchmaking reservation behind**, so the next search was answered "Seat found" for a room the player was no longer a member of and the buy-in came back HTTP 403 for two minutes; and underneath that, **a returning player was seated on their own departed row** with no buy-in taken, because `findSeat` answers with the latest seat whatever its status and the buy-in key was derived from the player rather than the seat. Two phase-11 tests strengthened: a flow assertion that could not fail, and four flows tapping non-optionally inside a conditional `repeat`. |
 | 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
 
 **IN PROGRESS here means:** substantial implementation exists and is locally
@@ -33,6 +38,47 @@ green — it does NOT mean this launch sequence has validated or signed the phas
 off. Treat every one as unverified until its own phase runs.
 
 ---
+
+## What the phase 11 REVERIFICATION established that a later phase must not undo
+
+- **A LIST THAT ONLY EVER GROWS IS A DEFECT AS SOON AS SOMETHING STOPS CAPPING
+  IT.** `joinPublicTable` appended every arrival to the engine's seat list and
+  nothing ever removed one — harmless only because the seat-index defect answered
+  the eighth arrival HTTP 500 first. With that fixed, ten ordinary arrivals and
+  departures left TWELVE seats on a five-seat table, the snapshot grew 2,040 B →
+  6,442 B, and each departed player was drawn on every remaining screen under
+  "Disconnected — their clock keeps running". A newcomer takes a VACATED SLOT
+  now, exactly as they take the seat index a departure freed; `isVacatedSeat` is
+  the predicate and it requires no chips, no wager and no hand as well as
+  `connected: false`, because a player who leaves MID-HAND is disconnected while
+  their committed hand is still resolving.
+- **A DEPARTURE ENDS THE RESERVATION THAT PRODUCED THE SEAT.**
+  `release_room_seat` released the room membership and left `matchmaking_queue`
+  reading `matched` at the room just left, and `join_matchmaking` hands a live
+  entry back rather than enrolling again — so a player who left a public table
+  and searched again was shown "Seat found" for a room they were no longer a
+  member of and refused the buy-in HTTP 403 for the two minutes housekeeping
+  takes. Closed at BOTH ends: where the reservation is spent, and where it is
+  read back.
+- **`findSeat` ANSWERS WITH THE LATEST SEAT WHATEVER ITS STATUS**, deliberately,
+  so that a cash-out can find its own idempotency record on a retry — which means
+  every OTHER caller has to say whether it wants a LIVE one. `joinPublicTable`
+  did not, and handed a returning player their departed row. And the buy-in key
+  had to move with it: keyed on the player, a second visit found the first
+  visit's ledger row and skipped the debit. It is `public_buy_in:<game>:<seatId>`
+  now, the same shape as the cash-out key.
+- **AN ASSERTION THAT PASSES BEFORE THE THING IT TESTS HAPPENS IS NOT AN
+  ASSERTION.** `two-client-public-leave.yaml` ended by asserting the matchmaking
+  tier chooser was visible, "asked of the SERVER" — but that screen does not poll
+  until a tier is tapped, so the chooser is what a cold mount shows whatever the
+  server thinks. It takes the seat now.
+- **A TAP GUARDED BY `when` IS TWO READS OF THE SCREEN, NOT ONE.** Four flows
+  tapped non-optionally inside a conditional `repeat`; the tap that LANDS
+  navigates away, and the next iteration's `when` evaluated against a hierarchy
+  captured mid-transition sends the tap at a control that has gone.
+  `practice-hand` failed exactly that way on a Release build at load 5.6, with
+  the failure screenshot showing the Practice table already open. The two-client
+  flows already carried `optional: true` for this reason; the rest do now.
 
 ## What phase 11 established that a later phase must not undo
 
@@ -430,8 +476,27 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260904120000_least_privilege_and_entry_visibility.sql`
-(54 migrations, all applied from scratch cleanly on 2026-09-02).
+`supabase/migrations/20260907120000_leaving_clears_the_reservation.sql`
+(57 migrations, all applied from scratch cleanly on 2026-09-04, followed by 28
+pgTAP files and 576 assertions).
+
+The phase 11 reverification added one:
+
+- `20260907120000_leaving_clears_the_reservation.sql` — `release_room_seat`
+  cancels the matchmaking reservation that produced the seat it is releasing,
+  and `join_matchmaking` will not hand back a `matched` entry whose room
+  membership has gone. Both bodies are taken from the LAST migration to define
+  each function. `27_leaving_clears_the_reservation.test.sql` pins both ends and
+  the reconnect the second one must not break; reverting both bodies fails 3 of
+  its 9 assertions.
+
+Phase 11 added two:
+
+- `20260905120000_bounded_client_reads.sql` — the leaderboard page ceiling, the
+  per-account push-token ceiling with LRU eviction, and `search_players`
+  escaping its `LIKE` metacharacters and spending a `player_search` limit.
+- `20260906120000_seat_index_reuse.sql` — the partial unique index over
+  `status <> 'left'`, so a seat index freed by a departure is reusable.
 
 Phase 10 added one:
 
@@ -651,7 +716,46 @@ Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
 project, APNs/FCM credentials, a physical iOS device. Documented in
 `docs/RELEASE.md`. None blocks Phases 1–11.
 
-## Last known green verification — 2026-09-02 (end of phase 10)
+## Last known green verification — 2026-09-04 (phase 11 reverification)
+
+Against a database reset from empty (57 migrations) with `functions serve`
+restarted first, and carrying this pass's three fixes:
+
+```
+npx tsc --noEmit                    exit 0
+npm run lint                        0 errors, 37 warnings (baseline unchanged)
+npm run check:functions             all 3 Edge Functions typecheck
+npm run test:unit                 123 files / 2,399 tests PASS  (phase 11: 122 / 2,395)
+npm run test:server                23 files /   302 tests PASS  (phase 11:  23 /   300)
+supabase db reset                  57 migrations applied from empty, exit 0
+supabase test db                   28 files /   576 assertions PASS (phase 11: 27 / 567)
+npm run test:coverage              per-area gates pass, exit 0
+npm run contrast:check             50 pairings, 0 failing (+2 Increased-contrast substitutes)
+npm run benchmark                  781 µs/hand at load 4.9; heap +11 KB over 50 hands
+npx expo-doctor@latest             21/21 checks passed
+npm run bundle:check               exit 0
+```
+
+Maestro, **Release build**, two simulators (iPhone 17 Pro + 17 Pro Max, iOS
+26.5), **31 runs and no Arc21 crash report written by any of them**: the
+two-simulator public-table lifecycle twice end to end, `practice-hand`,
+`practice-analysis`, `practice-resume`, `career-node`, `online-table`,
+`every-screen-online`, `mc-sign-in` ×3, plus four hostile deep links, the
+accessibility labels asserted on the rendered table, a hand-edited local store
+proved unable to reach the server, and five cold starts (4.6–6.8 s to a rendered
+Home on this host).
+
+One server-suite failure was seen and diagnosed rather than retried: the 32 MB
+body test timed out in a run whose runtime log carried 48 CPU soft-limit events,
+and the same request measured **HTTP 400 in 824–1,845 ms** against a fresh
+`functions serve`, with the whole suite then 302/302.
+
+**CI on the phase-11 HEAD (`98c6301`) is green on both jobs — run 33808002785.**
+This pass's own fixes have NOT been through the remote runner, because it does
+not push; they are validated locally against the same gates, including the
+migration applied from empty.
+
+## Previous green verification — 2026-09-02 (end of phase 10)
 
 Against a database reset from empty, with `functions serve` already up:
 

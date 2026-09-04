@@ -1242,6 +1242,54 @@ leading array elements differ and `[ 'd5-4H,…', …(17) ]` when they agree, so
 numbers in the sentence depend on the shoe. Assert the lengths, which are stable,
 and record the rendering in a comment.
 
+**FIXING A CEILING CAN REMOVE ONE NOBODY KNEW WAS THERE.** `JOIN_PUBLIC_TABLE`
+appended every arrival to the engine's seat list and removed nothing — harmless
+only because the `max(seat_index) + 1` defect answered the EIGHTH arrival HTTP
+500 first. With that fixed, ten ordinary arrivals and departures at a five-seat
+casual table left **twelve seats** in the state persisted under lock on every
+command, the snapshot grew from 2,040 to 6,442 bytes, and each departed player
+was drawn on every remaining player's screen with their name, a zero stack and
+"Disconnected — their clock keeps running." A newcomer takes a VACATED SLOT now,
+exactly as they take the seat INDEX a departure freed. `isVacatedSeat` is the
+predicate and it needs all five conditions: no chips, no wager, no insurance, no
+hand, AND `connected: false` — a player who leaves MID-HAND is disconnected while
+their committed hand is still resolving, and a tournament seat eliminated with
+chips on it is a record rather than a free slot. **When you remove the thing that
+was refusing, ask what it was accidentally bounding.**
+
+**A DEPARTURE MUST END THE RESERVATION THAT PRODUCED THE SEAT.**
+`release_room_seat` set `room_members` to `left` and left `matchmaking_queue`
+reading `matched` at the room just left; `join_matchmaking` returns a live entry
+rather than enrolling again — correctly, because that is how a reconnect finds
+the room it was already given. So a player who left a public table and searched
+again was shown "Seat found" for a table they were no longer a member of, and the
+buy-in came back **HTTP 403 NOT_A_PARTICIPANT** with the "Take the seat" control
+still on screen, over and over, until `expire_stale_queue_entries` retired the
+reservation TWO MINUTES later. Closed at both ends, because they answer different
+questions: where the reservation is spent, and where it is read back.
+
+**`findSeat` ANSWERS WITH THE LATEST SEAT WHATEVER ITS STATUS, SO EVERY CALLER
+MUST SAY WHETHER IT WANTS A LIVE ONE.** That is deliberate — the command that
+closes a table also ends the seat and has to find its own idempotency record on a
+retry — and `joinPublicTable` did not say, so a returning player was handed their
+departed row: `status = 'left'`, stack 0, HTTP 200, and their next command
+refused `SESSION_CLOSED` on a table screen with nothing on it. The buy-in key had
+to move with the fix: keyed `public_buy_in:<game>:<userId>`, the second visit
+found the FIRST visit's ledger row and skipped the debit, which is a funded seat
+nobody paid for. It is `<game>:<seatId>` now — the same shape as
+`cashOutKey(gameId, seatId)`, and a retry still lands on the same live seat and
+therefore the same key.
+
+**A TAP GUARDED BY `when` IS TWO READS OF THE SCREEN, NOT ONE.** A
+`repeat` around `runFlow when: visible X → tapOn X` looks self-limiting: the tap
+that lands navigates away, so later iterations skip. They skip only if the `when`
+is evaluated AFTER the transition. `practice-hand.yaml` failed on a Release build
+at load 5.6 with `Element not found: home-practice` and a failure screenshot
+showing the Practice table already open — the `when` saw Home, the tap found
+nothing. `optional: true` on the tap is the fix, and it weakens nothing, because
+what the block proves is the assertion that follows it. The two-client flows
+already carried it; four others did not.
+
 ---
 
 ## Product rules that are easy to get wrong

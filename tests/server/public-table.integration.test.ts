@@ -1787,3 +1787,174 @@ suite("three accounts play a public table through", () => {
     expect(Number(closed[0]?.escrow_chips)).toBe(0);
   }, 300_000);
 });
+
+// ---------------------------------------------------------------------------
+// §H — turnover: the seat a departure frees, and the reservation it leaves
+// ---------------------------------------------------------------------------
+
+suite("a public table survives its own turnover", () => {
+  /**
+   * One replacement player, matched into a table that already has somebody at
+   * it. `poll_matchmaking` joins the oldest public room with room in it, so a
+   * lone newcomer needs no partner — but allocation is GLOBAL, so they can
+   * legitimately land somewhere else. Such an attempt is abandoned rather than
+   * retried into, exactly as `openPublicTable` abandons a contaminated one.
+   */
+  async function replacementAt(roomId: string): Promise<Seated> {
+    let lastSeen: unknown = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const player = await createPlayer();
+      const enrolled = await rpc(player.token, "join_matchmaking", { p_tier: "casual" });
+      if (enrolled.status !== 200) throw new Error(`join_matchmaking: ${enrolled.status}`);
+      for (let poll = 0; poll < 8; poll += 1) {
+        const polled = one(await rpc(player.token, "poll_matchmaking").then((r) => r.body)) as {
+          status?: string;
+          room_id?: string | null;
+        } | null;
+        lastSeen = polled;
+        if (polled?.status === "matched" && polled.room_id === roomId) {
+          return await takeSeat(player, roomId);
+        }
+        if (polled?.status === "matched") break; // somebody else's table; leave them there
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+    }
+    throw new Error(`no replacement reached ${roomId}; last poll ${JSON.stringify(lastSeen)}`);
+  }
+
+  it("seats the eighth arrival, and never carries more seats than it has", async () => {
+    /*
+     * TWO DEFECTS IN ONE WALK, both of them about a seat that has been VACATED.
+     *
+     *   1. `JOIN_PUBLIC_TABLE` allocated `max(seat_index) + 1` over every row
+     *      the session had ever held, against `check (seat_index between 0 and
+     *      6)`. The EIGHTH arrival was refused by the check and the function
+     *      turned that into HTTP 500 — with seats visibly free, for the life of
+     *      the table, because a public table stays `active` while anybody is at
+     *      it and matchmaking keeps offering it. `26_seat_index_reuse.test.sql`
+     *      pins the constraint and the allocator; this asks the FUNCTION.
+     *
+     *   2. With that fixed, every arrival was APPENDED to the engine's seat
+     *      list and nothing was ever removed. Measured before the fix: twelve
+     *      seats on a five-seat table after ten ordinary arrivals and
+     *      departures, the snapshot growing from 2,040 to 6,442 bytes, and ten
+     *      departed players drawn on every remaining screen under "Disconnected
+     *      — their clock keeps running."
+     *
+     * Nine arrivals: two openers and seven replacements, one past the boundary
+     * the first defect had. `MAX_SEATS` rather than an exact count, because
+     * allocation is global and a stranger may legitimately sit down mid-test —
+     * the invariant is that the list never exceeds what the table seats.
+     */
+    const opened = await openPublicTable(2);
+    const { gameId, roomId } = opened[0] as Seated;
+    let resident = opened[0] as Seated;
+    let leaving = opened[1] as Seated;
+    let arrivals = 2;
+
+    for (let cycle = 0; cycle < 7; cycle += 1) {
+      const out = await cashOut(leaving);
+      expect(out.status, `cycle ${cycle}: ${out.raw.slice(0, 200)}`).toBe(200);
+
+      const replacement = await replacementAt(roomId);
+      arrivals += 1;
+      expect(replacement.gameId).toBe(gameId);
+
+      const state = await snapshot(replacement.player, gameId);
+      expect(state.seats.length, `after ${arrivals} arrivals`).toBeLessThanOrEqual(MAX_SEATS);
+
+      leaving = resident;
+      resident = replacement;
+    }
+
+    expect(arrivals).toBe(9);
+
+    // And the DATABASE agrees about who is actually at it: live seats hold
+    // distinct indices inside the 0..6 the column allows, however many rows of
+    // history sit behind them.
+    const rows = (await readAs(
+      resident.player.token,
+      `game_session_seats?select=seat_index,status&game_session_id=eq.${gameId}`,
+    )) as { seat_index: number; status: string }[];
+    const live = rows.filter((row) => row.status !== "left").map((row) => row.seat_index);
+    expect(rows.length).toBeGreaterThanOrEqual(arrivals);
+    expect(new Set(live).size).toBe(live.length);
+    for (const index of live) {
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(index).toBeLessThanOrEqual(6);
+    }
+
+    await closeTable([resident, leaving]);
+  }, 300_000);
+
+  it("lets a player who left come back, and charges them again to sit down", async () => {
+    /*
+     * A REAL PATH, and it was refused for two minutes at a time.
+     *
+     * Leaving set `room_members.status = 'left'` and left `matchmaking_queue`
+     * reading `matched` at the room just left. `join_matchmaking` returns a live
+     * entry rather than enrolling again — correctly, because that is how a
+     * reconnect finds the room it was already given — so the next search
+     * answered "Seat found" for a table the player was no longer a member of and
+     * the buy-in came back HTTP 403 NOT_A_PARTICIPANT, over and over, until
+     * `expire_stale_queue_entries` retired the reservation two minutes later.
+     *
+     * And underneath it a second one: `findSeat` answers with the latest seat
+     * row WHATEVER its status, so the returning player was handed their departed
+     * seat — `left`, stack 0 — and the buy-in key derived from the player found
+     * the first visit's ledger row and skipped the debit. Both halves are
+     * asserted here: a NEW seat, and a SECOND buy-in.
+     */
+    const opened = await openPublicTable(2);
+    const { gameId, roomId } = opened[0] as Seated;
+    const staying = opened[0] as Seated;
+    const returning = opened[1] as Seated;
+
+    expect(await balanceOf(returning.player)).toBe(OPENING_GRANT - CASUAL.buyIn);
+    const out = await cashOut(returning);
+    expect(out.status, out.raw.slice(0, 200)).toBe(200);
+    const afterLeaving = await balanceOf(returning.player);
+
+    // The same tap as before: Play, Public Table, these stakes.
+    const requeued = await rpc(returning.player.token, "join_matchmaking", { p_tier: "casual" });
+    expect(requeued.status, JSON.stringify(requeued.body)).toBe(200);
+    let matched: { status?: string; room_id?: string | null } | null = null;
+    for (let poll = 0; poll < 8 && matched?.status !== "matched"; poll += 1) {
+      matched = one(await rpc(returning.player.token, "poll_matchmaking").then((r) => r.body)) as {
+        status?: string;
+        room_id?: string | null;
+      } | null;
+      if (matched?.status !== "matched") await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    // Whichever room they were offered, taking the seat must WORK. The defect
+    // was that the room offered was the one they had just left.
+    expect(matched?.status).toBe("matched");
+    const back = await takeSeat(returning.player, matched?.room_id as string);
+    expect(back.gameId).toBeTruthy();
+    expect(back.seatId).not.toBe(returning.seatId);
+    expect(await balanceOf(returning.player)).toBe(afterLeaving - CASUAL.buyIn);
+
+    const buyIns = (await ledgerOf(returning.player)).filter(
+      (row) => row.reason === "table_buy_in",
+    );
+    expect(buyIns).toHaveLength(2);
+
+    // Whatever table they came back to, its escrow is the sum of the stacks
+    // standing on it — nothing minted on the way in, nothing stranded.
+    const session = (await readAs(
+      returning.player.token,
+      `game_sessions?select=escrow_chips&id=eq.${back.gameId}`,
+    )) as { escrow_chips: number }[];
+    const stacks = (await readAs(
+      returning.player.token,
+      `game_session_seats?select=stack,status&game_session_id=eq.${back.gameId}`,
+    )) as { stack: number; status: string }[];
+    const held = stacks
+      .filter((row) => row.status !== "left")
+      .reduce((total, row) => total + Number(row.stack), 0);
+    expect(Number(session[0]?.escrow_chips)).toBe(held);
+
+    await closeTable(back.gameId === gameId ? [staying, back] : [staying]);
+    if (back.gameId !== gameId) await closeTable([back]);
+  }, 300_000);
+});

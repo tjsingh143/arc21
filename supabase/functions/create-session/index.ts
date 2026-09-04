@@ -28,6 +28,7 @@ import {
   PRIVATE_TABLE_STACK,
   privateTableRules,
   randomIntBelow,
+  isVacatedSeat,
   type GameTiming,
 } from "../../../shared/blackjack/index.js";
 import {
@@ -600,11 +601,6 @@ async function joinPublicTable(
   const gameId = room.game_session_id ?? crypto.randomUUID();
   log.gameId = gameId;
 
-  // Derived from the game and the player. A retry with a new request id lands
-  // on the same key and returns the first result instead of buying twice.
-  const idempotencyKey = `public_buy_in:${gameId}:${userId}`;
-  const existing = await findLedgerEntry(tx, idempotencyKey);
-
   if (!room.game_session_id) {
     await tx`
       insert into public.game_sessions
@@ -621,7 +617,22 @@ async function joinPublicTable(
   // `deno check` reports and `tsconfig.json` cannot see, because
   // `supabase/functions` is excluded from it.
   const existingSeat = await findSeat(tx, gameId, userId);
-  let seatId = existingSeat?.id ?? null;
+  /*
+   * A SEAT THIS PLAYER HAS LEFT IS NOT A SEAT THEY STILL HAVE.
+   *
+   * `findSeat` answers with the latest row whatever its status, deliberately —
+   * the command that closes a table also ends the seat, and it has to be able
+   * to find its own idempotency record on a retry. Reusing that row HERE meant
+   * a player who cashed out and was matched back into the same table (which
+   * matchmaking does, correctly: it is the oldest table with room) was handed
+   * their departed seat back — `status = 'left'`, stack 0 — and their next
+   * command was refused SESSION_CLOSED. Measured: HTTP 200, seat row still
+   * `left:0`, and the table screen with nothing on it.
+   *
+   * Returning is a NEW visit: a new seat, and a new buy-in, which is why the
+   * key below is derived from the seat rather than from the player.
+   */
+  let seatId = existingSeat && existingSeat.status !== "left" ? existingSeat.id : null;
   if (!seatId) {
     /*
      * NEVER OVERFILL THE TABLE, and check it here rather than trusting the
@@ -682,6 +693,23 @@ async function joinPublicTable(
   }
   log.seatId = seatId;
 
+  /*
+   * DERIVED FROM THE SEAT, not from the client's request id and not from the
+   * player.
+   *
+   * A retry with a fresh request id must not buy a second seat — and it cannot:
+   * the live seat found above gives the same key, so the ledger answers with
+   * the first movement instead of making another. The seat rather than the
+   * PLAYER, because the same player may sit at one table twice: they left, the
+   * chips went back to their wallet, and sitting down again is a purchase. Keyed
+   * on the player, the second visit found the first visit's ledger row, skipped
+   * the debit and dealt them a funded seat nobody had paid for.
+   *
+   * The same shape as `cashOutKey(gameId, seatId)`, for the same reason.
+   */
+  const idempotencyKey = `public_buy_in:${gameId}:${seatId}`;
+  const existing = await findLedgerEntry(tx, idempotencyKey);
+
   const now = serverNow();
   const locked = room.game_session_id ? await lockEngineState(tx, gameId) : null;
 
@@ -699,37 +727,62 @@ async function joinPublicTable(
     await insertEngineState(tx, gameId, opened.state);
   } else if (!locked.state.seats.some((candidate) => candidate.seatId === seatId)) {
     /*
-     * A later arrival. The seat is appended with its own funded stack and the
+     * A later arrival. The seat is added with its own funded stack and the
      * version bumped, so every client refetches. The specification says a
      * mid-hand joiner plays from the next BETTING_OPEN — which is what happens
      * naturally: the engine deals to seats that have locked a bet, and this one
      * has not.
      */
+    const newcomer = {
+      seatId,
+      userId,
+      displayName: profile.displayName,
+      stack: tier.buyIn,
+      originalBet: 0,
+      insuranceBet: 0,
+      // Present, not omitted. Every read path happens to treat `undefined`
+      // as "not pending", which is the right answer for a seat that was not
+      // dealt in — but a persisted seat missing a required field is a state
+      // that only stays harmless by luck, and the engine resets this to
+      // exactly this value at the start of the next hand anyway.
+      insuranceDecision: "NOT_OFFERED" as const,
+      hands: [],
+      currentHandIndex: 0,
+      connected: true,
+      sittingOut: false,
+      betLocked: false,
+    };
+
+    /*
+     * A VACATED SLOT IS REUSED, exactly as the seat INDEX above is.
+     *
+     * Appending unconditionally is what the previous version did, and it was
+     * bounded only by the defect this file's seat allocator used to have: the
+     * eighth arrival was answered HTTP 500, so no table ever held more than
+     * seven engine seats. With that fixed the list grew with every arrival for
+     * the life of the table — measured at TWELVE seats on a FIVE-seat table
+     * after ten ordinary arrivals and departures, ten of them players who had
+     * gone. That list is persisted under lock on every command, sent back in
+     * every response, broadcast to every subscriber, and drawn on every
+     * remaining player's screen.
+     *
+     * `isVacatedSeat` is the engine's own answer to "has this seat left,
+     * completely" — no chips, no wager, no hand, `connected` false — so a
+     * player who left MID-HAND keeps their slot until the wager they committed
+     * has resolved. The list is therefore bounded by `max_seats`: a slot is
+     * only appended when every existing one is live, and the occupancy guard
+     * above has already refused TABLE_FULL unless a live seat is missing.
+     */
+    const vacated = locked.state.seats.findIndex(isVacatedSeat);
+    const seats =
+      vacated >= 0
+        ? locked.state.seats.map((seat, index) => (index === vacated ? newcomer : seat))
+        : [...locked.state.seats, newcomer];
+
     await persistEngineState(tx, gameId, {
       ...locked.state,
       version: locked.state.version + 1,
-      seats: [
-        ...locked.state.seats,
-        {
-          seatId,
-          userId,
-          displayName: profile.displayName,
-          stack: tier.buyIn,
-          originalBet: 0,
-          insuranceBet: 0,
-          // Present, not omitted. Every read path happens to treat `undefined`
-          // as "not pending", which is the right answer for a seat that was not
-          // dealt in — but a persisted seat missing a required field is a state
-          // that only stays harmless by luck, and the engine resets this to
-          // exactly this value at the start of the next hand anyway.
-          insuranceDecision: "NOT_OFFERED",
-          hands: [],
-          currentHandIndex: 0,
-          connected: true,
-          sittingOut: false,
-          betLocked: false,
-        },
-      ],
+      seats,
     });
   }
 

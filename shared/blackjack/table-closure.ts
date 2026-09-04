@@ -54,3 +54,52 @@ export function canCloseSeat(state: ClosableTable, seatId: string): boolean {
   const seat = state.seats.find((candidate) => candidate.seatId === seatId);
   return seat ? !seat.betLocked : true;
 }
+
+/** The least a caller must hold to ask whether a seat has been vacated. */
+export interface VacatableSeat {
+  readonly connected: boolean;
+  readonly stack: number;
+  readonly originalBet: number;
+  readonly insuranceBet: number;
+  readonly hands: readonly unknown[];
+}
+
+/**
+ * Whether this seat is an EMPTY SLOT — a player who has left and whose chips
+ * have already gone back where they came from.
+ *
+ * The mirror of `canCloseSeat`: that one answers "may this seat leave", and
+ * this one answers "has it, completely". The state described here is exactly
+ * what `settleTableClosure` leaves behind — nothing staked, no hand, no chips,
+ * and `connected` false, which the reducer's own comment defines as departed
+ * rather than flaky ("`connected` is only ever cleared by LEAVE, by a table
+ * closure or by a tournament elimination, and nothing sets it back").
+ *
+ * ALL FIVE CONDITIONS MATTER, and the ones about money are the load-bearing
+ * ones. A player who leaves MID-HAND is `connected: false` immediately while
+ * their committed hand goes on resolving — "leaving is never a way to escape a
+ * committed wager" — so a slot is only free once that hand is over and the
+ * stack has been returned. A tournament player eliminated with chips still on
+ * the seat is excluded by `stack`, because the result screen reports the
+ * bankroll they went out on.
+ *
+ * WHY THIS EXISTS. A public table takes new players for as long as it has room,
+ * and until phase 11 the eighth arrival was answered HTTP 500 — which
+ * accidentally bounded how many departed seats one table could accumulate.
+ * With that fixed, `joinPublicTable` appending every arrival meant the engine's
+ * seat list, the state persisted under lock on every command, and the payload
+ * every client renders all grew without limit: measured at twelve seats on a
+ * five-seat table after ten ordinary arrivals and departures, ten of them
+ * players who had gone, each drawn on the remaining players' screens under
+ * "Disconnected — their clock keeps running". A newcomer takes a vacated slot
+ * instead, the same way they take the seat INDEX a departure freed.
+ */
+export function isVacatedSeat(seat: VacatableSeat): boolean {
+  return (
+    !seat.connected &&
+    seat.stack === 0 &&
+    seat.originalBet === 0 &&
+    seat.insuranceBet === 0 &&
+    seat.hands.length === 0
+  );
+}

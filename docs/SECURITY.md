@@ -370,7 +370,7 @@ And over PostgREST, against the constraints rather than the application:
 | a bidi override inside `display_name` | accepted and **sanitised**: the override is stripped by `sanitise_display_name` and the remaining text stored |
 | `join_private_room('; drop table public.wallets; --')` | 200 with a null row — the same answer an unknown code gets — and `public.wallets` still there afterwards, checked rather than assumed |
 | `search_players('%')` | 0 rows; a query under two characters returns nothing by design |
-| `search_players('%_%')` | 25 rows, the function's own cap. `like` metacharacters are data, not structure |
+| `search_players('%_%')` | **0 rows.** The row here used to read "25 rows, the function's own cap", which was true and stopped being true in phase 11: `%` and `_` are escaped now, so the query is matched as the three literal characters and nothing has that handle. Re-measured against the running stack |
 
 **The request body is bounded on what it RETAINS, not on what it is told.**
 `MAX_BODY_BYTES` is 8 KB and `readJsonBody` reads the stream in chunks, counting
@@ -400,6 +400,7 @@ function bodies.
 | room creation | 5 / minute **and** 40 / hour | `create_private_room` |
 | room join attempts | 10 / minute | `join_private_room` |
 | matchmaking enrolments | 10 / minute, 60 / hour | `join_matchmaking` |
+| player search | 30 / minute **and** 300 / hour | `search_players` |
 | username change | 1 / 30 days | `guard_profile_username` trigger |
 | display-name change | 5 / hour | `guard_profile_display_name_rate` trigger |
 | game commands outside an active game | 30 / minute | `game-command` Edge Function |
@@ -407,6 +408,30 @@ function bodies.
 An action may carry more than one policy — that is how "room creation per
 minute/hour" is expressed without inventing two action names — and the tighter
 window refuses first.
+
+### What the search limit bounds, and what it does not
+
+`player_search` was added in phase 11 beside the metacharacter escaping, and it
+bounds **that function**: 108 calls of the form `%<c>`, `<c>%`, `_<c>` returned
+0 accounts and 78 × `PT429`. It is worth being exact about what it does not do,
+because the finding was written up as bounding a directory walk.
+
+`profiles` carries a `SELECT` grant to `authenticated` and the
+`profiles_select_visible` policy, so an authenticated caller can read the public
+half of the directory straight from PostgREST without going through
+`search_players` at all. Re-measured on this stack: one request returned **690
+profiles in 68 ms**, carrying `id`, `username`, `display_name`, `bio`,
+`avatar_url`, `country_code`, `level`, `xp` and the timestamps — and `anon` was
+refused `42501`, because the grant is to `authenticated` alone.
+
+That is the specification working rather than a hole: it asks for a searchable
+directory and for global boards of "avatar, display name, value", and a player
+nobody can find is a player nobody can befriend. A `private` or `friends-only`
+profile is NOT in that answer — the policy requires `privacy = 'public'` or a
+friendship — which is the distinction that matters, and it is the same one
+`player_public_profile` draws for statistics. PostgREST's `max_rows` (1,000)
+caps a single page; `offset` is not bounded, so the public directory is
+enumerable by design and the limit above is not what stops it.
 
 ### The window rolls
 

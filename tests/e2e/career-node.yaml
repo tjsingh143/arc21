@@ -51,7 +51,17 @@ appId: com.arc21.app
             visible:
               id: "onboarding-guest"
           commands:
+            # `optional`, because the branch above and this tap are two
+            # separate reads of the screen: the tap that LANDS navigates
+            # away, and a `when` evaluated against a hierarchy captured
+            # mid-transition then sends the next iteration at a control
+            # that has gone. Measured on a Release build at load 5.6 —
+            # `Element not found: home-practice` with the failure
+            # screenshot showing the Practice table, already open. The
+            # assertion that follows this block is what proves the tap
+            # landed; the tap itself never was the evidence.
             - tapOn:
+                optional: true
                 id: "onboarding-guest"
 
 - extendedWaitUntil:
