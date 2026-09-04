@@ -1280,6 +1280,29 @@ nobody paid for. It is `<game>:<seatId>` now — the same shape as
 `cashOutKey(gameId, seatId)`, and a retry still lands on the same live seat and
 therefore the same key.
 
+**`npm audit` IS ONE ROUTE TO THE ADVISORY DATA, NOT THE DATA.** Its
+`POST /-/npm/v1/security/advisories/bulk` endpoint can hang up while
+`registry.npmjs.org` itself answers 200 for package metadata — reproducibly, on
+this machine — and Dependabot alerts are disabled for this repository. The
+**GitHub Global Advisory Database** holds the same GHSA records, is reachable
+through `gh api /advisories?ecosystem=npm&affects=<name>@<version>`, and its
+`affects` filter accepts a comma-separated batch, so all 926 `name@version` pairs
+in `package-lock.json` can be asked about in a couple of minutes. Doing that found
+**four advisories nobody had looked at**, two of them high, on top of the one the
+phase-10 note is about.
+
+**AND A SOURCE MAP ANSWERS "IS IT IN THE APP" — THE DEPENDENCY TREE DOES NOT.**
+`image-size`, `@xmldom/xmldom` and `uuid@7` are all in the production dependency
+tree and none of them is in the bundle: they belong to `metro` (the bundler) and
+`@expo/config-plugins` (which runs at `expo prebuild`). `npx expo export
+--source-maps external` writes a `.map` whose `sources` array is every module
+Metro actually included — 2,641 of them — so reachability becomes a lookup rather
+than an argument. Grepping the Hermes `.hbc` for strings does NOT substitute: the
+attempt here found "heif" in a bundle containing no `image-size` at all. Keep a
+positive control in the check — `decode-uri-component` and `query-string` DO ship
+(bundled and dead), and a sweep that returns zero hits for everything has proved
+nothing.
+
 **A TAP GUARDED BY `when` IS TWO READS OF THE SCREEN, NOT ONE.** A
 `repeat` around `runFlow when: visible X → tapOn X` looks self-limiting: the tap
 that lands navigates away, so later iterations skip. They skip only if the `when`

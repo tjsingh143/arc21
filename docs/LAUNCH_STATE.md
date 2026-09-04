@@ -3,10 +3,14 @@
 **Current Phase:** 12 — Production Release Candidate (EXTERNAL BLOCKER)
 **Last Completed Phase:** 11 — Adversarial QA / E2E / CI
 (**PASS, 2026-09-03**; see `docs/phase-reports/phase-11.md`)
-**Phase 11 — PASS (independently reverified, 2026-09-04)** —
-`docs/phase-reports/phase-11-verification.md`. Every phase-11 finding re-checked
-and F-10 re-proved by reverting it in the running function; three further product
-defects found on the path that fix opened up, and fixed.
+**Phase 11 — PASS (independently reverified, 2026-09-04; remote evidence
+closed)** — `docs/phase-reports/phase-11-verification.md`. Every phase-11
+finding re-checked and F-10 re-proved by reverting it in the running function;
+three further product defects found on the path that fix opened up, and fixed.
+The fixes are commit **`fc5568e`**, pushed to `origin/phase11-adversarial-qa`
+(PR #1) and **green on CI run 33848267009, both jobs, first attempt** — 57
+migrations from empty, 576 pgTAP assertions, 302 server tests, 2,399 unit tests,
+expo-doctor 21/21 and the iOS bundle, all on the runner.
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -642,6 +646,24 @@ Phase 6 added three:
 
 None blocking. Recorded observations, all assigned onward:
 
+0. **Four advisories in the BUILD toolchain, none in the shipped bundle**
+   (2026-09-04, GitHub Global Advisory Database, all 926 lockfile versions).
+   `image-size@1.2.1` carries two **high** advisories
+   (`GHSA-w3rx-r6r6-pgpr`, `GHSA-5p2g-fcmc-qvqq` — infinite loops in the ICNS
+   and JXL/HEIF parsers) and is **unfixed upstream**: the advisory covers
+   `<= 2.0.2` and 2.0.2 is the latest published version. It reaches this project
+   through `metro`, the bundler, which reads the image assets in this
+   repository's own tree at build time. `@xmldom/xmldom` (0.8.14 / 0.9.11) and
+   `uuid@7.0.3` reach it through `@expo/config-plugins`, which runs at
+   `expo prebuild`. **None of the four is in the app**: Metro's own source map
+   for the shipped bundle lists 2,641 modules and none of them belongs to
+   `image-size`, `@xmldom/xmldom`, `uuid`, `metro`, `@expo/config-plugins` or
+   `xcode` — with `decode-uri-component` and `query-string` present as the
+   positive control. Nothing was upgraded: `metro` is pinned by
+   `react-native@0.86.3` and `@expo/config-plugins` by `expo-splash-screen`,
+   both the versions Expo SDK 57 expects and expo-doctor checks. → **Phase 12**
+   should re-run the sweep against whatever the SDK has moved to by then.
+
 1. **Local edge runtime is load-gated** (environment, not product). Above host
    load ~12 the runtime hits CPU soft/hard limits and retires workers; the
    stack-guard's 5 s probe then reports a healthy stack as absent. Measured:
@@ -750,10 +772,26 @@ body test timed out in a run whose runtime log carried 48 CPU soft-limit events,
 and the same request measured **HTTP 400 in 824–1,845 ms** against a fresh
 `functions serve`, with the whole suite then 302/302.
 
-**CI on the phase-11 HEAD (`98c6301`) is green on both jobs — run 33808002785.**
-This pass's own fixes have NOT been through the remote runner, because it does
-not push; they are validated locally against the same gates, including the
-migration applied from empty.
+**CI is green on both jobs for the reverification's own commit `fc5568e` — run
+33848267009**, first attempt, no post-push fix required. The runner reproduced
+every local number: 57 migrations applied from scratch (ending
+`20260907120000_leaving_clears_the_reservation.sql`), `Files=28, Tests=576` of
+pgTAP, 23 files / 302 server tests, 0 lint errors, 123 files / 2,399 unit tests,
+coverage gates green, expo-doctor 21/21, and the iOS bundle at 2,655 modules.
+The previous run 33808002785 covers the phase-11 HEAD `98c6301`.
+
+**Registry-backed dependency audit.** `npm audit` still cannot run here — the
+registry answers package metadata (HTTP 200) but its
+`POST /-/npm/v1/security/advisories/bulk` endpoint hangs up reproducibly
+(HTTP 000 after 30 s), and Dependabot alerts are disabled for the repository. The
+**GitHub Global Advisory Database** is reachable and was asked about all **926**
+`name@version` pairs in the committed lockfile: **six advisories**, two of them
+high (`image-size`, unfixed upstream at every published version), and **none of
+them in the shipped bundle** — proved from Metro's own source map, whose 2,641
+modules contain no `image-size`, `@xmldom/xmldom`, `uuid`, `metro`,
+`@expo/config-plugins` or `xcode`, and do contain `decode-uri-component` and
+`query-string` as the positive control. Full analysis in §Y of the verification
+report.
 
 ## Previous green verification — 2026-09-02 (end of phase 10)
 

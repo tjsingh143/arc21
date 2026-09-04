@@ -18,6 +18,15 @@ Verified commit: `98c6301` — *phase 11: record the CI progression through run
 10*, the tip of `phase11-adversarial-qa`, and the commit CI run **33808002785**
 is green on.
 
+**This pass's own fixes are commit `fc5568e`, and they are now on the remote and
+green on a runner of their own — run 33848267009, both jobs, first attempt.**
+The two evidence gaps the reverification recorded are closed in §X and §Y: the
+push and its CI run, and a registry-backed dependency audit that `npm audit`
+itself still cannot provide here.
+
+`.claude/RESUME.md` carries the same summary and is deliberately untracked —
+`.git/info/exclude` holds it, as the local resume checkpoint it is.
+
 ---
 
 ## What was checked, and how
@@ -40,7 +49,8 @@ claimed, the fix was reverted and the failure observed.
 | local tampering | the simulator's SQLite **hand-edited** and the app relaunched |
 | accessibility | asserted on the **rendered** Release build: "Dealer hidden card", `.* of (Spades\|Hearts\|Diamonds\|Clubs)`, "Add 100 chips" |
 | two-simulator public lifecycle | walked **twice**, end to end, on two Release builds and two real accounts |
-| CI | run **33808002785** on HEAD: both jobs green on a real runner |
+| CI | run **33848267009** on the reverified code itself (`fc5568e`): both jobs green on a real runner, first attempt |
+| dependency advisories | 926 lockfile versions asked of the **GitHub Global Advisory Database**; 6 advisories, **0 of them in the shipped bundle** — proved from Metro's own source map |
 
 ---
 
@@ -384,6 +394,14 @@ proves nothing. It passes: 6 tests.
 
 No known reachable high or critical dependency vulnerability remains.
 
+**Closed by a registry-backed sweep — see §Y, which supersedes this section's
+"cannot run here".** The npm advisory endpoint is still unreachable, but the
+GitHub Global Advisory Database is not, and it was asked about all 926
+`name@version` pairs in the committed lockfile. It agrees: `decode-uri-component
+0.2.2` is affected by `GHSA-vcc3-ghjq-m6fr` — recorded there as **moderate**, not
+high — and the sweep found four more advisories nobody had looked at, none of
+them reachable. The evidence is in §Y.
+
 ---
 
 ## G · Bounded work per request
@@ -712,6 +730,154 @@ degraded driver hierarchy, and one wrong assertion in my own tamper probe.
 
 ---
 
+## X · Pushed, and verified on the remote runner
+
+The reverification above was committed locally as **`fc5568e`** and left there,
+because that pass did not push. This section closes that gap and the one below
+it.
+
+**Pushed.** `git push origin HEAD:phase11-adversarial-qa` — a normal
+fast-forward from `98c6301`, no force, no rebase, no amend. The remote branch
+now contains `fc5568e`, and PR **#1** (`phase11-adversarial-qa` →
+`phase14-s2-security`) carries it.
+
+**CI on the exact pushed HEAD.** Not an older green run:
+
+```
+run   33848267009        event pull_request        sha fc5568e598b5ae45f7d2928e89e64757c857e192
+  pgTAP and server integration            success   07:20:27 -> 07:28:23
+  Lint, typecheck, unit tests, bundle     success   07:20:26 -> 07:37:10
+```
+
+Both jobs green first time — no retry, and no post-push fix was required. Every
+number the runner produced matches what this machine measured:
+
+| step | runner | this machine |
+|---|---|---|
+| migrations applied from scratch | 57, ending `20260907120000_leaving_clears_the_reservation.sql` | 57 |
+| pgTAP | `Files=28, Tests=576 … Result: PASS` | 28 / 576 |
+| server integration | 23 files / **302** tests | 23 / 302 |
+| lint | 0 errors, 37 warnings | same |
+| unit | 123 files / **2,399** tests | same |
+| coverage gates | 121 files / 2,373 tests, pass | pass |
+| expo-doctor | 21/21 | 21/21 |
+| bundle | `iOS Bundled … (2,655 modules)`, exported | exit 0 |
+
+That is the first time this project's new migration, its two new server
+regressions and its new pgTAP file have been applied and run by a runner from a
+clean checkout.
+
+---
+
+## Y · The registry-backed dependency audit
+
+The reverification recorded that `npm audit` could not reach the registry and
+validated the advisory from the installed tree instead. That is now closed —
+partly.
+
+**What is still unavailable, precisely.** `registry.npmjs.org` itself is
+reachable from this machine (`GET /decode-uri-component` → **HTTP 200 in
+0.17 s**), but the endpoint `npm audit` posts to is not:
+
+```
+POST https://registry.npmjs.org/-/npm/v1/security/advisories/bulk  ->  HTTP 000 after 30.0 s
+npm warn audit request to …/advisories/bulk failed, reason: socket hang up
+npm error audit endpoint returned an error
+```
+
+Reproduced, not transient. GitHub's Dependabot alerts are the other configured
+route and they are **disabled for this repository** (`403 Dependabot alerts are
+disabled`). So `npm audit`'s own output remains unobtainable, and this report
+does not pretend otherwise.
+
+**What IS available, and was used.** The GitHub **Global Advisory Database** —
+the same corpus of GHSA records `npm audit` reports against — is reachable, and
+its `affects=<name>@<version>` filter answers about the **exact installed
+version** rather than about a range. Every one of the **926** distinct
+`name@version` pairs in the committed `package-lock.json` was submitted, in
+batches, with no errors.
+
+**Six advisories affect an exact version in the lockfile:**
+
+| GHSA | severity | package | installed | first patched |
+|---|---|---|---|---|
+| `GHSA-w3rx-r6r6-pgpr` | **high** | `image-size` (ICNS parser infinite loop) | 1.2.1 | **none — unfixed upstream** |
+| `GHSA-5p2g-fcmc-qvqq` | **high** | `image-size` (JXL/HEIF parser infinite loops) | 1.2.1 | **none — unfixed upstream** |
+| `GHSA-6gmq-8vp8-gcm6` | moderate | `@xmldom/xmldom` | 0.8.14 and 0.9.11 | 0.8.15 / 0.9.12 |
+| `GHSA-vcc3-ghjq-m6fr` | moderate | `decode-uri-component` | 0.2.2 | 0.5.0 |
+| `GHSA-w5hq-g745-h8pq` | moderate | `uuid` | 7.0.3 | 11.1.1 |
+| `GHSA-qmq6-f8pr-cx5x` | low | `uuid` (duplicate of the above) | 7.0.3 | 14.0.0 |
+
+**The dependency paths, walked rather than guessed:**
+
+```
+image-size@1.2.1      <- metro@0.84.4 <- @react-native/community-cli-plugin <- react-native
+@xmldom/xmldom@0.8.14 <- @expo/plist  <- @expo/config-plugins <- expo-splash-screen
+@xmldom/xmldom@0.9.11 <- plist <- simple-plist <- xcode <- @expo/config-plugins <- …
+uuid@7.0.3            <- xcode@3.0.1  <- @expo/config-plugins <- expo-splash-screen
+decode-uri-component  <- query-string@7.1.3 <- expo-router@57.0.18
+```
+
+Every one of the first four is **toolchain**: `metro` is the bundler and
+`@expo/config-plugins` runs at `expo prebuild`, writing `Info.plist` and
+`AndroidManifest.xml`. None of them is in the app.
+
+**Proved, not asserted.** Metro was asked to emit a source map for the shipped
+bundle, and its `sources` array is the list of every module it actually
+included — 2,641 of them:
+
+```
+image-size            -> 0 modules in the shipped bundle
+@xmldom/xmldom        -> 0
+xmldom                -> 0
+uuid                  -> 0
+metro                 -> 0
+@expo/config-plugins  -> 0
+xcode                 -> 0
+
+decode-uri-component  -> 1   /node_modules/decode-uri-component/index.js
+query-string          -> 1   /node_modules/query-string/index.js
+```
+
+The last two are the **positive control**: a sweep that found nothing at all
+would prove nothing about the method. It finds the one package that genuinely
+ships — and that one is the package phase 11 already showed to be bundled and
+dead, because the live resolver parses an inbound query with `URLSearchParams`
+and never calls `queryString.parse`.
+
+**So, per finding:**
+
+* **`image-size` ×2 (high).** Not in the shipped bundle. Reached only by Metro,
+  at build time, reading the image assets in this repository's own tree — which
+  are generated by `scripts/generate-app-art.ts` and byte-compared by a test, so
+  a hostile image would have to be committed here first. **No remediation
+  exists**: the advisory covers `<= 2.0.2`, `first_patched` is null, and 2.0.2
+  is the latest published version — so this is unfixed upstream rather than
+  declined here. `metro@0.84.4` requires `^1.0.2`, and `metro` is pinned by
+  `react-native@0.86.3`, the version Expo SDK 57 expects and expo-doctor checks.
+* **`@xmldom/xmldom` (moderate).** Not in the shipped bundle. Parses this
+  project's own plist and manifest during prebuild. Fixed versions exist but the
+  package is a transitive dependency of `@expo/config-plugins@57.0.9`, which the
+  SDK pins; forcing it is exactly the upgrade this closure was told not to run,
+  and it would buy nothing that ships.
+* **`uuid@7.0.3` (moderate + a duplicate low).** Not in the shipped bundle.
+  Generates Xcode project identifiers. The flaw is a missing bounds check when a
+  caller supplies its own `buf`; `xcode` supplies none.
+* **`decode-uri-component` (moderate).** In the bundle, and dead — re-verified
+  above and pinned by
+  `tests/deep-links/decode-uri-component-reachability.test.ts` with its own
+  positive control. Note the severity: GitHub records this as **moderate**, where
+  the phase-11 report calls it "the one runtime-reachable advisory" inherited
+  from phase 10's `npm audit` output. The characterisation that matters is
+  reachability, and it is not reachable.
+
+**Nothing was upgraded, and nothing needed to be.** No high or critical advisory
+affects code that ships, no reachable serious vulnerability was found, and the
+one advisory that touches shipped code is the one already investigated,
+measured on the device, and pinned by a test.
+
+---
+
 ## Defects found in this pass
 
 | id | defect | fix | regression |
@@ -727,10 +893,26 @@ degraded driver hierarchy, and one wrong assertion in my own tamper probe.
 
 ## Verdict
 
-**PHASE 11 REVERIFICATION: PASS.**
+**PHASE 11 REVERIFICATION: PASS**, with its two recorded evidence gaps closed.
 
 Phase 11's own findings stand. Three product defects on the path its best fix
 opened up were found, reproduced, fixed and re-proved, and two of its tests were
 strengthened where they could not have failed. No known release-blocking crash,
 race, replay, authorization or resource defect remains that this machine can
 reach.
+
+```
+CODE HEAD VERIFIED BY CI        fc5568e598b5ae45f7d2928e89e64757c857e192
+REMOTE BRANCH                   origin/phase11-adversarial-qa  (PR #1)
+REMOTE CI RUN                   33848267009 — both jobs success, first attempt
+POST-PUSH FIXES REQUIRED        none
+REGISTRY-BACKED DEPENDENCY AUDIT
+  npm advisories/bulk endpoint  UNAVAILABLE (HTTP 000 after 30 s, reproducible)
+  GitHub Dependabot alerts      UNAVAILABLE (disabled for this repository)
+  GitHub Global Advisory DB     RAN — 926 lockfile versions, 6 advisories,
+                                0 reachable in the shipped bundle
+KNOWN PHASE-11 RELEASE-BLOCKING SOFTWARE DEFECTS   0
+```
+
+Any commit after `fc5568e` on this branch is **documentation only**; the code
+that CI verified is `fc5568e`.
