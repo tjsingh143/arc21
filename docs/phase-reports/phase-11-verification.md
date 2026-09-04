@@ -1113,9 +1113,10 @@ Every number read out of that run's own log, not from this machine:
 | expo-doctor | **21/21** |
 | bundle | `iOS Bundled … (2,655 modules)` |
 
-**CODE HEAD VERIFIED BY CI: `ac9ae0a`.** The four runs from `fc5568e` to here are
-the whole story of this closure, and two of the four were red for reasons worth
-having found.
+**CODE HEAD VERIFIED BY CI: `ac9ae0a`.** The five runs from `fc5568e` to here are
+the whole story of this closure — 33848267009, 33849934174, 33852015342,
+33863844020, 33865868043 — and two of the five were red for reasons worth having
+found.
 
 
 ---
