@@ -781,8 +781,10 @@ Worth one line because of this project's own history: two of phase 11's six red
 runs were commits that changed only markdown, and both were real — a shared
 public table treated as the test's own. Those fixes are still holding.
 
-**CODE HEAD VERIFIED BY CI: `fc5568e`.** Anything after it on this branch is a
-DOCUMENTATION-ONLY HEAD; no product, test or migration source has changed since.
+**CODE HEAD VERIFIED BY CI at the time this section was written: `fc5568e`.**
+That sentence did not survive the next push. The documentation commit after it
+failed the database job on a real product race — §Z below — so the code head this
+report finally stands on is `aeb8a76`, and `fc5568e` is the state before its fix.
 
 ---
 
@@ -897,6 +899,211 @@ measured on the device, and pinned by a test.
 
 ---
 
+## Z · The documentation commit failed CI, and it was right to
+
+`011cbdc` changed two markdown files. Its run failed:
+
+```
+run   33852015342        sha 011cbdc (documentation only)
+  Lint, typecheck, unit tests, bundle     success   08:08:46 -> 08:19:55
+  pgTAP and server integration            FAILURE   08:08:45 -> 08:21:06
+
+  FAIL tests/server/game-command.integration.test.ts > public tables
+       > returns the stack when the player leaves
+  Error: six matched public rooms and none could be sat at: 409
+    {"status":"rejected","code":"SESSION_CLOSED","message":"This table has closed. …"}
+  Test Files  1 failed | 22 passed (23)
+       Tests  1 failed | 301 passed (302)
+```
+
+It was **not retried**. §X above had just written "POST-PUSH FIXES REQUIRED:
+none" and "anything after `fc5568e` is a DOCUMENTATION-ONLY HEAD", and this is
+the third time in this project's life that a markdown-only commit has failed the
+database job for a real reason. The helper it failed in asks for a matched public
+room six times and gives up; six refusals in a row is not a shared-table
+coincidence, it is the same room being handed back.
+
+**Reproduced deterministically**, with two transactions against the running
+stack and the real functions — no test double, no injected sleep:
+
+```
+T1  begin; select release_room_seat(R, <the last joined member>);   -- not committed
+T2  join_matchmaking('casual'); poll_matchmaking();                 -- matched -> R
+T1  commit;                                                         -- R is now closed
+
+room status                = closed
+joined members             = 1
+newcomer membership        = joined
+newcomer queue entry       = matched -> R
+```
+
+**The root cause.** `poll_matchmaking` serialises allocation on
+`pg_advisory_xact_lock(hashtext('matchmaking:' || tier))` and took **no lock on
+the room it handed out**. `release_room_seat` takes the room row `for update` and
+closes the room when it counts no `joined` member. Neither excluded the other, so
+under READ COMMITTED the poller read a room the leaver had already emptied,
+inserted a membership into it, and committed — and the leaver then closed it.
+
+The player is now a live `joined` member of a **closed** room, with a `matched`
+queue entry naming it. `joinPublicTable` checks the room's status before it looks
+at who is asking — correctly, because a closed room must take no more buy-ins —
+so every buy-in is answered `409 SESSION_CLOSED`, and `join_matchmaking` hands
+the same entry back each time, for the two minutes `expire_stale_queue_entries`
+takes to retire the reservation. On CI that is exactly six refusals and a
+give-up; on a device it is a player told "Seat found" and then "This table has
+closed", over and over, with no control that changes the answer.
+
+Note what makes it reachable at all: **a public room keeps taking players while
+it is running** (F-10's fix, and 20260901120000's), so one player leaving as
+another is being seated is now an ordinary evening rather than an impossibility.
+Same family as the `JOIN_PUBLIC_TABLE`/`CASH_OUT` lock inversion CLAUDE.md
+already records — a lock order is a property of every path, not of the two that
+happened to collide.
+
+**Two changes, answering different questions.**
+
+* **Root cause** — `poll_matchmaking` re-asks its candidate question while
+  holding that room's own row lock (`perform 1 from public.rooms where id =
+  v_candidate for update`, then the same predicate again). A room a concurrent
+  leave is closing is no longer a candidate; the poller falls through to opening
+  one or to `waiting`. The room lock is taken **after** the tier advisory lock
+  and nothing takes them the other way round.
+* **Recovery** — `join_matchmaking` will not hand back a `matched` entry whose
+  room is no longer joinable. This is 20260907120000's predicate ("the
+  membership is gone") widened with "or the room is closed", so a player
+  stranded by this race — or by some path nobody has written yet — re-enrols
+  instead of retrying a refusal until housekeeping.
+
+Both bodies were taken from the **last** migration to define each function
+(20260901120000 for `poll_matchmaking`, 20260907120000 for `join_matchmaking`),
+per the `create or replace` rule, and the migration ends with
+`select public.assert_client_authorization_surface();`.
+
+**Regression** — `supabase/tests/28_a_room_must_not_close_under_a_newcomer.test.sql`,
+six assertions. The root cause is pinned on the function **source**, as
+`19_rate_limits.test.sql` pins a window: the race needs two concurrent
+transactions and pgTAP runs in one session, so the behavioural proof is the
+interleaving above rather than something this file can express. The recovery half
+IS behavioural and is asserted in both directions — a matched entry at a closed
+room is spent and re-enrols `waiting`; one at an open room is still a reconnect
+and is handed back unchanged. **Proved to fail without the fix**: with both
+function bodies reverted in the running database, `Failed 3/6 subtests …
+Result: FAIL`; restored, `All tests successful`.
+
+**Re-validated locally on a database rebuilt from empty**, because a migration
+that only ever runs against a database that already had the old bodies proves
+nothing about a clean checkout:
+
+```
+supabase db reset            58 migrations from empty, ending
+                             20260908120000_a_room_must_not_close_under_a_newcomer.sql
+supabase test db             Files=29, Tests=582 … Result: PASS
+npx tsc --noEmit             exit 0
+npm run check:functions      all Edge Functions typecheck
+npm run test:server          Test Files 23 passed (23) · Tests 302 passed (302)
+```
+
+The last line is the one that matters: the test CI failed on passes, and it
+passes in the file that has been failing it, not in isolation.
+
+### And then the toolchain moved underneath it
+
+The SQL-only commit was pushed and its **database job went green** — the job
+that had been red. The other job then failed, at `npx expo-doctor@latest`:
+
+```
+run   33863844020        sha aeb8a76 (the SQL fix)
+  pgTAP and server integration            success   10:34:04 -> 10:41:04
+  Lint, typecheck, unit tests, bundle     FAILURE   10:34:04 -> 10:53:19
+
+  20/21 checks passed. 1 checks failed.
+  ✖ Check that packages match versions required by installed Expo SDK
+    package             expected  found
+    expo                ~57.0.20  57.0.19
+    expo-notifications  ~57.0.17  57.0.16
+    expo-router         ~57.0.19  57.0.18
+```
+
+That commit changed two `.sql` files and nothing else, so the cause is not in it.
+The three patches were published upstream **while this closure was running**:
+
+```
+expo@57.0.20                2026-09-04T07:46:21Z
+expo-notifications@57.0.17  2026-09-04T07:47:33Z
+expo-router@57.0.19         2026-09-04T08:05:15Z
+```
+
+and run 33852015342 started at **08:08** and still reported 21/21, so the check's
+expected-version data refreshed between the two runs. `expo-doctor@latest`
+resolves both the tool and the SDK's expected versions at run time; a green
+commit can therefore go red with no repository change, which is exactly what
+happened here. This is not an infrastructure fault — the runner did its job — and
+it is not a defect in the fix above. It is dependency drift, caught in the two
+hours it takes to be caught.
+
+**Aligned rather than suppressed.** `npx expo install --fix` — the same remedy
+`bb66f80` used for thirteen packages earlier in this phase, and the reason it is
+not a "force upgrade": it installs the versions the SDK itself expects, every one
+of them patch-level inside SDK 57 and inside the `~` ranges `package.json`
+already declared. Seven lockfile entries move (the three above plus `@expo/cli`,
+`@expo/ui`, `expo-modules-core`, `expo-modules-jsi`). The alternative the tool
+offers — adding the three to `expo.install.exclude` — would have made the check
+green by making it blind, permanently.
+
+**Re-verified on the aligned tree, including the two things a dependency change
+could invalidate in this very report:**
+
+```
+npx expo-doctor@latest    21/21
+npx tsc --noEmit          exit 0
+npm run lint              0 errors, 37 warnings (baseline unchanged)
+npm run test:unit         123 files / 2,399 tests PASS
+npm run bundle:check      exit 0
+tests/deep-links          6/6 — decode-uri-component still unreachable from the
+                          live resolver on expo-router 57.0.19, the case
+                          bb66f80 wrote down for exactly this event
+advisory sweep (§Y)       926 lockfile pairs re-asked: the SAME six advisories,
+                          byte for byte
+source map (§Y)           2,641 modules again; image-size, @xmldom/xmldom, uuid,
+                          metro, @expo/config-plugins, xcode -> 0 each;
+                          decode-uri-component and query-string -> 1 each
+```
+
+**What this does cost, stated plainly.** The 31 Release-build Maestro runs in §V
+were taken on the previous patch trio. The delta is three patch releases inside
+SDK 57 — one of them `expo-notifications`, which is the module §D's crash
+analysis is about. Nothing was re-run on device for this, because a patch bump is
+not a reason to spend the sweep again; it is a reason to say which build the
+sweep was of. Phase 12 rebuilds natively in any case.
+
+### The head this phase stands on
+
+```
+run   33865868043        sha ac9ae0a
+  pgTAP and server integration            success   11:00:16 -> 11:10:17
+  Lint, typecheck, unit tests, bundle     success   11:00:16 -> 11:24:57
+```
+
+Every number read out of that run's own log, not from this machine:
+
+| step | runner |
+|---|---|
+| migrations applied from scratch | **58**, ending `20260908120000_a_room_must_not_close_under_a_newcomer.sql` |
+| pgTAP | `Files=29, Tests=582 … Result: PASS` |
+| server integration | 23 files / **302** tests, including the one that was red |
+| lint | `37 problems (0 errors, 37 warnings)` |
+| unit | 123 files / **2,399** tests |
+| coverage gates | 121 files / 2,373 tests, pass |
+| expo-doctor | **21/21** |
+| bundle | `iOS Bundled … (2,655 modules)` |
+
+**CODE HEAD VERIFIED BY CI: `ac9ae0a`.** The four runs from `fc5568e` to here are
+the whole story of this closure, and two of the four were red for reasons worth
+having found.
+
+
+---
+
 ## Defects found in this pass
 
 | id | defect | fix | regression |
@@ -904,34 +1111,56 @@ measured on the device, and pinned by a test.
 | V-01 | a public table's engine seat list grew without bound; departed players were drawn on every remaining screen | `isVacatedSeat` + slot reuse in `joinPublicTable` | `tests/engine/vacated-seat.test.ts`, `public-table.integration.test.ts` |
 | V-02 | leaving left a `matched` reservation that refused the next search for two minutes | `release_room_seat` cancels it; `join_matchmaking` will not return one whose membership has gone | `27_leaving_clears_the_reservation.test.sql`, `public-table.integration.test.ts`, `two-client-public-leave.yaml` |
 | V-03 | a returning player was seated on their departed row, with no buy-in taken | only a live seat is reused; the buy-in key is derived from the seat | `public-table.integration.test.ts` |
+| V-04 | a room could be CLOSED under a player being seated into it, so their every buy-in was answered `SESSION_CLOSED` until housekeeping | `poll_matchmaking` confirms its candidate under that room's row lock; `join_matchmaking` spends an entry whose room has closed | `28_a_room_must_not_close_under_a_newcomer.test.sql` (fails 3/6 without it) |
 | — | `two-client-public-leave.yaml` asserted something that could not fail | takes the seat after leaving | the flow itself |
 | — | four flows tapped non-optionally inside a conditional `repeat` | `optional: true`, as the two-client flows already had | the flows themselves |
+| — | `expo-doctor` went from 21/21 to 20/21 with no repository change: three SDK-57 patches were published upstream mid-closure | `npx expo install --fix`, patch-level and inside the ranges already declared | the check itself, plus the advisory sweep and source map re-measured and unchanged |
 | — | `docs/SECURITY.md` claimed `search_players('%_%')` returns 25 rows, and listed no `player_search` limit | corrected and re-measured; the scope of the limit written down | — |
 
 ---
 
 ## Verdict
 
-**PHASE 11 REVERIFICATION: PASS**, with its two recorded evidence gaps closed.
+**PHASE 11 REVERIFICATION: PASS**, with its two recorded evidence gaps closed —
+and two post-push fixes, both of which the closure found rather than assumed
+away.
 
-Phase 11's own findings stand. Three product defects on the path its best fix
+Phase 11's own findings stand. **Four** product defects on the path its best fix
 opened up were found, reproduced, fixed and re-proved, and two of its tests were
-strengthened where they could not have failed. No known release-blocking crash,
+strengthened where they could not have failed. The fourth is the one the remote
+runner found on a commit that changed nothing but markdown, and it is why this
+section no longer says what it said an hour ago. No known release-blocking crash,
 race, replay, authorization or resource defect remains that this machine can
 reach.
 
 ```
-CODE HEAD VERIFIED BY CI        fc5568e598b5ae45f7d2928e89e64757c857e192
+CODE HEAD VERIFIED BY CI        ac9ae0a3139967e7e08787a634d14b90cefff3b0
 REMOTE BRANCH                   origin/phase11-adversarial-qa  (PR #1)
-REMOTE CI RUN                   33848267009 — both jobs success, first attempt
-POST-PUSH FIXES REQUIRED        none
+REMOTE CI RUN                   33865868043 — both jobs success
+POST-PUSH FIXES REQUIRED        two, and both were found by CI rather than by
+                                asserting the previous run still applied
+  1 · V-04                      a room could close under a player being seated
+                                into it, so their every buy-in was answered
+                                SESSION_CLOSED until housekeeping. Found by run
+                                33852015342 on a DOCUMENTATION-ONLY commit,
+                                reproduced with two transactions rather than
+                                retried, fixed in `aeb8a76`, pinned by a pgTAP
+                                file that fails 3 of its 6 assertions without it
+  2 · SDK patch drift           three SDK-57 patches were published upstream
+                                mid-closure (07:46, 07:47, 08:05 UTC), so
+                                `expo-doctor@latest` went 21/21 -> 20/21 with no
+                                repository change. Aligned with
+                                `npx expo install --fix` in `ac9ae0a`; the
+                                advisory sweep and the bundle source map were
+                                re-measured afterwards and are unchanged
 REGISTRY-BACKED DEPENDENCY AUDIT
   npm advisories/bulk endpoint  UNAVAILABLE (HTTP 000 after 30 s, reproducible)
   GitHub Dependabot alerts      UNAVAILABLE (disabled for this repository)
   GitHub Global Advisory DB     RAN — 926 lockfile versions, 6 advisories,
-                                0 reachable in the shipped bundle
+                                0 reachable in the shipped bundle; re-run after
+                                the realignment and identical
 KNOWN PHASE-11 RELEASE-BLOCKING SOFTWARE DEFECTS   0
 ```
 
-Any commit after `fc5568e` on this branch is **documentation only**; the code
-that CI verified is `fc5568e`.
+Any commit after `ac9ae0a` on this branch is **documentation only**; the code
+that CI verified is `ac9ae0a`.

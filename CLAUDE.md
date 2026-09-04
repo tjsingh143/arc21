@@ -1303,6 +1303,42 @@ positive control in the check — `decode-uri-component` and `query-string` DO s
 (bundled and dead), and a sweep that returns zero hits for everything has proved
 nothing.
 
+**A GATE THAT RESOLVES `@latest` AT RUN TIME CAN TURN A GREEN COMMIT RED WITH NO
+REPOSITORY CHANGE.** CI runs `npx expo-doctor@latest`, which fetches both the
+tool and the SDK's expected package versions when it runs. A commit that changed
+two `.sql` files failed it 20/21 on `expo ~57.0.20 found 57.0.19` — and the run
+two hours earlier, on the same `package.json`, had passed 21/21. The three
+patches had been published upstream in between (07:46, 07:47 and 08:05 UTC, all
+readable from `npm view <pkg> time`). Check the PUBLISH TIMES before reading such
+a failure as something you did. The fix is `npx expo install --fix`, which
+installs the versions the SDK itself expects — patch-level, inside the `~` ranges
+`package.json` already declares, and not a force upgrade; the tool's other
+suggestion, `expo.install.exclude`, makes the check green by making it blind. And
+re-measure whatever a dependency change could invalidate rather than assuming:
+here that was the advisory sweep over the lockfile (identical) and Metro's source
+map for the shipped bundle (2,641 modules, identical), both of which this
+phase's report leans on.
+
+**AN ADVISORY LOCK EXCLUDES THE CALLERS THAT TAKE IT, AND NOTHING ELSE.**
+`poll_matchmaking` serialises allocation on
+`pg_advisory_xact_lock(hashtext('matchmaking:' || tier))` and took no lock on the
+room it handed out. `release_room_seat` takes the room ROW `for update` and
+closes a room it counts no `joined` member in. Two different locks, so neither
+excluded the other: a poller read a room the leaver had already emptied, inserted
+a membership and committed, and the leaver then closed it — leaving a live
+`joined` member of a CLOSED room with a `matched` queue entry naming it. Every
+buy-in is then `409 SESSION_CLOSED`, the same entry is handed back each time, and
+it lasts the two minutes `expire_stale_queue_entries` takes. Reachable only
+because a public table now KEEPS TAKING PLAYERS while it runs, which is the same
+change that made the `JOIN_PUBLIC_TABLE`/`CASH_OUT` deadlock reachable — one
+player leaving as another sits down stopped being an edge case and nobody
+re-asked what else assumed it was. **Confirm the row you are about to hand out
+while holding ITS lock, not merely while holding a lock.** And note how it was
+found: on a commit that changed TWO MARKDOWN FILES, for the third time in this
+project's life — `six matched public rooms and none could be sat at` is not a
+shared-table coincidence, because six refusals in a row is one room handed back
+six times.
+
 **A TAP GUARDED BY `when` IS TWO READS OF THE SCREEN, NOT ONE.** A
 `repeat` around `runFlow when: visible X → tapOn X` looks self-limiting: the tap
 that lands navigates away, so later iterations skip. They skip only if the `when`

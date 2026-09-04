@@ -6,11 +6,16 @@
 **Phase 11 — PASS (independently reverified, 2026-09-04; remote evidence
 closed)** — `docs/phase-reports/phase-11-verification.md`. Every phase-11
 finding re-checked and F-10 re-proved by reverting it in the running function;
-three further product defects found on the path that fix opened up, and fixed.
-The fixes are commit **`fc5568e`**, pushed to `origin/phase11-adversarial-qa`
-(PR #1) and **green on CI run 33848267009, both jobs, first attempt** — 57
-migrations from empty, 576 pgTAP assertions, 302 server tests, 2,399 unit tests,
-expo-doctor 21/21 and the iOS bundle, all on the runner.
+**four** further product defects found on the path that fix opened up, and fixed.
+The first three are commit `fc5568e`, green on CI run 33848267009. The fourth was
+found by CI itself, on the documentation commit that recorded the first three: a
+room could be **closed under a player being seated into it**, so their every
+buy-in was answered `SESSION_CLOSED` until housekeeping. It was reproduced with
+two transactions rather than retried, and fixed in `aeb8a76`. The code head this
+phase finally stands on is **`ac9ae0a`** — pushed to
+`origin/phase11-adversarial-qa` (PR #1) and **green on CI run 33865868043, both jobs**
+— 58 migrations from empty, 582 pgTAP assertions, 302 server tests, 2,399 unit
+tests, expo-doctor 21/21 and the iOS bundle, all on the runner.
 
 Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
 context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
@@ -480,11 +485,20 @@ off. Treat every one as unverified until its own phase runs.
 
 ## Current migration head
 
-`supabase/migrations/20260907120000_leaving_clears_the_reservation.sql`
-(57 migrations, all applied from scratch cleanly on 2026-09-04, followed by 28
-pgTAP files and 576 assertions).
+`supabase/migrations/20260908120000_a_room_must_not_close_under_a_newcomer.sql`
+(58 migrations, all applied from scratch cleanly on 2026-09-04, followed by 29
+pgTAP files and 582 assertions).
 
-The phase 11 reverification added one:
+The phase 11 reverification added two:
+
+- `20260908120000_a_room_must_not_close_under_a_newcomer.sql` —
+  `poll_matchmaking` confirms its candidate room while holding that room's own
+  row lock, so a room a concurrent `release_room_seat` is closing is no longer a
+  candidate; and `join_matchmaking` will not hand back a `matched` entry whose
+  room has closed, so a player stranded by such a race re-enrols instead of
+  retrying a refusal. Root cause and recovery, answering different questions.
+  `28_a_room_must_not_close_under_a_newcomer.test.sql` pins both; reverting both
+  bodies fails 3 of its 6 assertions.
 
 - `20260907120000_leaving_clears_the_reservation.sql` — `release_room_seat`
   cancels the matchmaking reservation that produced the seat it is releasing,
@@ -661,8 +675,11 @@ None blocking. Recorded observations, all assigned onward:
    `xcode` — with `decode-uri-component` and `query-string` present as the
    positive control. Nothing was upgraded: `metro` is pinned by
    `react-native@0.86.3` and `@expo/config-plugins` by `expo-splash-screen`,
-   both the versions Expo SDK 57 expects and expo-doctor checks. → **Phase 12**
-   should re-run the sweep against whatever the SDK has moved to by then.
+   both the versions Expo SDK 57 expects and expo-doctor checks. The sweep was
+   **re-run after the SDK patch realignment** later the same day and returns the
+   same six advisories byte for byte, with the source map still listing 2,641
+   modules and the same zeros. → **Phase 12** should re-run the sweep against
+   whatever the SDK has moved to by then.
 
 1. **Local edge runtime is load-gated** (environment, not product). Above host
    load ~12 the runtime hits CPU soft/hard limits and retires workers; the
@@ -749,8 +766,8 @@ npm run lint                        0 errors, 37 warnings (baseline unchanged)
 npm run check:functions             all 3 Edge Functions typecheck
 npm run test:unit                 123 files / 2,399 tests PASS  (phase 11: 122 / 2,395)
 npm run test:server                23 files /   302 tests PASS  (phase 11:  23 /   300)
-supabase db reset                  57 migrations applied from empty, exit 0
-supabase test db                   28 files /   576 assertions PASS (phase 11: 27 / 567)
+supabase db reset                  58 migrations applied from empty, exit 0
+supabase test db                   29 files /   582 assertions PASS (phase 11: 27 / 567)
 npm run test:coverage              per-area gates pass, exit 0
 npm run contrast:check             50 pairings, 0 failing (+2 Increased-contrast substitutes)
 npm run benchmark                  781 µs/hand at load 4.9; heap +11 KB over 50 hands
@@ -772,17 +789,33 @@ body test timed out in a run whose runtime log carried 48 CPU soft-limit events,
 and the same request measured **HTTP 400 in 824–1,845 ms** against a fresh
 `functions serve`, with the whole suite then 302/302.
 
-**CI is green on both jobs for the reverification's own commit `fc5568e` — run
-33848267009**, first attempt, no post-push fix required. The runner reproduced
-every local number: 57 migrations applied from scratch (ending
-`20260907120000_leaving_clears_the_reservation.sql`), `Files=28, Tests=576` of
-pgTAP, 23 files / 302 server tests, 0 lint errors, 123 files / 2,399 unit tests,
-coverage gates green, expo-doctor 21/21, and the iOS bundle at 2,655 modules.
-The previous run 33808002785 covers the phase-11 HEAD `98c6301`, and run
-33849934174 covers the documentation commit `8467389` — also green on both jobs,
-which is worth a line only because two of phase 11's six red runs were
-markdown-only commits that failed for real reasons. **The CODE head CI has
-verified is `fc5568e`; anything later on this branch is documentation only.**
+**CI is green on both jobs for the code head `ac9ae0a` — run 33865868043.** That is
+the commit this phase finally stands on, and it is NOT the one the reverification
+first pushed. The progression, because the middle steps are the interesting ones:
+
+* run 33848267009 · `fc5568e` · the reverification's three fixes · **green**,
+  first attempt;
+* run 33849934174 · `8467389` · documentation only · **green**;
+* run 33852015342 · `011cbdc` · documentation only · **RED** — one server test
+  of 302, `six matched public rooms and none could be sat at: 409
+  SESSION_CLOSED`. A third markdown-only commit failing the database job for a
+  real reason. Not retried: reproduced with two transactions against the running
+  stack, root-caused to `poll_matchmaking` handing out a room it held no lock on
+  while `release_room_seat` was closing it, fixed and pinned;
+* run 33863844020 · `aeb8a76` · that fix · **database job green — the job that
+  had been red** — and the other job then red at `npx expo-doctor@latest`, 20/21,
+  on three SDK-57 patches Expo published at 07:46–08:05 UTC while this closure
+  was running. Not caused by the commit, which changed two `.sql` files; the run
+  two hours earlier had passed 21/21 on the same `package.json`;
+* run 33865868043 · `ac9ae0a` · `npx expo install --fix`, patch-level and inside the
+  `~` ranges already declared · **green**, both jobs.
+
+The runner reproduced every local number on that last run: 58 migrations applied
+from scratch (ending `20260908120000_a_room_must_not_close_under_a_newcomer.sql`),
+`Files=29, Tests=582` of pgTAP, 23 files / 302 server tests, 0 lint errors,
+123 files / 2,399 unit tests, coverage gates green, expo-doctor 21/21, and the
+iOS bundle. **The CODE head CI has verified is `ac9ae0a`; anything later on this
+branch is documentation only.**
 
 **Registry-backed dependency audit.** `npm audit` still cannot run here — the
 registry answers package metadata (HTTP 200) but its
