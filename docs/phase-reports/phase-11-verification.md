@@ -357,7 +357,9 @@ produce it.* Not "cannot happen" — that is upstream's to say.
 ## E · Dependencies and the native install
 
 `npx expo-doctor@latest` → **21/21 checks passed**. The installed tree matches
-`package.json` (`react-native 0.86.3`, `expo 57.0.19`), `package-lock.json` and
+`package.json` (`react-native 0.86.3`, `expo 57.0.19` — three SDK-57 patches
+later that day moved this to `expo 57.0.20`, `expo-notifications 57.0.17` and
+`expo-router 57.0.19`; see §Z), `package-lock.json` and
 `ios/Podfile.lock` are both committed and both older than the Release build that
 was produced from them, and `npm run bundle:check` exits 0 from this checkout —
 so the build does not depend on an untracked local fix. `git status` shows no
@@ -379,7 +381,9 @@ arc21@1.0.0
     └── decode-uri-component@0.2.2      (the vulnerable version)
 ```
 
-exactly one path, no second consumer. Inside `query-string/index.js`,
+exactly one path, no second consumer. (Re-walked after §Z's SDK realignment:
+`expo-router@57.0.19 -> query-string@7.1.3 -> decode-uri-component@0.2.2`, the
+same one path, and `tests/deep-links` still 6/6.) Inside `query-string/index.js`,
 `decodeComponent` is reached only through `decode()`, and every `decode()` call
 site is on the **parse** path; `stringify` encodes.
 
@@ -838,6 +842,9 @@ image-size@1.2.1      <- metro@0.84.4 <- @react-native/community-cli-plugin <- r
 uuid@7.0.3            <- xcode@3.0.1  <- @expo/config-plugins <- expo-splash-screen
 decode-uri-component  <- query-string@7.1.3 <- expo-router@57.0.18
 ```
+
+(`expo-router` is `57.0.19` after §Z's realignment; the sweep was re-run on the
+realigned lockfile and returns these same six advisories byte for byte.)
 
 Every one of the first four is **toolchain**: `metro` is the bundler and
 `@expo/config-plugins` runs at `expo prebuild`, writing `Info.plist` and
