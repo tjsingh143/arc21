@@ -771,9 +771,14 @@ That is the first time this project's new migration, its two new server
 regressions and its new pgTAP file have been applied and run by a runner from a
 clean checkout.
 
-**And the documentation commit that records all this is green too.** The
-workflow's `concurrency` block cancels an in-progress run when the ref moves, so
-each documentation push is left to finish rather than superseded:
+**And the documentation commit that records all this is green too**, because the
+next push came after it had finished — not because it was safe from one. The
+workflow's `concurrency` group is `ci-${{ github.ref }}` with
+`cancel-in-progress: true`, and on a `pull_request` event that ref is constant
+across pushes to the PR, so a push while a run is in flight CANCELS it. Measured
+later the same day: run 33867958559 was cancelled mid-flight by the next
+documentation push. An earlier version of this sentence said such runs are "left
+to finish rather than superseded", which is the opposite of what the block does.
 
 ```
 run   33849934174        sha 8467389 (documentation only)
@@ -787,8 +792,10 @@ public table treated as the test's own. Those fixes are still holding.
 
 **CODE HEAD VERIFIED BY CI at the time this section was written: `fc5568e`.**
 That sentence did not survive the next push. The documentation commit after it
-failed the database job on a real product race — §Z below — so the code head this
-report finally stands on is `aeb8a76`, and `fc5568e` is the state before its fix.
+failed the database job on a real product race, and the fix for that then failed
+the other job on an SDK patch published while this closure was running — both in
+§Z below. The code head this report finally stands on is **`ac9ae0a`**;
+`fc5568e` is the state before either.
 
 ---
 
