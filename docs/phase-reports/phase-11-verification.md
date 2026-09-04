@@ -767,6 +767,23 @@ That is the first time this project's new migration, its two new server
 regressions and its new pgTAP file have been applied and run by a runner from a
 clean checkout.
 
+**And the documentation commit that records all this is green too.** The
+workflow's `concurrency` block cancels an in-progress run when the ref moves, so
+each documentation push is left to finish rather than superseded:
+
+```
+run   33849934174        sha 8467389 (documentation only)
+  pgTAP and server integration            success   07:42:16 -> 07:51:02
+  Lint, typecheck, unit tests, bundle     success   07:42:16 -> 08:07:05
+```
+
+Worth one line because of this project's own history: two of phase 11's six red
+runs were commits that changed only markdown, and both were real — a shared
+public table treated as the test's own. Those fixes are still holding.
+
+**CODE HEAD VERIFIED BY CI: `fc5568e`.** Anything after it on this branch is a
+DOCUMENTATION-ONLY HEAD; no product, test or migration source has changed since.
+
 ---
 
 ## Y · The registry-backed dependency audit
@@ -797,7 +814,9 @@ version** rather than about a range. Every one of the **926** distinct
 `name@version` pairs in the committed `package-lock.json` was submitted, in
 batches, with no errors.
 
-**Six advisories affect an exact version in the lockfile:**
+**Six advisories affect an exact version in the lockfile** (the API's `severity`
+field says `medium` where GitHub's own interface says "Moderate"; they are the
+same level, and the literal API value is what was read):
 
 | GHSA | severity | package | installed | first patched |
 |---|---|---|---|---|

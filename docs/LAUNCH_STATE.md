@@ -778,7 +778,11 @@ every local number: 57 migrations applied from scratch (ending
 `20260907120000_leaving_clears_the_reservation.sql`), `Files=28, Tests=576` of
 pgTAP, 23 files / 302 server tests, 0 lint errors, 123 files / 2,399 unit tests,
 coverage gates green, expo-doctor 21/21, and the iOS bundle at 2,655 modules.
-The previous run 33808002785 covers the phase-11 HEAD `98c6301`.
+The previous run 33808002785 covers the phase-11 HEAD `98c6301`, and run
+33849934174 covers the documentation commit `8467389` — also green on both jobs,
+which is worth a line only because two of phase 11's six red runs were
+markdown-only commits that failed for real reasons. **The CODE head CI has
+verified is `fc5568e`; anything later on this branch is documentation only.**
 
 **Registry-backed dependency audit.** `npm audit` still cannot run here — the
 registry answers package metadata (HTTP 200) but its
