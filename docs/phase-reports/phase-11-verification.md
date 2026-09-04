@@ -899,10 +899,12 @@ and never calls `queryString.parse`.
   from phase 10's `npm audit` output. The characterisation that matters is
   reachability, and it is not reachable.
 
-**Nothing was upgraded, and nothing needed to be.** No high or critical advisory
-affects code that ships, no reachable serious vulnerability was found, and the
-one advisory that touches shipped code is the one already investigated,
-measured on the device, and pinned by a test.
+**Nothing was upgraded to remediate an advisory, and nothing needed to be.**
+(§Z's SDK realignment moved seven lockfile entries hours later, for an unrelated
+reason; the sweep was re-run on the realigned tree and is identical.) No high or
+critical advisory affects code that ships, no reachable serious vulnerability was
+found, and the one advisory that touches shipped code is the one already
+investigated, measured on the device, and pinned by a test.
 
 ---
 
