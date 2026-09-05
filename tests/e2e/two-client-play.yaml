@@ -23,14 +23,20 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - openLink: arc21://table/lobby
 - runFlow:
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - extendedWaitUntil:
     visible: "Leave table"
@@ -48,12 +54,24 @@ appId: com.arc21.app
       # Insurance. Unreachable at every server table for a whole phase — the
       # screen had no branch for it and fell through to "Waiting for the next
       # hand." until the deadline expired and the server declined.
+      # `optional: true` on every tap in this loop. A `when` and the tap it
+      # guards are TWO reads of the screen, and at a SHARED table the gap
+      # between them is a place the server can act: the guest's betting window
+      # is whatever is left of one clock the host has already used part of, so
+      # a deadline that expires between `chip-100` and `bet-deal` stakes the
+      # table minimum and deals. Measured on a Release build —
+      # `Element not found: bet-deal`, with the failure screenshot showing
+      # PLAYER_TURNS, `Bet 20`, 13 seconds to act. That is the product working
+      # exactly as its own countdown says it will. The loop simply bets again
+      # on the next hand; what proves the wager is the assertion below, never
+      # the tap.
       - runFlow:
           when:
             visible:
               id: "insurance-decline"
           commands:
             - tapOn:
+                optional: true
                 id: "insurance-decline"
       # A hundred, so the assertion above distinguishes THIS client's deliberate
       # wager from the twenty the server stakes for an absent seat.
@@ -63,8 +81,10 @@ appId: com.arc21.app
               id: "chip-100"
           commands:
             - tapOn:
+                optional: true
                 id: "chip-100"
             - tapOn:
+                optional: true
                 id: "bet-deal"
       - runFlow:
           when:
@@ -72,6 +92,7 @@ appId: com.arc21.app
               id: "action-stand"
           commands:
             - tapOn:
+                optional: true
                 id: "action-stand"
 
 # THE WAGER THIS CLIENT CHOSE, on the felt. Twenty is what the server stakes for

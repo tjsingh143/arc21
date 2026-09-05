@@ -384,9 +384,16 @@ suite.
 The specification asks that migrations be "reversible where reasonable or include
 documented recovery". This is the position for every one of them, so that a bad
 deploy is answered by reading rather than by improvising. The count was
-forty-four when this section was written and is **fifty-three** now; the nine
-added since are all additive DDL or `create or replace` of a function body, and
-fall under the "additive" heading below without changing what it says. The three
+forty-four when this section was written and is **fifty-eight** now. The
+fourteen added since are additive DDL, `create or replace` of a function body,
+or a policy replaced by a narrower one, and fall under the "additive" heading
+below without changing what it says. One of them needs a sentence of its own:
+`20260906120000_seat_index_reuse.sql` DROPS `game_session_seats_unique_index`
+and replaces it with a PARTIAL unique index over `status <> 'left'`, because the
+old constraint made a departed seat's index unusable for ever and the eighth
+player ever to sit at a public table was refused by it. Recreating the old
+constraint is the reversal, and it would fail on any table that has since seated
+somebody in a freed index — which is the change working, not a fault. The three
 phase 9 added are `20260903120000_leaderboard_pagination.sql` (which DROPS the
 one-argument board arities — recovery is to recreate them from
 `20260817300000` and `20260818110000`, and nothing else references them),

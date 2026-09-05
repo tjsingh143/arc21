@@ -24,14 +24,20 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - openLink: arc21://table/lobby
 - runFlow:
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # The guest arrived on the other device. This is the poll, not this client.
 # The guest arrived on the other device, or the table is already dealt and the

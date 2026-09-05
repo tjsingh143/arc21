@@ -191,12 +191,12 @@ export default function QuickPlaySetup() {
                 : walletStatus.message}
             </AppText>
           </SurfaceCard>
-          <Button label="Play Practice" onPress={() => router.replace("/game")} testID="quick-practice" />
+          <Button label="Play Practice" onPress={() => router.replace("/game/practice")} testID="quick-practice" />
           {signedOut ? (
             <Button
               label="Create an account"
               variant="quiet"
-              onPress={() => router.push("/auth/sign-up")}
+              onPress={() => router.push("/(auth)/create-account")}
               testID="quick-sign-up"
             />
           ) : null}
@@ -342,7 +342,7 @@ export default function QuickPlaySetup() {
             <Button
               label="Play Practice instead"
               variant="quiet"
-              onPress={() => router.replace("/game")}
+              onPress={() => router.replace("/game/practice")}
               testID="quick-practice-fallback"
             />
           </SurfaceCard>

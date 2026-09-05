@@ -47,22 +47,57 @@ appId: com.arc21.app
           when:
             visible: "Open"
           commands:
-            - tapOn: "Open"
+            - tapOn:
+                text: "Open"
+                # The dialog can dismiss itself between the `when` and the tap.
+                optional: true
       - runFlow:
           when:
             visible: "Save Password?"
           commands:
             - tapOn: "Not Now"
 
-      # Not on the auth screen: go there. By deep link rather than through
-      # onboarding's button, because onboarding is not shown to an app that has
-      # been used before — which is exactly the state this flow found.
+      # ONBOARDING FIRST, THROUGH ITS OWN BUTTON, and this used to be the deep
+      # link below on its own.
+      #
+      # `complete("account")` is what the onboarding buttons write, and a deep
+      # link straight to `/sign-in` never reaches it — so on a device that
+      # `scripts/e2e-fresh-app.ts` has reset, this flow signed in and left
+      # `onboarding:completion` ABSENT. `app/index.tsx` reads that flag on every
+      # launch, so every LATER flow beginning `launchApp` + `assertVisible:
+      # header-chips` then photographed the onboarding carousel and failed.
+      # Measured: `two-client-public-leave` failed exactly that way while the
+      # app and the account were both fine, and the device's own SQLite store
+      # held `auth:guest:v1`, `practice:session` and `practice:stats` and no
+      # onboarding record.
+      #
+      # The app is RIGHT to re-show it: the flag records that the 18+ and
+      # no-monetary-value disclosure has been seen, and somebody who deep-linked
+      # past it has not seen it. So the flow goes through the door rather than
+      # around it.
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-sign-in"
+          commands:
+            - tapOn:
+                optional: true
+                id: "onboarding-sign-in"
+
+      # Not on the auth screen and not on onboarding either: go there by deep
+      # link. This is the ordinary case — onboarding is not shown to an app that
+      # has been used before.
       - runFlow:
           when:
             notVisible:
               id: "auth-email"
           commands:
-            - openLink: arc21://sign-in
+            - runFlow:
+                when:
+                  notVisible:
+                    id: "onboarding-sign-in"
+                commands:
+                  - openLink: arc21://sign-in
 
       # TYPED, not pasted. `sign-in.yaml` pastes because the CREATE-ACCOUNT
       # screen's `textContentType="newPassword"` raises the strong-password

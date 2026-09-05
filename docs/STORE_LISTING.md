@@ -182,8 +182,26 @@ the failure this repository keeps finding.
 | Simulated gambling | Yes |
 | Data safety — collected | Email address, in-app gameplay data (see `docs/PRIVACY.md`) |
 | Data safety — shared with third parties | None |
-| Data safety — deletion | Yes, in-app: Settings → Delete account (`delete_own_account()`) |
+| Data safety — deletion | Yes, in-app: Settings → Delete account (`delete_own_account()`). **Play also requires a WEB link** where deletion can be requested without installing the app — see below; it is blocked on the domain |
 | Account creation required | No — Practice, the strategy guide and drills work signed out |
+
+---
+
+### The account-deletion web link Play requires
+
+Google Play's User Data policy asks for **two** paths, not one: an in-app route
+to delete the account and its data, *and* "a web link resource where users can
+request app account deletion". Arc 21 has the first — Settings → Delete account,
+which calls `delete_own_account()` and is proved end to end in
+`tests/server/account-lifecycle.integration.test.ts` and by
+`23_account_lifecycle.test.sql`, which asks the CATALOGUE for every cascading
+reference rather than naming tables. The second needs a domain, so it is on the
+external list in `docs/RELEASE.md` beside the privacy-policy and support URLs
+that need the same thing.
+
+The page itself is one form and one sentence: it must let somebody who has
+uninstalled the app ask for the same deletion, and Play expects the URL in the
+Data safety form. Apple asks only for the in-app path (Guideline 5.1.1(v)).
 
 ---
 

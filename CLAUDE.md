@@ -1349,6 +1349,102 @@ nothing. `optional: true` on the tap is the fix, and it weakens nothing, because
 what the block proves is the assertion that follows it. The two-client flows
 already carried it; four others did not.
 
+**A GENERATED TYPE FILE THAT `exclude` REMOVES FROM THE PROGRAM IS A GATE THAT
+CHECKS NOTHING, AND `experiments.typedRoutes` WAS ONE FOR THE LIFE OF THIS
+PROJECT.** `app.json` sets it, expo writes `.expo/types/router.d.ts`, and that
+file's module augmentation is the ONLY thing that makes `router.push("/nowhere")`
+a type error. `tsconfig.json` listed it under `include` AND listed `.expo` under
+`exclude` — and `exclude` filters `include`. Three Quick Play controls therefore
+shipped pointing at `/game` (the route is `/game/practice`) and `/auth/sign-up`
+(it is `/(auth)/create-account`), and one of them is the specification's own
+recovery path for a player who cannot afford their tier, so an empty balance
+ended on expo-router's unmatched-route screen. Restoring the include fixes it
+locally and NOT in CI, because the file is generated and gitignored — a checkout
+without it typechecks clean with no route checking at all, which is the "a
+coverage threshold that matches no files reads as enforcement" shape again. The
+gate is `tests/contracts/every-route-target-exists.test.ts`, which reads the
+route tree off disk and the targets out of the source and needs nothing
+generated.
+
+**AND WITHOUT `app/+not-found.tsx`, EVERY BAD `arc21://` LINK IS A DEAD END.**
+expo-router falls back to its own `Unmatched` page — light-themed, developer
+copy, and its one control is `<Link href={pathname} replace>`, which navigates to
+the SAME unmatched path. A cold start from a deep link has nothing behind it
+either, so a stale invitation left the player with no way into the app at all.
+Any process on the device can open an `arc21://` URL; this is a screen the
+product owes people, not a developer convenience.
+
+**`connected: false` MEANS DEPARTED, AND ONLY ONE OF THE THREE WAYS LEAVES A
+CLOCK RUNNING.** The table screen rendered "Disconnected — their clock keeps
+running." for every seat with `connected` false, and "Yet to bet" beside it —
+both untrue of somebody who cashed out, and this engine has no transient
+disconnection at all (the reducer says so: "`connected` is only ever cleared by
+LEAVE, by a table closure or by a tournament elimination, and nothing sets it
+back"). Photographed at a two-seat private table after the host left: `0 · Yet
+to bet · Disconnected — their clock keeps running.`, for the life of the table.
+`isVacatedSeat` does not help — it exists so a NEWCOMER can reuse a slot at a
+public table, and nobody new ever joins a private room. The one true case is a
+player who leaves MID-HAND, whose committed hand is still resolving.
+`src/features/table/seat-presence.ts` tells them apart, and renders `sittingOut`
+as well, which was never shown at all.
+
+**A CONFIG PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING — SECOND
+INSTANCE.** After `expo-audio`'s microphone came `expo-secure-store`'s
+`NSFaceIDUsageDescription`, written by default although the app never passes
+`requireAuthentication`, and React Native's `SYSTEM_ALERT_WINDOW` in the Android
+MAIN manifest, which is for the dev overlay. `faceIDPermission: false` and
+`android.blockedPermissions` remove them. Check the BUILT `Info.plist` and the
+generated `AndroidManifest.xml`, never `app.json`.
+
+**EXPO'S PRIVACY MANIFEST TEMPLATE DECLARES THAT THE APP COLLECTS NOTHING, AND
+THAT IS A CLAIM.** `NSPrivacyCollectedDataTypes` ships as an empty array while
+Arc 21 collects an email address, a user id, gameplay records, profile content
+and a push token. `ios.privacyManifests` in `app.json` declares them; the plugin
+MERGES with the file on disk, so the required-reason API entries survive. The
+App Store Connect questionnaire is the authoritative declaration and must agree
+with it.
+
+**`ios.supportsTablet` IS A PROMISE ABOUT A LAYOUT, AND iPadOS 26 MADE IT A
+BIGGER ONE.** `UIRequiresFullScreen` is now IGNORED and an iPad app is expected
+to support every orientation and dynamic resizing, so an iPad-native declaration
+can no longer be narrowed with a plist key. Arc 21's design target is phone
+portrait, no tablet layout exists, and Apple additionally requires a 13-inch iPad
+screenshot set from any app that declares iPad support. Measured on a 13-inch
+iPad Pro first — portrait renders correctly, landscape has never been looked at —
+and then set to `false`. The app still runs on iPad, in the one layout that has
+been designed and tested.
+
+**A HELPER THAT DRIVES A HAND MUST ANSWER `INSURANCE_OFFER` FOR SOMEBODY ELSE'S
+SEAT — FOURTH INSTANCE.** After `reachPlayerTurns`, `dealAHand` and
+`standToSettlement` came `scripts/e2e-account.ts`, whose whole purpose is to stop
+an abandoned table stranding the account. It answered the phase with
+`DECLINE_INSURANCE` from its own seat, which is correctly REFUSED when that seat
+has already decided and an absent player's PENDING decision is what is holding
+the table — the normal state of a tournament with three empty chairs. It threw,
+the account stayed seated, and the next flow was told "You are already seated at
+a table", which is the product working and reads as a matchmaking regression.
+Only `RESOLVE_TIMEOUT`, and waiting for the deadline, moves that table.
+
+**A FLOW THAT REACHES THE AUTH SCREEN BY DEEP LINK NEVER COMPLETES ONBOARDING.**
+`onboarding:completion` is written by the onboarding BUTTONS, and `app/index.tsx`
+reads it on every launch — so `mc-sign-in.yaml`, which deep-linked to
+`arc21://sign-in` "because onboarding is not shown to an app that has been used
+before", signed in and left the flag absent on any device
+`scripts/e2e-fresh-app.ts` had reset. Every later flow beginning `launchApp` +
+`assertVisible: header-chips` then photographed the carousel.
+`two-client-public-leave` failed exactly that way, and the device's own SQLite
+store settled it: `auth:guest:v1`, `practice:session`, `practice:stats` and no
+onboarding record, while the other simulator had all four. **The app is right to
+re-show it** — the flag records that the 18+ disclosure has been SEEN, and
+somebody who arrived by deep link has not seen it.
+
+**`npm audit` WORKS ON THIS MACHINE AGAIN.** Phases 10 and 11 both recorded that
+its bulk advisory endpoint hung up reproducibly and that the GitHub Global
+Advisory Database was the only route to the data. That is no longer true, and the
+two now agree exactly — five distinct advisories, four of them in packages the
+shipped bundle does not contain. Re-measure an environmental claim rather than
+inheriting it; this one had been true twice and was written down as if permanent.
+
 ---
 
 ## Product rules that are easy to get wrong

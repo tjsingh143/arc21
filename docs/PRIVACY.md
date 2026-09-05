@@ -47,7 +47,7 @@ deletes all of it.
 | Gameplay records | Generated as you play | Hands, decisions, wagers, outcomes, XP, career progress, tournament and daily-challenge entries. These are what statistics, leaderboards, progression and anti-cheat are computed from. |
 | Virtual chip balance and ledger | Generated as you play | An append-only record of every chip movement. It is the record from which a balance can be rebuilt, which is why it is never deleted piecemeal. |
 | Friend relationships and blocks | You create them | The social features. |
-| Push token and an optional device identifier | Your device, only if you grant notification permission | To deliver a notification you asked for. Removed when you turn notifications off. |
+| Push token, and a per-launch session id | Your device, only if you grant notification permission | To deliver a notification you asked for. Removed when you turn notifications off. The second value is `Constants.sessionId`, which Expo regenerates on **every launch** — it is a diagnostic label on the registration row, not a hardware, advertising or otherwise persistent device identifier, and nothing reads it back. |
 | Timestamps: account creation, last seen, last username change | Generated | Ordinary account housekeeping. The username timestamp exists to enforce the rename rate limit. |
 
 Nothing else. In particular Arc 21 does **not** collect: your name, address,
@@ -78,7 +78,8 @@ photos, microphone or camera input, health data, or any biometric.
   the statistics that feed leaderboards. A profile privacy setting controls
   this.
 - **Never visible to other players:** your email address, your password, your
-  push token, your device identifier, your practice data, and the raw ledger.
+  push token, the session id stored beside it, your practice data, and the raw
+  ledger.
 - **Never visible to anyone, including you, while a game is live:** the
   undealt shoe and the dealer's hole card. These are held in a separate
   database schema no client role can read, and the only thing that ever builds

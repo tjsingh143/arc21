@@ -20,7 +20,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # THE SEAT IS STILL THERE AFTER THE OTHER PLAYER CASHED OUT, and it is reached
 # the way a returning player reaches it: `my_active_session()`, rendered as the
@@ -44,7 +47,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - extendedWaitUntil:
     visible:

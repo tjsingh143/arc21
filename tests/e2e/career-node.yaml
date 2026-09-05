@@ -24,7 +24,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # Onboarding gates a fresh install. Skipping to the app as a guest is one tap,
 # and this stays conditional so the flow also works on a device that has already
@@ -90,7 +93,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # The MAP, named by something only the map has.
 - extendedWaitUntil:

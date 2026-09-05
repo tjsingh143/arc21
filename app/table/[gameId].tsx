@@ -53,6 +53,7 @@ import {
   deadlineAwaitsSeat,
   describeDeadline,
   describeDealerUpCardForAnnouncement,
+  describeSeatBetting,
   engineEventsOf,
   insuranceOffer,
   isMyTurn,
@@ -60,6 +61,7 @@ import {
   ownSeat,
   RESET_PRIVATE_STACK_LABEL,
   resolveTableSeat,
+  seatPresence,
   selectActiveSession,
   useActiveSessionStore,
   useOnlineTableStore,
@@ -492,6 +494,14 @@ export default function SharedTable() {
         <View style={styles.others}>
           {others.map((other) => {
             const hand = other.hands[0];
+            /*
+             * A seat whose player has GONE used to read "0 · Yet to bet ·
+             * Disconnected — their clock keeps running." for the life of the
+             * table. Only one of the three ways `connected` is cleared leaves a
+             * clock running, and none of them leaves somebody yet to bet.
+             */
+            const presence = seatPresence(other);
+            const betting = describeSeatBetting(other);
             return (
               <SurfaceCard key={other.seatId}>
                 <View style={styles.otherHeader}>
@@ -507,15 +517,19 @@ export default function SharedTable() {
                     detail={hand.wager > 0 ? `Bet ${formatChips(hand.wager)}` : undefined}
                     focused={table.activeSeatId === other.seatId}
                   />
-                ) : (
+                ) : betting ? (
                   <AppText variant="caption" color="textDisabled">
-                    {other.betLocked ? "Bet placed" : "Yet to bet"}
+                    {betting}
                   </AppText>
-                )}
+                ) : null}
                 {/* Player cards are public in blackjack; a stack is not a secret either. */}
-                {!other.connected ? (
-                  <AppText variant="caption" color="warning">
-                    Disconnected — their clock keeps running.
+                {presence.kind !== "present" ? (
+                  <AppText
+                    variant="caption"
+                    color={presence.kind === "resolving" ? "warning" : "textDisabled"}
+                    testID={`table-seat-presence-${other.seatId}`}
+                  >
+                    {presence.note}
                   </AppText>
                 ) : null}
               </SurfaceCard>

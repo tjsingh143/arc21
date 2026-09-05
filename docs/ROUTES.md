@@ -17,6 +17,7 @@ declares no screen list, so no shared file needs editing to add one.
 | `/(tabs)/play` | `app/(tabs)/play.tsx` | Game-mode selector. |
 | `/(tabs)/learn` | `app/(tabs)/learn.tsx` | Learning hub linking to the routes below. |
 | `/(tabs)/social` | `app/(tabs)/social.tsx` | Friends, blocked players, private tables, leaderboards. |
+| `+not-found` | `app/+not-found.tsx` | Any `arc21://` URL naming a screen that does not exist. Not a route a control ever points at — it is where expo-router sends what it cannot match, and without it the fallback is expo-router's own light-themed `Unmatched` page whose one control links to the same unmatched path. `tests/e2e/dead-ends.yaml` drives a bad deep link into it and back out. |
 
 Four bottom destinations only: **HOME, PLAY, LEARN, SOCIAL**. Profile opens from
 the avatar in the top-right header, never a fifth tab.

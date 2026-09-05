@@ -28,7 +28,8 @@
 # ARC21_REQUIRE_SERVER_STACK=1, which turns the skip into a hard failure. A
 # database job whose stack failed to come up therefore reports a broken stack
 # instead of a green suite that tested nothing. The two together run every test
-# in the repository exactly once: 1,639 + 116 = 1,755.
+# in the repository exactly once: 2,405 + 302 = 2,707 as of phase 12. The
+# numbers move; what must not is that neither half is skipped.
 #
 # Both steps call the npm script rather than repeating its command, so the
 # workflow cannot drift from what a local run does — including the

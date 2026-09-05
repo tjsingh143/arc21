@@ -271,13 +271,48 @@ async function playToBoundary(token: string, gameId: string): Promise<void> {
 
   for (let step = 0; step < 24; step += 1) {
     if (phase === "BETTING_OPEN" || phase === "HAND_COMPLETE" || phase === undefined) return;
+
     const answer = await command(
       phase === "INSURANCE_OFFER" ? "DECLINE_INSURANCE" : "STAND",
     );
-    if (!answer.ok) throw new Error(`could not play ${gameId} out of ${phase}`);
-    phase = answer.phase;
+    if (answer.ok) {
+      phase = answer.phase;
+      continue;
+    }
+
+    /*
+     * A REFUSAL HERE IS USUALLY ABOUT SOMEBODY ELSE'S SEAT, and this helper is
+     * the FOURTH in this repository to be caught by the phase after betting
+     * closes. `reachPlayerTurns`, `dealAHand` and `standToSettlement` each
+     * assumed the cascade stops in two places; this one knew about the third
+     * and still could not act on it.
+     *
+     * `INSURANCE_OFFER` holds while ANY seat's decision is `PENDING`, and at a
+     * tournament table three of the four seats belong to accounts that are not
+     * here. This account's own decision is already recorded, so
+     * `DECLINE_INSURANCE` is correctly refused — there is nothing left for it to
+     * answer — and the table can only move when the server applies the absent
+     * players' defaults at the deadline. `RESOLVE_TIMEOUT` is how that is asked
+     * for, and it is refused until the deadline has actually passed.
+     *
+     * Measured: `could not play <gameId> out of INSURANCE_OFFER` on a table the
+     * sprint flow left behind, which stranded the account — so the NEXT flow was
+     * told "You are already seated at a table", which is the product working and
+     * reads as a matchmaking regression.
+     */
+    const nudged = await command("RESOLVE_TIMEOUT");
+    if (nudged.ok && nudged.phase !== undefined && nudged.phase !== phase) {
+      phase = nudged.phase;
+      continue;
+    }
+
+    // The deadline has not passed yet. Modes that carry no clocks never reach
+    // here — they hold one seat, so this account's own command is accepted.
+    await new Promise((resolve) => setTimeout(resolve, 4_000));
   }
-  throw new Error(`twenty-four commands did not end the hand at ${gameId}`);
+  throw new Error(
+    `twenty-four commands did not end the hand at ${gameId}; last phase ${phase}`,
+  );
 }
 
 async function ensureAccount(email: string): Promise<void> {

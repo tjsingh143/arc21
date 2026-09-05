@@ -23,7 +23,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # THE SEAT MUST BE ADDRESSABLE AFTER A RELAUNCH, and this flow reaches the table
 # that way rather than assuming the app is still on it.
@@ -51,7 +54,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - extendedWaitUntil:
     visible:
@@ -122,7 +128,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible:
       id: "matchmaking-tier-casual"

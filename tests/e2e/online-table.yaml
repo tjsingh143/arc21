@@ -47,7 +47,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # --- Sign in ---------------------------------------------------------------
 # A subflow, because the three states the app can start in are the same for
@@ -65,7 +68,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - runFlow:
     when:
       visible: "Save Password?"
@@ -232,7 +238,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 - extendedWaitUntil:
     visible:

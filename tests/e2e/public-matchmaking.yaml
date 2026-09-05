@@ -41,7 +41,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - runFlow: sign-in.yaml
 
 # A DEEP LINK, not the tab bar: CLAUDE.md records several runs lost to
@@ -51,7 +54,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # --- The tiers, and the one that is not offered --------------------------
 - assertVisible:

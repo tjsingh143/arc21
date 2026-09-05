@@ -3,7 +3,7 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Last updated:** 2026-08-22 (phase 14, session 6).
+**Last updated:** 2026-09-04 (phase 12, the production release candidate).
 
 Three documents end at this one — [STORE_LISTING.md](./STORE_LISTING.md),
 [PRIVACY.md](./PRIVACY.md) and [TERMS.md](./TERMS.md) — because each of them
@@ -17,9 +17,16 @@ different wordings.
 
 The app builds, installs and runs. `app.json` declares version **1.0.0**,
 `ios.buildNumber` **1** and `android.versionCode` **1**; `expo-doctor` reports
-21/21; a release build (no Metro, 6 MB embedded bundle, icon in `Assets.car`)
-launches on the iOS simulator. `eas.json` carries development, preview and
-production profiles, validated against `@expo/eas-json`'s own schema.
+21/21; a **Release** build (no Metro, 6.2 MB embedded `main.jsbundle`, icon in
+`Assets.car`) was produced from a `--clean` prebuild in phase 12 and walked by
+26 Maestro runs on two simulators. `eas.json` carries development, preview and
+production profiles.
+
+Android targets **API 36** (`react-native`'s version catalogue: `minSdk 24`,
+`compileSdk 36`, `targetSdk 36`), which is what Google Play has required of new
+apps and updates since 31 August 2026. The Android project has never been
+BUILT: this machine has no Android SDK, no `adb` and no emulator, so that is on
+the external list below rather than claimed here.
 
 **Nothing has been submitted anywhere, and nothing has been deployed anywhere.**
 No App Store Connect account, no Play Console account, no Expo account, no
@@ -39,11 +46,11 @@ written.
 | **Apple Developer Program** | $99/yr | App Store Connect record, TestFlight, an APNs key, and installing on a physical device | Bundle id `com.arc21.app`, build number, `usesNonExemptEncryption` verified in the generated `Info.plist`; listing copy and age-rating rationale in STORE_LISTING.md |
 | **Google Play Console** | $25 once | Play submission and the Data safety declaration | `com.arc21.app`, `versionCode`, an app-bundle build profile, and the Play half of the listing copy |
 | **Expo account + EAS project id** | free tier | `eas build`, `eas submit`, and `getExpoPushTokenAsync` — **no device can be issued a push token without it**, which is why push is graded ABSENT in AUDIT.md | `eas.json`, schema-validated. `eas config` has never run: it needs the account |
-| **A domain and hosting** | varies | The privacy-policy URL Apple requires and the support URL both stores require | The text those two pages must serve, in PRIVACY.md and TERMS.md. Publish them at stable URLs and record the URLs in STORE_LISTING.md's "Support and marketing URLs" section |
-| **A Supabase cloud project** | free tier | Deploying the 32 migrations, the three Edge Functions, and the function secrets; and filling the two `EXPO_PUBLIC_*` values a shipped bundle needs | Everything, locally: `supabase db reset && supabase test db` passes, the functions serve, and `.env.example` names every variable and where each one comes from |
+| **A domain and hosting** | varies | The privacy-policy URL Apple requires, the support URL both stores require, and the **account-deletion request page Google Play requires in addition to the in-app path** | The text those pages must serve, in PRIVACY.md and TERMS.md, and the deletion route itself (`delete_own_account()`, Settings → Delete account). Publish them at stable URLs and record the URLs in STORE_LISTING.md's "Support and marketing URLs" section |
+| **A Supabase cloud project** | free tier | Deploying the 58 migrations, the three Edge Functions, and the function secrets; and filling the two `EXPO_PUBLIC_*` values a shipped bundle needs | Everything, locally: `supabase db reset && supabase test db` passes, the functions serve, and `.env.example` names every variable and where each one comes from |
 | **APNs key / FCM credentials** | with the accounts above | A real push. The sender records `mocked` rather than `sent` when no credentials exist, so this fails honestly rather than silently | `send-notifications`, the token schema, the four `PermissionMoment`s, and the no-op adapter |
-| **An analytics provider key** | optional | Nothing required for release | A vendor-neutral interface with a console adapter. Leaving `ANALYTICS_WRITE_KEY` blank is a supported configuration, not a stub |
-| **A physical iOS device** | — | Removing the largest verification gap below | Simulator coverage, on iPhone 17 Pro / iOS 26.5 |
+| **A physical iOS device** | — | Removing the largest verification gap below | Simulator coverage, on iPhone 17 Pro and 17 Pro Max / iOS 26.5, against a **Release** build |
+| **An Android SDK, and an emulator or device** | free | Building and running the Android app at all | The generated Gradle project (`npx expo prebuild --platform android`), `targetSdk 36`, and a permission set with no `SYSTEM_ALERT_WINDOW`. **Nothing Android has ever been compiled or run**: this machine has no Android SDK, no `adb` and no emulator |
 
 ### What a Supabase cloud project needs on the day
 
@@ -86,24 +93,20 @@ reads nothing at all.
 These need no credential. They are open because phase 14 ran out of sessions,
 not because anything stands in the way.
 
-- **CI has never executed on a runner.** `origin` exists
-  (`github.com/tjsingh143/arc21`) and this branch is 7 commits ahead of it;
-  `.github/workflows/ci.yml` arrived in session 5 and has therefore never been
-  on the remote. Every step in it was run locally and its output pasted into
-  that session's report, so what is unproven is only the runner plumbing —
-  `actions/checkout`, `actions/setup-node`, `supabase/setup-cli`. Pushing the
-  branch is the whole of the remaining work.
 - **The six store screenshots have never been captured.** STORE_LISTING.md's
   screenshot plan names each screen, its caption and the rules the images are
-  held to; no image file exists. The simulator can produce every required size.
-- **`every-screen.yaml` has never walked a build with a server configured.** It
-  asserts `.*no server configured.*` in five places, copy that appears only
-  while `EXPO_PUBLIC_SUPABASE_URL` is unset — so it passes as the repository is
-  checked out and fails the moment a real URL is present. A shipped build is
-  always the second kind. Making the flow cover both states is a change to its
-  contract, which is why it was not made mid-phase. Until then: move
-  `.env.local` aside before running it, and know that a `.env.local` is present
-  in this working copy.
+  held to; no image file exists. The simulator can produce every required size —
+  Apple requires a 6.9-inch iPhone set (1320 × 2868) and, because
+  `ios.supportsTablet` is true, a 13-inch iPad set (2064 × 2752). Curating and
+  captioning them is an owner decision rather than an engineering task, which is
+  why it is listed and not done.
+
+**Two items that stood here are closed.** CI has run on a real runner since
+phase 11 (`.github/workflows/ci.yml`, both jobs green on `ac9ae0a`, run
+33865868043). And `every-screen.yaml`'s counterpart now exists:
+`every-screen-online.yaml` walks the same screens on a build that HAS a server,
+including the Inventory screen added in phase 12, so the audit covers both
+configurations rather than only the one nobody ships.
 
 ---
 

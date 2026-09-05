@@ -84,3 +84,10 @@ export {
   describeOutcomeForAnnouncement,
   YOUR_TURN_ANNOUNCEMENT,
 } from "./outcome-announcement.js";
+
+export {
+  describeSeatBetting,
+  seatPresence,
+  type SeatPresence,
+  type SeatPresenceView,
+} from "./seat-presence.js";

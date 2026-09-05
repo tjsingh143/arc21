@@ -48,7 +48,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # A deep link, not the tab bar: several runs have been lost to selectors that
 # "COMPLETED" while the app sat on the wrong tab.
@@ -57,7 +60,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # The header carries a balance only for a signed-in account — a guest gets the
 # word GUEST and no number. `mc-sign-in.yaml` records why Home is not evidence

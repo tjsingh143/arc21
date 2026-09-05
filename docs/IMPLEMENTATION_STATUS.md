@@ -4,15 +4,18 @@
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.
 
-Last updated: 2026-08-21 (phase 14, session 3)
+Last updated: 2026-09-04 (phase 12 — migration counts corrected; see the pointer below)
 
 > **This file predates the launch sequence and does not track it.**
-> `docs/LAUNCH_STATE.md` is the index a fresh context should read first: it
-> carries the per-phase status, the architecture facts a new phase must not
-> rediscover, the current migration head and the last green verification.
-> Per-phase evidence is in `docs/phase-reports/`. What is below remains accurate
-> about the areas it describes; it is simply not the whole picture any more.
-> (Pointer added 2026-09-02, end of phase 9.)
+> **`docs/FINAL_RELEASE_REPORT.md` is the document to read first now** — the
+> launch sequence finished with phase 12, and that report carries the MVP
+> requirement matrix item by item, every command and its result, the device
+> evidence and the ten external owner actions. `docs/LAUNCH_STATE.md` remains the
+> index of the architecture facts a change must not rediscover, the current
+> migration head and the verification history. Per-phase evidence is in
+> `docs/phase-reports/`. What is below remains accurate about the areas it
+> describes; it is simply not the whole picture any more.
+> (Pointer added 2026-09-02, end of phase 9; updated 2026-09-04, end of phase 12.)
 
 ---
 
@@ -138,7 +141,7 @@ run:
 | `npm run test:coverage` | 1,363 across 65 files, all per-area gates met |
 | `supabase test db` | **422** assertions across 23 files, from a clean reset |
 | `npx vitest run tests/server` | **52** running, not skipped |
-| `supabase db reset` | applies all 32 migrations clean from empty |
+| `supabase db reset` | applies all 58 migrations clean from empty |
 | Maestro `every-screen.yaml` | exit 0, 84 steps |
 | Maestro `practice-hand.yaml` | exit 0 |
 | Maestro `career-node.yaml` | exit 0, all 20 hand iterations, stars progressed |
@@ -220,7 +223,7 @@ Measured this session:
 | `supabase test db` | **422** assertions across 23 files |
 | `npx vitest run tests/server` | **50** running, not skipped |
 | `npm run test:coverage` | 1,339 across 63 files, all gates met, deterministic |
-| `supabase db reset` | applies all 32 migrations clean from empty |
+| `supabase db reset` | applies all 58 migrations clean from empty |
 
 ---
 

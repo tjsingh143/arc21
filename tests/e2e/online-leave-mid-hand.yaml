@@ -43,7 +43,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # A Debug build over Metro takes twenty-odd seconds to read the stored session
 # back, and shows ONBOARDING until it has — asserting sooner photographs that.
@@ -57,7 +60,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible:
       id: "quick-tier-casual"
@@ -196,7 +202,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible:
       id: "quick-tier-casual"

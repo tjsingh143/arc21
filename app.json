@@ -10,17 +10,66 @@
     "userInterfaceStyle": "dark",
     "backgroundColor": "#0B0D10",
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.arc21.app",
       "buildNumber": "1",
       "config": {
         "usesNonExemptEncryption": false
+      },
+      "privacyManifests": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyTrackingDomains": [],
+        "NSPrivacyCollectedDataTypes": [
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeEmailAddress",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeUserID",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeGameplayContent",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeOtherUserContent",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          },
+          {
+            "NSPrivacyCollectedDataType": "NSPrivacyCollectedDataTypeDeviceID",
+            "NSPrivacyCollectedDataTypeLinked": true,
+            "NSPrivacyCollectedDataTypeTracking": false,
+            "NSPrivacyCollectedDataTypePurposes": [
+              "NSPrivacyCollectedDataTypePurposeAppFunctionality"
+            ]
+          }
+        ]
       }
     },
     "android": {
       "package": "com.arc21.app",
       "versionCode": 1,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ]
     },
     "plugins": [
       "expo-router",
@@ -33,7 +82,12 @@
           "imageWidth": 200
         }
       ],
-      "expo-secure-store",
+      [
+        "expo-secure-store",
+        {
+          "faceIDPermission": false
+        }
+      ],
       "expo-sqlite",
       [
         "expo-audio",

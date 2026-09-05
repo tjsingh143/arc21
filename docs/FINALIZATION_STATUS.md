@@ -6,6 +6,14 @@ against the authoritative specification
 137 pages; Part B "MASTER BUILD PROMPT" is the binding half, and the
 "MVP ACCEPTANCE CRITERIA" and "DEFINITION OF DONE" sections at its end are the gate).
 
+**STATUS, 2026-09-04: SUPERSEDED AS THE GATE, KEPT AS THE LEDGER.** The launch
+sequence ran to completion and phase 12 produced the release candidate.
+**`docs/FINAL_RELEASE_REPORT.md` is the document that now answers "is the MVP
+done"** — it carries the acceptance-criteria matrix item by item, every command
+and its result, the device evidence, the security re-check and the ten external
+owner actions. This file remains the historical record of how each area got
+there, and is accurate about what it describes.
+
 This file is the finite release ledger. It is not a progress report and it is not
 a roadmap. Every material MVP requirement appears here exactly once with the
 evidence that decided its status. **A row is VERIFIED COMPLETE only from objective

@@ -55,7 +55,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible:
       id: "leaderboard-purpose"
@@ -78,7 +81,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible: ".*Everyone plays the same shoe.*"
     timeout: 30000
@@ -124,7 +130,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible: ".*Four players, equal stacks, one elimination.*"
     timeout: 30000
@@ -144,7 +153,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible: "Social"
     timeout: 30000
@@ -171,7 +183,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible: "Notifications"
     timeout: 30000
@@ -192,7 +207,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible: "Statistics"
     timeout: 30000
@@ -206,7 +224,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Open"
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 - extendedWaitUntil:
     visible:
       id: "profile-inventory"
@@ -214,3 +235,23 @@ appId: com.arc21.app
 - assertVisible:
     id: "profile-friends"
 - assertNotVisible: ".*no server configured.*"
+
+# --- Inventory -------------------------------------------------------------
+# THE ONE SERVER-BACKED SCREEN NO AUDIT FLOW HAD WALKED WITH A SERVER PRESENT.
+# `every-screen.yaml` visits it unconfigured, where it correctly states the
+# absence — so the only assertion either flow made about this screen was about
+# the apology. Signed in, the catalogue comes from `my_inventory()` and the
+# equipped set from `my_loadout()`: `inventory-count` is a real figure and at
+# least one item is equippable, which cannot be true of a build talking to
+# nothing. The absence assertion stays, because nothing here is ever for sale.
+- tapOn:
+    id: "profile-inventory"
+- extendedWaitUntil:
+    visible:
+      id: "inventory-count"
+    timeout: 30000
+- assertVisible: ".*none of it changes the game.*"
+- assertNotVisible: ".*no server configured.*"
+- assertNotVisible: ".*Buy.*"
+- assertVisible:
+    id: "inventory-tab-avatar"

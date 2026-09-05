@@ -1,0 +1,159 @@
+# Arc 21 — the three controls that led nowhere, and the link that leads nowhere.
+#
+# WHAT THIS EXISTS FOR. Quick Play shipped three controls pointing at routes that
+# are not routes — `router.replace("/game")` twice and
+# `router.push("/auth/sign-up")` once — because `experiments.typedRoutes` writes
+# its declaration into `.expo/types/router.d.ts` and `tsconfig.json` listed
+# `.expo` under `exclude`, which filters `include`. Typed routes therefore
+# checked nothing for the life of the project. One of the three is the
+# specification's own recovery path for a player who cannot afford the tier they
+# picked ("offer: lower tier / Practice / eligible Recovery Grant"), so an empty
+# balance ended on expo-router's unmatched-route screen.
+#
+# `tests/contracts/every-route-target-exists.test.ts` is the gate that keeps the
+# targets real. This is the other half: it presses the controls and asserts WHERE
+# THEY LAND, because a route existing and a button reaching it are two different
+# claims and this repository has been caught by the gap between them before.
+#
+# It also drives an unknown deep link into `app/+not-found.tsx`. Without that
+# file expo-router renders its own `Unmatched` page, whose only control is
+# `<Link href={pathname} replace>` — the same unmatched path — so a stale
+# invitation on a cold start had no way back into the app.
+#
+# SIGNED OUT ON A CONFIGURED BUILD is the state under test, and it is the state
+# the two Practice controls are FOR. `clearState: true` does not clear the
+# keychain, so run `npx tsx scripts/e2e-fresh-app.ts` first if this device has
+# ever signed in.
+#
+# Run with:
+#   npx tsx scripts/e2e-fresh-app.ts
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/dead-ends.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "onboarding-guest"
+    timeout: 40000
+    optional: true
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "onboarding-guest"
+          commands:
+            - tapOn:
+                optional: true
+                id: "onboarding-guest"
+
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 40000
+
+
+# --- Quick Play, signed out ------------------------------------------------
+# A deep link rather than the Play tab: the mode cards carry an
+# `accessibilityLabel` that REPLACES their children in the tree, so tapping one
+# by its title is a text match against a sentence.
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "quick-practice"
+    timeout: 30000
+# The screen must OFFER practice rather than navigate on its own — "a screen that
+# navigated away by itself would be indistinguishable from a broken button".
+- assertVisible:
+    id: "quick-sign-up"
+- assertVisible: ".*needs an account.*"
+
+# THE FIRST DEAD CONTROL. It sent the player to `/game`, which is not a route.
+- tapOn:
+    id: "quick-practice"
+- extendedWaitUntil:
+    visible: "Place a bet to be dealt in."
+    timeout: 30000
+- assertNotVisible: "Unmatched Route"
+- assertVisible:
+    id: "chip-500"
+
+
+# --- Quick Play again, for the account control -----------------------------
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "quick-sign-up"
+    timeout: 30000
+
+# THE SECOND DEAD CONTROL. It sent the player to `/auth/sign-up`, which is not a
+# route either. `auth-username` is on the CREATE-ACCOUNT form and not on sign-in,
+# so it distinguishes the two screens rather than merely proving an auth screen.
+- tapOn:
+    id: "quick-sign-up"
+- extendedWaitUntil:
+    visible:
+      id: "auth-username"
+    timeout: 30000
+- assertVisible:
+    id: "auth-email"
+- assertNotVisible: "Unmatched Route"
+
+
+# --- A link that leads nowhere ---------------------------------------------
+# Any process on the device can open an `arc21://` URL. This one names a screen
+# that has never existed.
+- openLink: arc21://this-screen-does-not-exist
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "not-found"
+    timeout: 30000
+- assertVisible: "That link led nowhere"
+- assertNotVisible: "Unmatched Route"
+
+# And it is not a dead end: the way back is a control, not the back gesture,
+# because a cold start from a deep link has nothing behind it.
+- tapOn:
+    id: "not-found-home"
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 30000

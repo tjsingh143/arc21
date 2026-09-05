@@ -28,7 +28,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # The dev build has to attach to Metro and render before anything is tappable.
 # Onboarding gates a fresh install. Skipping to the app as a guest is one tap,

@@ -1,25 +1,32 @@
 # Arc 21 Launch State
 
-**Current Phase:** 12 — Production Release Candidate (EXTERNAL BLOCKER)
-**Last Completed Phase:** 11 — Adversarial QA / E2E / CI
-(**PASS, 2026-09-03**; see `docs/phase-reports/phase-11.md`)
-**Phase 11 — PASS (independently reverified, 2026-09-04; remote evidence
-closed)** — `docs/phase-reports/phase-11-verification.md`. Every phase-11
-finding re-checked and F-10 re-proved by reverting it in the running function;
-**four** further product defects found on the path that fix opened up, and fixed.
-The first three are commit `fc5568e`, green on CI run 33848267009. The fourth was
-found by CI itself, on the documentation commit that recorded the first three: a
-room could be **closed under a player being seated into it**, so their every
-buy-in was answered `SESSION_CLOSED` until housekeeping. It was reproduced with
-two transactions rather than retried, and fixed in `aeb8a76`. The code head this
-phase finally stands on is **`ac9ae0a`** — pushed to
-`origin/phase11-adversarial-qa` (PR #1) and **green on CI run 33865868043, both jobs**
-— 58 migrations from empty, 582 pgTAP assertions, 302 server tests, 2,399 unit
-tests, expo-doctor 21/21 and the iOS bundle, all on the runner.
+**Current Phase:** none — the launch sequence is finished.
+**Last Completed Phase:** 12 — Production Release Candidate
+(**PASS, 2026-09-04**; see `docs/FINAL_RELEASE_REPORT.md`)
 
-Detailed evidence lives in `docs/phase-reports/`. This file is the index a fresh
-context reads first. `docs/FINALIZATION_STATUS.md` remains the historical ledger
-and `docs/AUDIT.md` grades every area by HOW it was verified.
+**Phase 12 — PASS.** The last software phase. It set out to DISPROVE that Arc 21
+was ready and found **fourteen** things, all fixed: three Quick Play controls
+pointing at routes that are not routes (typed routes had been silently disabled
+by one line of `tsconfig.json` for the life of the project); no `+not-found`
+screen, so any bad `arc21://` link was a dead end; a departed player drawn at the
+table for ever under "Disconnected — their clock keeps running", which is untrue
+of all three ways a seat is vacated; an advertised analytics integration that
+does not exist; a **Face ID permission** shipped for an API the app never calls; a
+privacy manifest declaring **no collected data** while the app collects five
+kinds; Android's **"Display over other apps"**; EAS Update channels for a project
+with no `expo-updates`; **iPad declared supported with no iPad layout**, under a
+rule iPadOS 26 changed; and five defects in the repository's own tooling and
+flows, including a cleanup script that could strand an account and a sign-in flow
+that walked around onboarding and made every later flow fail.
+
+The full requirement matrix, every command and its result, the device evidence
+and the ten external owner actions are in **`docs/FINAL_RELEASE_REPORT.md`**.
+That is the document to read first now. This file remains the index of what a
+later change must not undo.
+
+Detailed evidence lives in `docs/phase-reports/`. `docs/FINALIZATION_STATUS.md`
+remains the historical ledger and `docs/AUDIT.md` grades every area by HOW it was
+verified.
 
 ---
 
@@ -40,11 +47,71 @@ and `docs/AUDIT.md` grades every area by HOW it was verified.
 | 10 — Backend/API Security | **PASS** | Six findings, five fixed and each proved to fail by reverting it in the running system. `tournament_entries` was readable by EVERY authenticated account — 152 rows of live stacks and prizes — and the IDOR sweep that classified it "a stranger must see NONE of it" passed on an empty fixture; `service_role` could mint a million chips through `/rest/v1/rpc/` in one request; the app shipped a microphone permission for a game that never records. |
 | 11 — Adversarial QA / E2E / CI | **PASS** | Ten defects fixed, each proved to fail by reverting it in the running system. A leaderboard page had no ceiling and answered `p_limit=2147483647` with every ranked row; one account registered **200 push devices in 1.9 s**, and each is an outbound message per notification; `search_players` was an unmetered directory dump — **108 calls enumerated 445 accounts** — whose LIKE metacharacters were unescaped; a notification payload was interpolated into a router path; the Practice assistance pills drew their labels OUTSIDE the pill at accessibility text sizes; and a cash-out the server deferred settled the chips and left the player on a dead screen that had to be force-quit. The `decode-uri-component` advisory phase 10 deferred was measured and found **not runtime-reachable** — the guard written for it was deleted rather than shipped. The two-simulator public-table lifecycle phase 7 deferred was walked end to end. **CI ran on a real runner for the first time, and kept earning its place: a commit that changed two MARKDOWN FILES failed the database job**, on two assertions that treated a shared public table as the test's own — the escrow of a table three players were sitting at, and a room strangers had already finished with. The load generator written to reproduce that then produced **eleven HTTP 500s from the product**: a public table allocated seat indices as `max + 1` over every row it had ever held against a `0..6` check, so the eighth player ever to sit there was refused by a constraint — and the table stayed active, advertising free seats and answering 500 to everyone, for the rest of its life. It failed both jobs at first: every function in `public` shipped executable by `anon` on any database whose migrations are applied by the role a current CLI uses — the foundation revoked default privileges on functions in `private` and, despite saying "the same protection for `public`", not in `public` — the app-art test compared compressed PNG bytes, which Node's bundled zlib makes platform-dependent; thirteen packages had drifted from the versions Expo SDK 57 expects; and the app could only be bundled on a machine that had bundled before. The device QA was then re-run against a **Release** build, because the one crash seen in this phase was a data race in `expo-notifications`' unsynchronised process-global delegate array — real, and reachable only by a debug build standing up several React Native runtimes while it waits on Metro. |
 | 11 — reverification | **PASS** (independent) | Phase 11's ledger re-checked item by item and F-10 re-proved by reverting the allocator in the running function — the eighth arrival answered HTTP 500 again. Three further defects, all on the path that fix opened up: **a public table's engine seat list grew without bound** (twelve seats on a five-seat table after ten ordinary arrivals and departures, the snapshot 2,040 B → 6,442 B, every departed player drawn on every remaining screen under "Disconnected — their clock keeps running"); **leaving left a `matched` matchmaking reservation behind**, so the next search was answered "Seat found" for a room the player was no longer a member of and the buy-in came back HTTP 403 for two minutes; and underneath that, **a returning player was seated on their own departed row** with no buy-in taken, because `findSeat` answers with the latest seat whatever its status and the buy-in key was derived from the player rather than the seat. Two phase-11 tests strengthened: a flow assertion that could not fail, and four flows tapping non-optionally inside a conditional `repeat`. |
-| 12 — Production Release Candidate | **EXTERNAL BLOCKER** | Needs Apple/Play/EAS/domain/Supabase-cloud credentials. |
+| 12 — Production Release Candidate | **PASS** | Fourteen findings, all fixed. Typed routes had been disabled by `tsconfig.json`'s `exclude: [".expo"]` — `exclude` filters `include` — so `router.push("/nowhere")` had never been a type error and **three Quick Play controls led nowhere**, one of them the specification's own recovery path for a player who cannot afford their tier. There was no `+not-found` screen, so any unmatched `arc21://` link landed on expo-router's developer page whose only control links to the same unmatched path. A player who LEFT a table was drawn on every remaining screen as `0 · Yet to bet · Disconnected — their clock keeps running.` for the life of the table, and none of that is true of a departed seat. The build shipped a **Face ID** usage string for an API it never calls and a privacy manifest saying it collects nothing; Android shipped **SYSTEM_ALERT_WINDOW**; `eas.json` named EAS Update channels with no `expo-updates` installed; and `ios.supportsTablet` was true with no iPad layout, which iPadOS 26 turned from a cosmetic question into a requirement to support all orientations and dynamic resizing. Five more were the repository's own tooling: a cleanup script that could not play a table out of `INSURANCE_OFFER` and therefore stranded accounts (the FOURTH helper caught by that phase), a sign-in flow that deep-linked around onboarding and left every later flow photographing the carousel, 54 `when`-guarded taps that were two reads of the screen, an audit flow that had never walked Inventory with a server present, and five stale counts asserting things about the build that had stopped being true. **26 Maestro runs on a Release build across two simulators, zero failures, zero crash reports.** `npm audit` works on this machine again and agrees exactly with the GitHub Global Advisory Database. |
 
-**IN PROGRESS here means:** substantial implementation exists and is locally
-green — it does NOT mean this launch sequence has validated or signed the phase
-off. Treat every one as unverified until its own phase runs.
+Every phase has run. **The MVP software is complete**; what remains is in
+`docs/FINAL_RELEASE_REPORT.md` §G, and every item there is blocked on something
+that must be bought, registered, signed for or physically present.
+
+---
+
+## What phase 12 established that a later phase must not undo
+
+- **`tsconfig.json` MUST NOT EXCLUDE `.expo`.** `experiments.typedRoutes` writes
+  `.expo/types/router.d.ts`, and that file's module augmentation is the only
+  thing that makes `router.push("/nowhere")` a type error. `exclude` filters
+  `include`, so listing `.expo` removed it from the program and typed routes
+  checked nothing for the life of the project — three Quick Play controls shipped
+  pointing at `/game` and `/auth/sign-up`. The generated file is gitignored, so a
+  checkout without it typechecks clean rather than failing, which is why the real
+  gate is `tests/contracts/every-route-target-exists.test.ts`: it reads the route
+  tree off disk and the targets out of the source and needs nothing generated.
+- **`app/+not-found.tsx` IS LOAD-BEARING.** Without it expo-router falls back to
+  its own `Unmatched` page, whose one control is `<Link href={pathname} replace>`
+  — the same unmatched path — so a stale `arc21://` link on a cold start had no
+  way back into the app. `tests/e2e/dead-ends.yaml` drives a bad deep link into
+  it and out again.
+- **`connected: false` MEANS DEPARTED, AND ONLY ONE OF THE THREE WAYS LEAVES A
+  CLOCK RUNNING.** The table screen said "Disconnected — their clock keeps
+  running" for every one of them and "Yet to bet" beside it, which is untrue of a
+  player who cashed out and of one eliminated from a tournament.
+  `seat-presence.ts` is the predicate; `isVacatedSeat` cannot substitute, because
+  it exists to let a NEWCOMER reuse a slot and nobody new ever joins a private
+  room.
+- **A PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING, and this is the second
+  time.** Phase 10 removed `expo-audio`'s microphone; phase 12 removed
+  `expo-secure-store`'s `NSFaceIDUsageDescription` (`faceIDPermission: false`)
+  and React Native's `SYSTEM_ALERT_WINDOW` on Android
+  (`android.blockedPermissions`). The Release `Info.plist` now carries **no usage
+  description at all**; check that, not `app.json`.
+- **THE PRIVACY MANIFEST MUST DESCRIBE WHAT THE APP COLLECTS.** Expo's template
+  ships `NSPrivacyCollectedDataTypes` EMPTY, which is a claim, and it was false:
+  Arc 21 collects an email address, a user id, gameplay records, profile content
+  and a push token. `ios.privacyManifests` in `app.json` now declares all five
+  from `docs/PRIVACY.md`, and the plugin MERGES, so the required-reason entries
+  survive.
+- **`ios.supportsTablet` IS A PROMISE ABOUT A LAYOUT, AND iPadOS 26 MADE IT A
+  BIGGER ONE.** `UIRequiresFullScreen` is now ignored and an iPad app is expected
+  to support all orientations and dynamic resizing — so an iPad-native
+  declaration can no longer be narrowed by a plist key. Arc 21's design target is
+  phone portrait and no tablet layout exists, so the declaration was changed to
+  match: `supportsTablet: false`. It still runs on iPad, in the one layout that
+  has been designed and tested.
+- **ANY HELPER THAT DRIVES A HAND MUST ANSWER `INSURANCE_OFFER` FOR SOMEBODY
+  ELSE'S SEAT.** `scripts/e2e-account.ts` is the FOURTH to be caught by the phase
+  after betting closes. Its own `DECLINE_INSURANCE` is correctly refused when the
+  phase is held by an absent player's PENDING decision; only `RESOLVE_TIMEOUT`,
+  and waiting for the deadline, moves that table.
+- **A FLOW THAT REACHES THE AUTH SCREEN BY DEEP LINK NEVER COMPLETES
+  ONBOARDING.** `onboarding:completion` is written by the onboarding BUTTONS, and
+  `app/index.tsx` reads it on every launch — so a flow that walks around it
+  leaves every later flow photographing the carousel. The app is right to re-show
+  it: the flag records that the 18+ disclosure has been seen, and somebody who
+  deep-linked past it has not seen it.
+- **`npm audit` WORKS ON THIS MACHINE AGAIN**, and agrees exactly with the
+  GitHub Global Advisory Database: five distinct advisories, four of them in
+  packages the shipped bundle does not contain. Phase 10 and phase 11 both
+  recorded that it could not run here. Re-measure rather than inherit.
 
 ---
 
@@ -660,26 +727,38 @@ Phase 6 added three:
 
 None blocking. Recorded observations, all assigned onward:
 
-0. **Four advisories in the BUILD toolchain, none in the shipped bundle**
-   (2026-09-04, GitHub Global Advisory Database, all 926 lockfile versions).
-   `image-size@1.2.1` carries two **high** advisories
-   (`GHSA-w3rx-r6r6-pgpr`, `GHSA-5p2g-fcmc-qvqq` — infinite loops in the ICNS
-   and JXL/HEIF parsers) and is **unfixed upstream**: the advisory covers
-   `<= 2.0.2` and 2.0.2 is the latest published version. It reaches this project
-   through `metro`, the bundler, which reads the image assets in this
-   repository's own tree at build time. `@xmldom/xmldom` (0.8.14 / 0.9.11) and
-   `uuid@7.0.3` reach it through `@expo/config-plugins`, which runs at
-   `expo prebuild`. **None of the four is in the app**: Metro's own source map
-   for the shipped bundle lists 2,641 modules and none of them belongs to
-   `image-size`, `@xmldom/xmldom`, `uuid`, `metro`, `@expo/config-plugins` or
-   `xcode` — with `decode-uri-component` and `query-string` present as the
-   positive control. Nothing was upgraded: `metro` is pinned by
-   `react-native@0.86.3` and `@expo/config-plugins` by `expo-splash-screen`,
-   both the versions Expo SDK 57 expects and expo-doctor checks. The sweep was
-   **re-run after the SDK patch realignment** later the same day and returns the
-   same six advisories byte for byte, with the source map still listing 2,641
-   modules and the same zeros. → **Phase 12** should re-run the sweep against
-   whatever the SDK has moved to by then.
+0. **Five advisories in the BUILD TOOLCHAIN, one in the bundle and not
+   reachable** (re-measured 2026-09-04, phase 12, from TWO independent sources
+   that agree). **`npm audit` runs on this machine again** — the endpoint that
+   hung reproducibly through phases 10 and 11 is answering — and it reports 19
+   flagged packages, 15 moderate and 4 high, resolving to **five distinct
+   advisories**. The GitHub Global Advisory Database, asked about all 926
+   `name@version` pairs in the committed lockfile, returns **six**, one of which
+   it labels *"Duplicate Advisory"* of another. The same five either way:
+   `image-size` ×2 (**high**, and **unfixed at every published version** — the
+   advisory covers `<= 2.0.2` and 2.0.2 is the latest), `@xmldom/xmldom`,
+   `uuid` and `decode-uri-component`.
+
+   **The four build-time ones are not in the app.** Metro's own source map for
+   the shipped bundle lists **2,643 modules** and none belongs to `image-size`,
+   `@xmldom/xmldom`, `uuid`, `metro`, `@expo/config-plugins`, `xcode` or
+   `plist` — with `decode-uri-component` (1) and `query-string` (1) present as
+   the positive control, because a sweep that returns zero for everything has
+   proved nothing. `image-size` reaches the project through `metro`, the
+   bundler; `@xmldom/xmldom` and `uuid` through `@expo/config-plugins`, which
+   runs at `expo prebuild`.
+
+   **The fifth IS in the bundle and is not runtime-reachable.** The `expo-router`
+   file that calls `queryString.parse` is a vendored upstream copy imported by
+   nothing; the live resolver uses `URLSearchParams`. Measured on the device in
+   phase 11 (a 12,291-character hostile query navigated in 1.0 s) and pinned by
+   `tests/deep-links/decode-uri-component-reachability.test.ts`.
+
+   Nothing was upgraded and nothing needed to be: `npm audit fix --dry-run`
+   changes nothing, `--force` would install `expo-router@5.1.11` — a downgrade
+   of fifty-two majors — and `metro` and `@expo/config-plugins` are pinned by
+   `react-native@0.86.3` and `expo-splash-screen` at the versions Expo SDK 57
+   expects and expo-doctor checks.
 
 1. **Local edge runtime is load-gated** (environment, not product). Above host
    load ~12 the runtime hits CPU soft/hard limits and retires workers; the
@@ -727,19 +806,25 @@ None blocking. Recorded observations, all assigned onward:
    caller waits 60 s and gets a 504. Measured at 8 MB and 32 MB. With a token the
    same bodies are refused in under a second, because the body is then read (and
    discarded past the cap). Supabase Cloud caps request size before a function
-   sees it. → **Phase 11**, to confirm against a cloud gateway.
+   sees it. → **Owner action**: confirm against the cloud gateway once a
+   Supabase project exists. Nothing in this repository can change it, and the
+   product's own answer (HTTP 400 in under a second, with a token) is correct.
 8. **One runtime-reachable dependency advisory**, `decode-uri-component` via
    `expo-router` → `query-string`, which parses incoming deep links. The
    advisory's shape does not reproduce at the installed version (20,000 bare
    percent signs decode in 0.63 ms), and the "fix" would break the app —
    `decode-uri-component@0.5.0` is pure ESM and `query-string@7` `require()`s it.
    The other four advisories are build-time only, traced to their paths rather
-   than counted. → **Phase 11**, dynamic supply-chain testing.
+   than counted. → **Closed by observation 0 above**, which re-measured it in
+   phase 12 from two independent sources and pinned the reachability argument in
+   `tests/deep-links/decode-uri-component-reachability.test.ts`.
 9. **Four GoTrue settings are local-development values** — `enable_confirmations`
    off, no captcha, `secure_password_change` off, no session timebox. The first
    is also the project's one user-enumeration oracle (`/auth/v1/signup` answers
-   `user_already_exists`). None can be validated without SMTP. → **Phase 12**,
-   itemised in `docs/RELEASE.md`.
+   `user_already_exists`). None can be validated without SMTP. → **Owner
+   action**, and the one that matters is `enable_confirmations = true`; itemised
+   with what each buys in `docs/RELEASE.md` and in
+   `docs/FINAL_RELEASE_REPORT.md` §G.4.
 10. **The simulator reached a broken install state twice in phase 5.**
    `simctl get_app_container` returned a `com.arc21.app-<timestamp>.app`
    placeholder and every launch failed `FBSOpenApplicationServiceErrorDomain
@@ -751,11 +836,59 @@ None blocking. Recorded observations, all assigned onward:
 
 ## External blockers
 
-Apple Developer, Play Console, Expo/EAS project id, a domain, a Supabase cloud
-project, APNs/FCM credentials, a physical iOS device. Documented in
-`docs/RELEASE.md`. None blocks Phases 1–11.
+Apple Developer, Play Console, Expo/EAS project id, a domain (privacy policy,
+support, AND the account-deletion request page Google Play requires alongside
+the in-app path), a Supabase cloud project, APNs/FCM credentials, a physical iOS
+device, and an Android SDK with an emulator or device — **nothing Android has
+ever been compiled or run here**. Each is written out with its exact owner
+action and its exact verification in `docs/FINAL_RELEASE_REPORT.md` §G, and
+summarised in `docs/RELEASE.md`. None blocked any phase of the build.
 
-## Last known green verification — 2026-09-04 (phase 11 reverification)
+## Last known green verification — 2026-09-04 (phase 12, the release candidate)
+
+From a **clean dependency install**, against a database reset from empty, with
+`supabase functions serve` restarted first:
+
+```
+rm -rf node_modules && npm ci       exit 0, 9.8 s
+npx tsc --noEmit                    exit 0
+npm run check:functions             all 3 Edge Functions typecheck
+npm run lint                        0 errors, 37 warnings (baseline unchanged)
+npm run test:unit                 125 files / 2,415 tests PASS  (phase 11: 123 / 2,399)
+npm run test:server                23 files /   302 tests PASS, 167 s
+supabase db reset                  58 migrations applied from empty, exit 0
+supabase test db                   29 files /   582 assertions PASS
+npm run test:coverage              per-area gates pass, exit 0
+npm run contrast:check             50 pairings, 0 failing (+2 Increased-contrast substitutes)
+npm run benchmark                  809 µs/hand at load 19.5; heap +12 KB over 50 hands
+npm run bundle:check               exit 0, 6.2 MB Hermes bundle
+npx expo-doctor@latest             21/21 checks passed
+npx expo prebuild --clean          iOS + Android generated from app.json
+npx expo run:ios --configuration Release   Build Succeeded
+```
+
+Maestro, **Release build**, two simulators (iPhone 17 Pro + 17 Pro Max, iOS
+26.5): **38 runs, 0 failures, and no Arc21 crash report written by any of them**
+— 26 against the build carrying every code fix and 12 more against the final
+artifact, which differs only by `supportsTablet: false`
+— `dead-ends` (new), the three Practice flows, `career-node`, `mc-sign-in` ×2,
+`online-table`, `every-screen-online`, the eight-flow private two-client
+scenario, the five-flow public two-client scenario, both Sprint flows,
+`private-lobby`, `public-matchmaking` and `online-leave-mid-hand`. The
+`expo-notifications` `EXC_BAD_ACCESS` phase 11 diagnosed did not recur. Also
+walked: the Release build on a **13-inch iPad Pro**, which is what settled the
+`supportsTablet` question.
+
+`every-screen.yaml` was NOT re-run: it asserts `.*no server configured.*`, which
+a Release build inlines at bundle time, so it needs a second build with
+`.env.local` moved aside. Nothing in the unconfigured path changed this phase and
+`dead-ends.yaml` exercises the same component branch signed out. Stated rather
+than left to be assumed.
+
+**CI has NOT run on this phase's commit.** The last SHA CI verified is `ac9ae0a`;
+pushing is an owner action (`docs/FINAL_RELEASE_REPORT.md` §G.10).
+
+## Previous green verification — 2026-09-04 (phase 11 reverification)
 
 Against a database reset from empty (57 migrations) with `functions serve`
 restarted first, and carrying this pass's three fixes:

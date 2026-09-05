@@ -29,5 +29,15 @@
     ".expo/types/**/*.ts",
     "expo-env.d.ts"
   ],
-  "exclude": ["node_modules", ".expo", "dist", "supabase/functions"]
+  // `.expo` is NOT excluded, and that is load-bearing rather than an oversight.
+  // `experiments.typedRoutes` writes `.expo/types/router.d.ts`, whose module
+  // augmentation is the ONLY thing that makes `router.push("/nowhere")` a type
+  // error. `exclude` filters `include`, so listing `.expo` here silently
+  // removed that file from the program and typed routes checked nothing: three
+  // Quick Play controls shipped pointing at `/game` and `/auth/sign-up`, which
+  // are not routes. The generated file is gitignored, so a checkout without it
+  // typechecks clean rather than failing — which is why
+  // `tests/contracts/every-route-target-exists.test.ts` owns the gate and this
+  // is the local convenience.
+  "exclude": ["node_modules", "dist", "supabase/functions", ".expo/cache", ".expo/web", ".expo/dev", ".expo/prebuild"]
 }

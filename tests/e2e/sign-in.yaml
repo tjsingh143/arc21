@@ -42,7 +42,10 @@ appId: com.arc21.app
           when:
             visible: "Open"
           commands:
-            - tapOn: "Cancel"
+            - tapOn:
+                text: "Cancel"
+                # The dialog can dismiss itself between the `when` and the tap.
+                optional: true
       - runFlow:
           when:
             visible: "Save Password?"
