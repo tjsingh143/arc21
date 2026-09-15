@@ -152,6 +152,61 @@ async function readCapped(request: Request): Promise<CappedBody> {
   return { body: out, bytesSeen, overflowed: false };
 }
 
+/**
+ * Serves `handler`, then finishes reading any request body it left unread
+ * BEFORE the response is handed to the runtime.
+ *
+ * Every function refuses a caller it cannot identify before it reads the body —
+ * `authenticate` and `assertOperator` run first, and `readJsonBody` itself
+ * refuses a wrong method or content type before reading. That ordering is right
+ * and stays: an unauthenticated body is never parsed and never reaches the
+ * database. But a response returned while the runtime is still writing the
+ * request body into the function can be LOST. Edge runtime v1.74.3 logs
+ * `error in user worker connection: user body write aborted` and the caller
+ * never receives the refusal, so it waits until its own timeout.
+ *
+ * MEASURED before this existed, against unauthenticated POSTs to the running
+ * functions: 12 of 180 requests carrying an 8,170-byte body went unanswered
+ * across all three functions, and 147 of 200 carrying 64 KB in a minimal
+ * function that refused without reading — one `write aborted` line per lost
+ * reply. The same function draining first answered 200 of 200. In CI it was
+ * the intermittent `pgTAP and server integration` failure, on code from before
+ * Astra Refresh A as well as after it.
+ *
+ * The drain is `readCapped`, so what an unauthenticated caller can make this
+ * HOLD is the same `MAX_BODY_BYTES` plus one chunk as any other request, and it
+ * is discarded. What it can make this SPEND is the time and CPU of reading what
+ * it uploads — exactly what a caller with a valid token could already cause
+ * through the oversize refusal in `readJsonBody`, and bounded the same way: by
+ * the runtime's per-isolate CPU limit. Measured after this change, 17 of 18
+ * unauthenticated 1, 8 and 32 MB bodies were refused 401 in 0.05–3.3 s; the
+ * eighteenth, 32 MB at host load 25, reached that CPU hard limit and the
+ * supervisor ended the worker, as the authenticated 32 MB case also can. Stopping
+ * the read early is not the alternative: that was measured as a 60 s gateway
+ * stall (rule 2 of `readJsonBody`).
+ *
+ * A body the handler already read is left alone, and a caller who disconnects
+ * mid-body is not an error worth reporting: nobody is waiting for the reply.
+ */
+export function withUnreadBodyDrained(
+  handler: (request: Request) => Promise<Response>,
+): (request: Request) => Promise<Response> {
+  return async (request) => {
+    const response = await handler(request);
+    await drainUnreadBody(request);
+    return response;
+  };
+}
+
+export async function drainUnreadBody(request: Request): Promise<void> {
+  if (!request.body || request.bodyUsed) return;
+  try {
+    await readCapped(request);
+  } catch {
+    // The caller went away mid-body; there is no one left to answer.
+  }
+}
+
 /** Correlates a client-visible rejection with the server-side detail. */
 export function newRequestId(): string {
   return crypto.randomUUID();

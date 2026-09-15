@@ -30,7 +30,13 @@
 
 import { CommandError, classify, toRejectedResponse } from "../_shared/command-errors.ts";
 import { db } from "../_shared/postgres-client.ts";
-import { jsonResponse, newRequestId, preflightResponse, readJsonBody } from "../_shared/http-json.ts";
+import {
+  jsonResponse,
+  newRequestId,
+  preflightResponse,
+  readJsonBody,
+  withUnreadBodyDrained,
+} from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
 import { optionalEnv, serviceRoleKey } from "../_shared/env.ts";
 import {
@@ -60,7 +66,9 @@ interface DeliveryRow {
   data: Record<string, string | number>;
 }
 
-Deno.serve(async (request) => {
+// A refusal returned before the body is read can be lost by the runtime;
+// see `withUnreadBodyDrained`.
+Deno.serve(withUnreadBodyDrained(async (request) => {
   if (request.method === "OPTIONS") return preflightResponse();
 
   const requestId = newRequestId();
@@ -91,7 +99,7 @@ Deno.serve(async (request) => {
 
     return jsonResponse(toRejectedResponse(rejection, requestId), rejection.httpStatus);
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 

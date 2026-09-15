@@ -1447,6 +1447,23 @@ two now agree exactly — five distinct advisories, four of them in packages the
 shipped bundle does not contain. Re-measure an environmental claim rather than
 inheriting it; this one had been true twice and was written down as if permanent.
 
+**A REFUSAL RETURNED BEFORE THE REQUEST BODY IS READ CAN BE LOST, AND IT LOOKS
+LIKE A FLAKY SUITE.** All three functions refuse an unidentified caller before
+`readJsonBody` — the right order — and edge runtime v1.74.3 can drop a reply
+returned while it is still writing the request body into the function: it logs
+`error in user worker connection: user body write aborted` and the caller waits
+for ever. In CI that was `rejects a request with no token` timing out at 30 s and
+the stack guard's 5 s probe failing, a few runs in ten, on code from BEFORE Astra
+Refresh A as well as after it — settled by a controlled experiment on the
+checkpoint's parent, not by reruns. Locally, 147 of 200 unauthenticated 64 KB
+requests were lost against 0 of 200 when the same function drained first.
+`withUnreadBodyDrained` wraps every `Deno.serve` handler and drains through the
+capped reader after the handler answers, so nothing about which reply is sent
+changes. **The CI job log never showed any of this**: `functions serve &` is
+captured only for its own step, so the runtime's own line was invisible until a
+diagnostic step printed `docker logs supabase_edge_runtime_arc21`. Read the
+runtime log before calling a hang load.
+
 ---
 
 ## Product rules that are easy to get wrong

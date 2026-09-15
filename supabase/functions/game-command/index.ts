@@ -47,6 +47,7 @@ import {
   newRequestId,
   preflightResponse,
   readJsonBody,
+  withUnreadBodyDrained,
 } from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
 import { checkRateLimit, consumeRateLimit, OUTSIDE_GAME_ACTION } from "../_shared/rate-limit.ts";
@@ -98,7 +99,9 @@ interface HandledCommand {
   chipDelta?: number;
 }
 
-Deno.serve(async (request: Request): Promise<Response> => {
+// A refusal returned before the body is read can be lost by the runtime;
+// see `withUnreadBodyDrained`.
+Deno.serve(withUnreadBodyDrained(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") return preflightResponse();
 
   const startedAt = Date.now();
@@ -165,7 +168,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     return jsonResponse(toRejectedResponse(rejection, log.requestId), rejection.httpStatus);
   }
-});
+}));
 
 /**
  * Escrow is "chips this table owes back to a wallet", not "chips on the felt".

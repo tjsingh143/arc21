@@ -11,6 +11,14 @@ tests, 592 SQL assertions, all 59 migrations and the final iOS Release installed
 on both simulators. [RELEASE.md](./RELEASE.md) keeps external activation and
 unverified platform/device work explicit. The phase verdicts below are historical.
 
+**After Refresh A (publication, 2026-09-15):** one backend hotfix, for a
+pre-existing Edge Function issue the CI experiment found — an early
+authentication/operator refusal returned before the request body was read could
+be lost by the edge runtime, leaving the caller waiting. Every function now drains
+an unread body through the existing capped reader before replying; refusal codes,
+statuses and ordering are unchanged. Evidence and the controlled experiment are in
+pull request #2. The Refresh A checkpoint itself (`a52199d`) is unchanged.
+
 **Last numbered phase:** 12 — Production Release Candidate
 (**PASS, 2026-09-04**; see `docs/FINAL_RELEASE_REPORT.md`)
 

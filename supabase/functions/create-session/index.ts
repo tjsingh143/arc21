@@ -74,6 +74,7 @@ import {
   newRequestId,
   preflightResponse,
   readJsonBody,
+  withUnreadBodyDrained,
 } from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
 import { RollbackSignal, withTransaction, toInteger, type Tx } from "../_shared/postgres-client.ts";
@@ -129,7 +130,9 @@ const PRIVATE_TIMING: GameTiming = {
   settlementMillis: 12_000,
 };
 
-Deno.serve(async (request: Request): Promise<Response> => {
+// A refusal returned before the body is read can be lost by the runtime;
+// see `withUnreadBodyDrained`.
+Deno.serve(withUnreadBodyDrained(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") return preflightResponse();
 
   const startedAt = Date.now();
@@ -204,7 +207,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     return jsonResponse(toRejectedResponse(rejection, log.requestId), rejection.httpStatus);
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // OPEN

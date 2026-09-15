@@ -35,6 +35,7 @@ import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { COMMAND_REJECTION_CODES } from "../../shared/contracts/index.js";
+import { MAX_BODY_BYTES } from "../../supabase/functions/_shared/http-json.js";
 import { stackUp } from "./stack-guard.js";
 
 const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
@@ -348,4 +349,104 @@ suite("hostile credentials", () => {
     expect((await postRaw("send-notifications", LOCAL_ANON_KEY, "{}")).status).toBe(401);
     expect((await postRaw("send-notifications", null, "{}")).status).toBe(401);
   }, 30_000);
+});
+
+/**
+ * AN EARLY REFUSAL MUST BE DELIVERED, not merely returned.
+ *
+ * All three functions refuse a caller they cannot identify BEFORE reading the
+ * body, which is the right order. But edge runtime v1.74.3 can lose a response
+ * returned while it is still writing the request body into the function: it logs
+ * `user body write aborted` and the caller waits for ever. Measured against the
+ * running functions before the fix: 12 of 180 unauthenticated requests with an
+ * 8 KB body went unanswered across the three functions, and in CI the same thing
+ * failed `rejects a request with no token` and the stack guard's probe on code
+ * from before Astra Refresh A as well as after it.
+ *
+ * Every request here carries its own reply bound, so a lost refusal is COUNTED
+ * and named rather than surfacing as a test timeout; nothing is retried, because
+ * a second attempt that is answered says nothing about the first. The oversized
+ * body is the near-deterministic case (most such replies were lost before the
+ * fix); the body at the cap is the one a real client can legitimately send.
+ */
+suite("early refusals with a body the function never reads", () => {
+  const FUNCTIONS_UNDER_TEST = ["game-command", "create-session", "send-notifications"] as const;
+  const REPLY_BOUND_MS = 10_000;
+  const IN_FLIGHT = 4;
+  const AT_CAP = JSON.stringify({ pad: "x".repeat(MAX_BODY_BYTES - 32) });
+  const OVERSIZED = JSON.stringify({ pad: "x".repeat(64 * 1024) });
+
+  interface Delivery {
+    statuses: Record<string, number>;
+    codes: Record<string, number>;
+    lost: number;
+    slowestMs: number;
+  }
+
+  /** Sends `count` unauthenticated POSTs, `IN_FLIGHT` at a time, and tallies what came back. */
+  async function refuseMany(fn: string, body: string, count: number, contentType = "application/json"): Promise<Delivery> {
+    const delivery: Delivery = { statuses: {}, codes: {}, lost: 0, slowestMs: 0 };
+    let sent = 0;
+    await Promise.all(
+      Array.from({ length: IN_FLIGHT }, async () => {
+        while (sent < count) {
+          sent += 1;
+          const startedAt = Date.now();
+          try {
+            const response = await fetch(`${FUNCTIONS}/${fn}`, {
+              method: "POST",
+              headers: { apikey: LOCAL_ANON_KEY, "content-type": contentType },
+              body,
+              signal: AbortSignal.timeout(REPLY_BOUND_MS),
+            });
+            const parsed = JSON.parse((await response.text()) || "{}") as { code?: string };
+            delivery.statuses[response.status] = (delivery.statuses[response.status] ?? 0) + 1;
+            delivery.codes[String(parsed.code)] = (delivery.codes[String(parsed.code)] ?? 0) + 1;
+          } catch (error) {
+            if ((error as Error).name !== "TimeoutError") throw error;
+            delivery.lost += 1;
+          }
+          delivery.slowestMs = Math.max(delivery.slowestMs, Date.now() - startedAt);
+        }
+      }),
+    );
+    return delivery;
+  }
+
+  function expectEveryRefusalDelivered(fn: string, delivery: Delivery, count: number): void {
+    expect(
+      delivery.lost,
+      `${fn}: ${delivery.lost} of ${count} unauthenticated requests got no reply within ` +
+        `${REPLY_BOUND_MS} ms. A lost early refusal means the body was not drained before responding.`,
+    ).toBe(0);
+    expect(delivery.statuses, fn).toEqual({ 401: count });
+    expect(delivery.codes, fn).toEqual({ UNAUTHENTICATED: count });
+  }
+
+  it("keeps the body at the cap permitted, so the at-cap case is a legitimate request size", () => {
+    expect(new TextEncoder().encode(AT_CAP).byteLength).toBeLessThanOrEqual(MAX_BODY_BYTES);
+    expect(new TextEncoder().encode(AT_CAP).byteLength).toBeGreaterThan(MAX_BODY_BYTES - 64);
+  });
+
+  for (const fn of FUNCTIONS_UNDER_TEST) {
+    it(`${fn} delivers every refusal to unauthenticated requests carrying a body at the cap`, async () => {
+      const count = 40;
+      expectEveryRefusalDelivered(fn, await refuseMany(fn, AT_CAP, count), count);
+    }, 120_000);
+
+    it(`${fn} delivers every refusal to unauthenticated oversized requests, still as 401`, async () => {
+      // Identity is checked first, so an oversized body from nobody is refused
+      // as UNAUTHENTICATED, not INVALID_REQUEST — the drain changes when the
+      // reply is sent, never which reply it is.
+      const count = 20;
+      const delivery = await refuseMany(fn, OVERSIZED, count);
+      expectEveryRefusalDelivered(fn, delivery, count);
+      expect(delivery.slowestMs, `${fn}: slowest oversized refusal took ${delivery.slowestMs} ms`).toBeLessThan(REPLY_BOUND_MS);
+    }, 120_000);
+
+    it(`${fn} still refuses a malformed unauthenticated body as 401, whatever its content type`, async () => {
+      expectEveryRefusalDelivered(fn, await refuseMany(fn, "{not json", 4), 4);
+      expectEveryRefusalDelivered(fn, await refuseMany(fn, AT_CAP, 4, "text/plain"), 4);
+    }, 60_000);
+  }
 });
