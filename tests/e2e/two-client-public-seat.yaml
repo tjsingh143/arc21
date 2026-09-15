@@ -19,7 +19,13 @@
 
 appId: com.arc21.app
 ---
-# NO `launchApp`, DELIBERATELY, and this is the hard-won part of the scenario.
+# Activate without restarting: XCTest startup can leave SpringBoard foreground
+# while this process and its matched reservation remain intact.
+- launchApp:
+    stopApp: false
+    clearState: false
+
+# NO process restart, deliberately.
 #
 # A relaunch re-enters the matchmaking screen and re-enqueues, which RELEASES
 # the allocation A is holding: measured, both `room_members` rows went to `left`

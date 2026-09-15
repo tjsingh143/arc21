@@ -96,11 +96,12 @@ export function HandCards({
             numeric
             testID={testID}
             accessibilityLabel={accessibleValue}
+            style={styles.valueText}
           >
             {derivedLabel}
           </AppText>
           {detail ? (
-            <AppText variant={detailVariant} color="textSecondary" numeric>
+            <AppText variant={detailVariant} color="textSecondary" numeric style={styles.valueText}>
               {` · ${detail}`}
             </AppText>
           ) : null}
@@ -113,6 +114,7 @@ export function HandCards({
 const styles = StyleSheet.create({
   container: {
     alignItems: "center",
+    maxWidth: "100%",
     gap: spacing.sm,
     paddingVertical: spacing.xs,
   },
@@ -129,6 +131,10 @@ const styles = StyleSheet.create({
   },
   valueRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
     alignItems: "baseline",
+    maxWidth: "100%",
   },
+  valueText: { maxWidth: "100%", textAlign: "center" },
 });

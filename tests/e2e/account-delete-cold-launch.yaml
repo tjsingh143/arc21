@@ -1,0 +1,38 @@
+# Run only after native deletion is confirmed in the UI and authoritative DB.
+# EMAIL and PASSWORD belong to that freshly deleted disposable local account.
+# Never clear SQLite, Keychain, or app state between deletion and this proof.
+appId: com.arc21.app
+---
+- stopApp
+- launchApp:
+    clearState: false
+- openLink: arc21://settings
+- scrollUntilVisible:
+    element:
+      text: Sign in or create an account
+    direction: DOWN
+    timeout: 60000
+- assertVisible: Playing as a guest
+- assertNotVisible: ${EMAIL}
+- assertNotVisible: Sign out
+- assertNotVisible:
+    id: delete-account
+- takeScreenshot: deleted-account-cold-guest
+- tapOn: Sign in or create an account
+- tapOn:
+    id: auth-email
+- eraseText
+- inputText: ${EMAIL}
+- tapOn:
+    id: auth-password
+- eraseText
+- inputText: ${PASSWORD}
+- tapOn:
+    id: auth-submit
+- extendedWaitUntil:
+    visible: That email and password do not match an account.
+    timeout: 15000
+- assertNotVisible:
+    id: header-chips
+- assertVisible: ${EMAIL}
+- takeScreenshot: deleted-credentials-refused

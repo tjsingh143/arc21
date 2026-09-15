@@ -9,12 +9,13 @@
  * the route — the map is a path, not a gate.
  */
 
-import { router } from "expo-router";
-import { useEffect } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AppText } from "../../src/components/ui/AppText";
+import { BackBar } from "../../src/components/ui/BackBar";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
@@ -26,10 +27,8 @@ import {
   TOTAL_CAREER_STARS,
 } from "../../shared/career/nodes.js";
 import {
-  chapterStars,
   isNodeUnlocked,
   starsForNode,
-  totalStars,
 } from "../../shared/career/progress.js";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
 import { useCareerServerStore } from "../../src/features/career/career-server-store";
@@ -37,12 +36,11 @@ import { useCareerServerStore } from "../../src/features/career/career-server-st
 export default function CareerMapScreen() {
   const { progress, ready } = useCareerProgress();
   const serverProgress = useCareerServerStore((state) => state.progress);
-  const serverLoaded = useCareerServerStore((state) => state.loaded);
   const refreshServer = useCareerServerStore((state) => state.refresh);
 
-  useEffect(() => {
-    if (!serverLoaded) void refreshServer();
-  }, [serverLoaded, refreshServer]);
+  useFocusEffect(useCallback(() => {
+    void refreshServer();
+  }, [refreshServer]));
 
   /*
    * A node is unlocked by EITHER record.
@@ -60,12 +58,15 @@ export default function CareerMapScreen() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
+      <View style={styles.bar}>
+        <BackBar />
+      </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <ScreenHeader
           title="Career"
           subtitle={
             ready
-              ? `${totalStars(progress)} of ${TOTAL_CAREER_STARS} stars`
+              ? `${CAREER_NODES.reduce((sum, node) => sum + starsFor(node.slug), 0)} of ${TOTAL_CAREER_STARS} stars`
               : "Loading your progress…"
           }
         />
@@ -78,10 +79,8 @@ export default function CareerMapScreen() {
 
         {CAREER_CHAPTERS.map((chapter) => {
           const nodes = careerNodesInChapter(chapter.id);
-          // `chapterStars` returns a record, not a number — interpolating it
-          // directly renders "[object Object]", which TypeScript happily allows
-          // inside a template literal.
-          const { earned, available } = chapterStars(progress, chapter.id);
+          const earned = nodes.reduce((sum, node) => sum + starsFor(node.slug), 0);
+          const available = nodes.length * 3;
 
           return (
             <View key={chapter.id} style={styles.chapter}>
@@ -176,6 +175,7 @@ export function StarRow({ earned, total = 3 }: { earned: number; total?: number 
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
+  bar: { paddingHorizontal: layout.screenPadding },
   content: {
     padding: layout.screenPadding,
     paddingBottom: spacing.xxxl,

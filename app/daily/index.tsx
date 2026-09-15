@@ -132,7 +132,10 @@ export default function DailyChallenge() {
             {"Reading today's challenge…"}
           </AppText>
         ) : status.kind === "unavailable" ? (
-          <UnavailableNote>{status.message}</UnavailableNote>
+          <View style={styles.action}>
+            <UnavailableNote>{status.message}</UnavailableNote>
+            <Button label="Try again" onPress={() => void load()} testID="daily-retry" />
+          </View>
         ) : (
           <>
             <SurfaceCard>

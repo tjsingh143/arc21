@@ -24,6 +24,8 @@ import { create } from "zustand";
 import type { Card, PlayerActionType } from "../../../shared/blackjack/index.js";
 import { getSupabase } from "../../lib/supabase/client.js";
 import { readRejection } from "../../lib/supabase/rejection.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
+import { useActiveSessionStore } from "../table/active-session-store.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
 
@@ -90,7 +92,7 @@ export interface CareerServerState {
   clearDrill: () => void;
 }
 
-const UNREACHABLE = "Could not reach the server. Nothing has been recorded.";
+const UNREACHABLE = "Could not confirm the attempt. Reconnect to check your progress and return to any active table from Play.";
 const SIGNED_OUT = "Ranked career attempts need an account. Practice stays available without one.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
@@ -145,6 +147,7 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
   },
 
   start: async (nodeSlug) => {
+    if (get().busy) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") {
       set({ notice: availability.message });
@@ -162,24 +165,19 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
     }
 
     set({ busy: true, notice: null, graded: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "START_CAREER_NODE",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          nodeSlug,
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, {
+      action: "START_CAREER_NODE",
+      nodeSlug,
+    });
     set({ busy: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
       set({ notice: UNREACHABLE });
+      await Promise.all([get().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
-    if (result.error) {
-      const rejection = await readRejection(result.error);
+    if (result.kind === "rejected") {
+      const rejection = result.rejection;
       set({
         notice:
           rejection?.code === "SESSION_ALREADY_ACTIVE"
@@ -191,7 +189,8 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
 
     const data = result.data as Record<string, unknown> | null;
     if (typeof data?.attemptId !== "string" || typeof data.nodeSlug !== "string") {
-      set({ notice: "The attempt opened, but the reply could not be read. Reopen this node." });
+      await Promise.all([get().refresh(), useActiveSessionStore.getState().refresh()]);
+      set({ notice: UNREACHABLE });
       return null;
     }
 

@@ -83,7 +83,7 @@ export function BettingBar({
           <AppText variant="overline" color="textSecondary">
             Bet
           </AppText>
-          <AppText variant="pageTitle" numeric>
+          <AppText variant="pageTitle" numeric testID="bet-staged">
             {formatChips(stagedBet)}
           </AppText>
         </View>

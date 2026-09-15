@@ -44,6 +44,10 @@ import { configureNotificationHandler, ensureAndroidChannels } from "../src/lib/
 import { useNotificationRouting } from "../src/lib/notifications/use-notification-routing";
 import { useProfilePrivacySync } from "../src/features/settings/use-profile-privacy-sync";
 
+// A cold deep link still needs somewhere to return after an article, Practice,
+// or a successfully cashed-out table. This also covers footer/gesture Back.
+export const unstable_settings = { initialRouteName: "(tabs)" };
+
 export default function RootLayout() {
   useNotificationRouting();
   useProfilePrivacySync();

@@ -104,14 +104,17 @@ describe("taking a matched seat", () => {
     expect(useMatchmakingStore.getState().notice).toMatch(/not available at your level/i);
   });
 
-  it("still says nothing was charged when the refusal cannot be read", async () => {
+  it("does not invent an uncharged verdict when neither reply can be read", async () => {
     // A 503 from the gateway, an HTML error page, a body that fails the schema:
     // this client did not learn what happened and must not invent a reason.
     useMatchmakingStore.setState(MATCHED);
     invoke.mockResolvedValue({ data: null, error: { name: "FunctionsFetchError" } });
 
     expect(await useMatchmakingStore.getState().takeSeat()).toBeNull();
-    expect(useMatchmakingStore.getState().notice).toMatch(/nothing has been charged/i);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1]).toEqual(invoke.mock.calls[0]);
+    expect(useMatchmakingStore.getState().notice).toMatch(/could not confirm/i);
+    expect(useMatchmakingStore.getState().notice).not.toMatch(/nothing has been charged/i);
   });
 
   it("returns the ids on success", async () => {

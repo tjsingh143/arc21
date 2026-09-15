@@ -31,6 +31,7 @@ export type AuthFailureCode =
   /** Sign-up: the requested handle is taken, reserved, or filtered. */
   | "USERNAME_UNAVAILABLE"
   | "WEAK_PASSWORD"
+  | "SAME_PASSWORD"
   | "INVALID_EMAIL"
   /**
    * The password-recovery deep link is missing its code, or the code was
@@ -65,6 +66,7 @@ export const AUTH_FAILURE_MESSAGES: Record<AuthFailureCode, string> = {
   EMAIL_IN_USE: "There is already an account for that email address.",
   USERNAME_UNAVAILABLE: "That username is taken or not available.",
   WEAK_PASSWORD: "That password is too easy to guess. Try a longer one.",
+  SAME_PASSWORD: "Choose a different password from your current one.",
   INVALID_EMAIL: "That does not look like an email address.",
   RECOVERY_LINK_INVALID:
     "This reset link is invalid or has expired. Request a new one from Sign in.",
@@ -81,6 +83,7 @@ const FIELD_BY_CODE: Partial<Record<AuthFailureCode, AuthFailure["field"]>> = {
   INVALID_EMAIL: "email",
   EMAIL_NOT_CONFIRMED: "email",
   WEAK_PASSWORD: "password",
+  SAME_PASSWORD: "password",
   USERNAME_UNAVAILABLE: "username",
 };
 
@@ -144,6 +147,8 @@ export function classifyAuthError(error: unknown): AuthFailure {
       return authFailure("EMAIL_IN_USE");
     case "weak_password":
       return authFailure("WEAK_PASSWORD");
+    case "same_password":
+      return authFailure("SAME_PASSWORD");
     case "email_address_invalid":
     case "email_address_not_authorized":
       return authFailure("INVALID_EMAIL");
@@ -159,6 +164,7 @@ export function classifyAuthError(error: unknown): AuthFailure {
     case "bad_code_verifier":
     case "flow_state_expired":
     case "flow_state_not_found":
+    case "pkce_code_verifier_not_found":
       return authFailure("RECOVERY_LINK_INVALID");
     default:
       break;

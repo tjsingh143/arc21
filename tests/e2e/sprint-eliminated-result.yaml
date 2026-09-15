@@ -1,0 +1,25 @@
+# The account has already been eliminated while the authoritative field runs.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: tournament-progress
+    direction: DOWN
+    timeout: 45000
+- assertVisible:
+    id: tournament-progress
+    text: You are out. The tournament continues.
+- assertNotVisible:
+    id: tournament-open-table
+- assertNotVisible:
+    id: tournament-withdraw
+- takeScreenshot: sprint-eliminated-result

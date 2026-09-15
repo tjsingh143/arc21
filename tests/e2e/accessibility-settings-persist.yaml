@@ -1,0 +1,68 @@
+# Run with the three app accessibility overrides initially off.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element: Always reduce motion
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    text: Always reduce motion
+    checked: false
+- scrollUntilVisible:
+    element: Increased contrast
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    text: Increased contrast
+    checked: false
+- scrollUntilVisible:
+    element: Larger table text
+    direction: DOWN
+    centerElement: true
+- tapOn:
+    text: Larger table text
+    checked: false
+- assertVisible:
+    text: Larger table text
+    checked: true
+- takeScreenshot: accessibility-enabled
+- stopApp
+- launchApp:
+    clearState: false
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element: Always reduce motion
+    direction: DOWN
+    centerElement: true
+- assertVisible:
+    text: Always reduce motion
+    checked: true
+- scrollUntilVisible:
+    element: Increased contrast
+    direction: DOWN
+    centerElement: true
+- assertVisible:
+    text: Increased contrast
+    checked: true
+- scrollUntilVisible:
+    element: Larger table text
+    direction: DOWN
+    centerElement: true
+- assertVisible:
+    text: Larger table text
+    checked: true
+- takeScreenshot: accessibility-cold-persisted

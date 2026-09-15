@@ -34,6 +34,8 @@ describe("codes", () => {
     ["user_already_exists", "EMAIL_IN_USE"],
     ["email_exists", "EMAIL_IN_USE"],
     ["weak_password", "WEAK_PASSWORD"],
+    ["same_password", "SAME_PASSWORD"],
+    ["pkce_code_verifier_not_found", "RECOVERY_LINK_INVALID"],
     ["email_address_invalid", "INVALID_EMAIL"],
     ["signup_disabled", "SIGNUP_DISABLED"],
     ["user_banned", "ACCOUNT_DISABLED"],

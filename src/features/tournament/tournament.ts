@@ -94,6 +94,13 @@ export function toStandings(value: unknown): SprintStanding[] {
   return rows;
 }
 
+/** Eliminated entries retain their historical seat ID, which cannot be opened. */
+export function tableForEntry(entry: SprintEntry | null): { gameId: string; seatId: string } | null {
+  if (entry?.tournament_status !== "running" || entry.entry_status !== "active" ||
+      !entry.game_session_id || !entry.game_session_seat_id) return null;
+  return { gameId: entry.game_session_id, seatId: entry.game_session_seat_id };
+}
+
 /** Plain wording for where a tournament has got to. */
 export function describeProgress(entry: SprintEntry): string {
   if (entry.tournament_status === "registering") {
@@ -105,10 +112,10 @@ export function describeProgress(entry: SprintEntry): string {
   if (entry.tournament_status === "completed") {
     return entry.placement ? `Finished ${ordinal(entry.placement)}.` : "Finished.";
   }
+  if (entry.entry_status === "eliminated") return "You are out. The tournament continues.";
   if (entry.tie_break_boundary !== null) {
     return `Sudden death at hand ${entry.tie_break_boundary}.`;
   }
-  if (entry.entry_status === "eliminated") return "You are out. The tournament continues.";
   return "In play.";
 }
 

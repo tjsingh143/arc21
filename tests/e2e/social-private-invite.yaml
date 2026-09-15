@@ -1,0 +1,65 @@
+# Accept the local peer's fresh request, open a two-seat table, and invite them.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: request-accept-${PEER_USERNAME}
+    direction: DOWN
+- tapOn:
+    id: request-accept-${PEER_USERNAME}
+- extendedWaitUntil:
+    visible:
+      id: friend-row-${PEER_USERNAME}
+    timeout: 30000
+- tapOn:
+    id: friend-row-${PEER_USERNAME}
+- scrollUntilVisible:
+    element:
+      id: friend-open-table
+    direction: DOWN
+- tapOn:
+    id: friend-open-table
+- extendedWaitUntil:
+    visible:
+      id: room-seats-2
+    timeout: 30000
+- tapOn:
+    id: room-seats-2
+- tapOn:
+    id: room-create
+- extendedWaitUntil:
+    visible: 1 of 2 seated
+    timeout: 30000
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-private-created
+- openLink: arc21://friends/${PEER_ID}
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: friend-invite
+    direction: DOWN
+- tapOn:
+    id: friend-invite
+- extendedWaitUntil:
+    visible: Invited
+    timeout: 30000
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-private-invited
+- takeScreenshot: social-private-invited

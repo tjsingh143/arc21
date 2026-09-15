@@ -1,0 +1,104 @@
+# PEER_USERNAME belongs to a local fixture that has sent this account a request.
+# The audit observer records each authoritative relationship boundary.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: request-accept-${PEER_USERNAME}
+    direction: DOWN
+- tapOn:
+    id: request-accept-${PEER_USERNAME}
+- extendedWaitUntil:
+    visible:
+      id: friend-row-${PEER_USERNAME}
+    timeout: 30000
+- tapOn:
+    id: friend-row-${PEER_USERNAME}
+- scrollUntilVisible:
+    element:
+      id: friend-block
+    direction: DOWN
+- tapOn:
+    id: friend-block
+- tapOn: Cancel
+- assertVisible:
+    id: friend-block
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-block-cancelled
+- tapOn:
+    id: friend-block
+- tapOn:
+    text: Block
+    rightOf:
+      text: Cancel
+- scrollUntilVisible:
+    element:
+      id: blocked-unblock-${PEER_USERNAME}
+    direction: DOWN
+    timeout: 30000
+- assertNotVisible:
+    id: friend-row-${PEER_USERNAME}
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-blocked
+- takeScreenshot: social-blocked
+- scrollUntilVisible:
+    element:
+      id: friends-search-input
+    direction: UP
+- tapOn:
+    id: friends-search-input
+- inputText: ${PEER_USERNAME}
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: Nobody matches.*
+    timeout: 30000
+- takeScreenshot: social-blocked-search-empty
+- scrollUntilVisible:
+    element:
+      id: blocked-unblock-${PEER_USERNAME}
+    direction: DOWN
+- tapOn:
+    id: blocked-unblock-${PEER_USERNAME}
+- tapOn: Keep blocked
+- assertVisible:
+    id: blocked-unblock-${PEER_USERNAME}
+- tapOn:
+    id: blocked-unblock-${PEER_USERNAME}
+- tapOn:
+    text: Unblock
+    rightOf:
+      text: Keep blocked
+- extendedWaitUntil:
+    notVisible:
+      id: blocked-unblock-${PEER_USERNAME}
+    timeout: 30000
+- assertNotVisible:
+    id: friend-row-${PEER_USERNAME}
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-unblocked-no-friendship
+- scrollUntilVisible:
+    element:
+      id: friends-search-input
+    direction: UP
+- tapOn:
+    id: friends-search-submit
+- extendedWaitUntil:
+    visible:
+      id: search-add-${PEER_USERNAME}
+    timeout: 30000
+- takeScreenshot: social-unblocked-search-found

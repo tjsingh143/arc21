@@ -23,10 +23,14 @@
  */
 
 import crypto from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { stackUp } from "./stack-guard.js";
 import { createClient } from "@supabase/supabase-js";
+import { useAuthStore } from "../../src/features/auth/auth-store.js";
+import { setSupabaseAvailabilityForTests, type ArcSupabaseClient } from "../../src/lib/supabase/client.js";
+
+afterEach(() => setSupabaseAvailabilityForTests(null));
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
@@ -88,7 +92,7 @@ const suite = stackUp ? describe : describe.skip;
 
 suite("password reset, end to end via Mailpit", () => {
   it(
-    "sends a link that redirects to the app's recovery route with a usable code, which sets a new password",
+    "uses the shipped auth store to recover, including a corrected password after the first choice is refused",
     async () => {
       const email = `it-recovery-${crypto.randomUUID()}@arc21.test`;
       const oldPassword = crypto.randomUUID();
@@ -103,10 +107,11 @@ suite("password reset, end to end via Mailpit", () => {
       const requester = createClient(SUPABASE_URL, LOCAL_ANON_KEY, {
         auth: { flowType: "pkce" },
       });
-      const requested = await requester.auth.resetPasswordForEmail(email, {
-        redirectTo: PASSWORD_RECOVERY_REDIRECT_URL,
-      });
-      expect(requested.error).toBeNull();
+      setSupabaseAvailabilityForTests({ status: "ready", client: requester as ArcSupabaseClient });
+      useAuthStore.getState().setMode("signIn");
+      useAuthStore.getState().dispatch({ type: "EDIT_EMAIL", value: email });
+      await useAuthStore.getState().requestPasswordReset();
+      expect(useAuthStore.getState().form.status.kind).toBe("resetLinkSent");
 
       const messageId = await findMessageTo(email);
       const verifyLink = await verifyLinkFrom(messageId);
@@ -129,23 +134,17 @@ suite("password reset, end to end via Mailpit", () => {
       const code = redirectUrl.searchParams.get("code");
       expect(code).not.toBeNull();
 
-      // From here, exactly what `completePasswordReset` in
-      // supabase-auth-adapter.ts does — a fresh client, because the app's own
-      // client is the one that generated the PKCE verifier and this one must
-      // not collide with it in a real run (a test proving the mechanism, not
-      // the same in-memory instance).
+      // An independent client verifies the result by actually signing in.
       const completer = createClient(SUPABASE_URL, LOCAL_ANON_KEY, {
         auth: { flowType: "pkce" },
       });
-      // The code verifier lives in `requester`'s configured storage, not
-      // `completer`'s — in the app these are the same client, so mirror that
-      // here by exchanging on `requester` instead of a stranger client.
-      const exchanged = await requester.auth.exchangeCodeForSession(code!);
-      expect(exchanged.error).toBeNull();
-      expect(exchanged.data.session).not.toBeNull();
-
-      const updated = await requester.auth.updateUser({ password: newPassword });
-      expect(updated.error).toBeNull();
+      // GoTrue rejects reusing the old password AFTER consuming the PKCE code.
+      // A player can then correct their choice on the same screen. Repeating
+      // exchangeCodeForSession on that second submission strands the reset.
+      const refused = await useAuthStore.getState().completePasswordReset(code!, oldPassword);
+      expect(refused).toMatchObject({ code: "SAME_PASSWORD" });
+      const updated = await useAuthStore.getState().completePasswordReset(code!, newPassword);
+      expect(updated).toBeNull();
 
       // The proof that matters: the OLD password no longer works, and the NEW
       // one does — not merely that the calls returned success.

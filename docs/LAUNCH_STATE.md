@@ -1,7 +1,17 @@
 # Arc 21 Launch State
 
-**Current Phase:** none — the launch sequence is finished.
-**Last Completed Phase:** 12 — Production Release Candidate
+**Latest completed work:** Astra Refresh A — independent baseline audit,
+**PASS, September 14, 2026 PDT**. **Known current release-blocking software
+defects: 0.** Refresh B has not begun.
+
+Read [baseline-audit.md](./astra-refresh/baseline-audit.md) first for the current
+22 verified findings, native/backend evidence, final gates and local checkpoint.
+The final gates include 2,446 unit tests, 2,420 coverage tests, 320 real server
+tests, 592 SQL assertions, all 59 migrations and the final iOS Release installed
+on both simulators. [RELEASE.md](./RELEASE.md) keeps external activation and
+unverified platform/device work explicit. The phase verdicts below are historical.
+
+**Last numbered phase:** 12 — Production Release Candidate
 (**PASS, 2026-09-04**; see `docs/FINAL_RELEASE_REPORT.md`)
 
 **Phase 12 — PASS.** The last software phase. It set out to DISPROVE that Arc 21
@@ -19,10 +29,10 @@ rule iPadOS 26 changed; and five defects in the repository's own tooling and
 flows, including a cleanup script that could strand an account and a sign-in flow
 that walked around onboarding and made every later flow fail.
 
-The full requirement matrix, every command and its result, the device evidence
-and the ten external owner actions are in **`docs/FINAL_RELEASE_REPORT.md`**.
-That is the document to read first now. This file remains the index of what a
-later change must not undo.
+The phase-12 requirement matrix, commands, device evidence and external owner
+actions remain in **`docs/FINAL_RELEASE_REPORT.md`** as historical evidence.
+The independent Refresh-A audit above supersedes its software-readiness verdict
+and measurements. This file remains the index of what a later change must not undo.
 
 Detailed evidence lives in `docs/phase-reports/`. `docs/FINALIZATION_STATUS.md`
 remains the historical ledger and `docs/AUDIT.md` grades every area by HOW it was
@@ -552,9 +562,15 @@ that must be bought, registered, signed for or physically present.
 
 ## Current migration head
 
-`supabase/migrations/20260908120000_a_room_must_not_close_under_a_newcomer.sql`
-(58 migrations, all applied from scratch cleanly on 2026-09-04, followed by 29
-pgTAP files and 582 assertions).
+`supabase/migrations/20260909120000_career_attempt_counts.sql`
+(59 migrations, all applied from scratch cleanly in the final September 14 PDT
+Refresh-A gate, followed by 30 pgTAP files / 592 assertions and 25 server files /
+320 tests).
+
+Refresh A added the Career attempt-count repair: starts count once, completion
+preserves that count, and existing aggregates are reconciled to actual attempt
+rows. It changes no rewards, XP, chips or stars. Recovery details are in
+`docs/DATABASE.md`; SQL and real start/play/replay regressions pass.
 
 The phase 11 reverification added two:
 
@@ -725,7 +741,19 @@ Phase 6 added three:
 
 ## Known unresolved defects
 
-None blocking. Recorded observations, all assigned onward:
+**No known current release-blocking software defect.** Refresh A's 22 findings
+are verified in [baseline-audit.md](./astra-refresh/baseline-audit.md). The
+current dependency feed retains **four advisories / 18 package entries** after
+compatible fixes; [dependency-disposition.md](./astra-refresh/dependency-disposition.md)
+records the actual bundle, parser, native malformed-link test and remaining
+build-tool exposure. Final local environment observations, restored faults and
+external verification limits are explicit in the audit and `docs/RELEASE.md`.
+
+### Historical observations through phase 12
+
+These are the September 4 observations, including then-current dependency
+counts, timings and already superseded CI statements. They are retained as
+history; the Refresh-A results above are the current authority.
 
 0. **Five advisories in the BUILD TOOLCHAIN, one in the bundle and not
    reachable** (re-measured 2026-09-04, phase 12, from TWO independent sources
@@ -844,7 +872,7 @@ ever been compiled or run here**. Each is written out with its exact owner
 action and its exact verification in `docs/FINAL_RELEASE_REPORT.md` §G, and
 summarised in `docs/RELEASE.md`. None blocked any phase of the build.
 
-## Last known green verification — 2026-09-04 (phase 12, the release candidate)
+## Historical green verification — 2026-09-04 (phase 12, the release candidate)
 
 From a **clean dependency install**, against a database reset from empty, with
 `supabase functions serve` restarted first:

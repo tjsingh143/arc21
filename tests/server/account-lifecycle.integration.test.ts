@@ -28,9 +28,20 @@
  */
 
 import crypto from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { createClient } from "@supabase/supabase-js";
 
 import { stackUp } from "./stack-guard.js";
+import { disposeAuthSubscription, setGuestIdentityStore, useAuthStore } from "../../src/features/auth/auth-store.js";
+import { GuestIdentityStore } from "../../src/features/auth/guest.js";
+import { MemoryKeyValueStore } from "../../src/lib/persistence/key-value-store.js";
+import { setSupabaseAvailabilityForTests, type ArcSupabaseClient } from "../../src/lib/supabase/client.js";
+
+afterEach(() => {
+  disposeAuthSubscription();
+  setGuestIdentityStore(null);
+  setSupabaseAvailabilityForTests(null);
+});
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const AUTH = `${SUPABASE_URL}/auth/v1`;
@@ -186,12 +197,31 @@ suite("account creation under contention", () => {
 });
 
 suite("account deletion through the RPC the app calls", () => {
-  it("erases the account, and the token that was signed for it stops resolving", async () => {
+  it("deletes through the shipped store and stays signed out after restoring SDK storage", async () => {
     const email = `delete-${crypto.randomUUID()}@arc21.test`;
     const created = await signUp(email);
     expect(created.status).toBe(200);
     const id = (created.body as { user: { id: string } }).user.id;
-    const token = signToken(id);
+    const storage = new Map<string, string>();
+    const sdk = () => createClient(SUPABASE_URL, LOCAL_ANON_KEY, {
+      auth: {
+        autoRefreshToken: false,
+        storage: {
+          getItem: (key: string) => storage.get(key) ?? null,
+          setItem: (key: string, value: string) => { storage.set(key, value); },
+          removeItem: (key: string) => { storage.delete(key); },
+        },
+      },
+    });
+    const client = sdk();
+    const signedIn = await client.auth.signInWithPassword({ email, password: "integration-password-123" });
+    expect(signedIn.error).toBeNull();
+    const token = signedIn.data.session!.access_token;
+    setGuestIdentityStore(new GuestIdentityStore(new MemoryKeyValueStore()));
+    setSupabaseAvailabilityForTests({ status: "ready", client: client as ArcSupabaseClient });
+    useAuthStore.setState({ hydrated: false, mode: "unknown", session: null, guest: null });
+    await useAuthStore.getState().hydrate();
+    expect(useAuthStore.getState().session?.account.userId).toBe(id);
 
     // The wallet the bootstrap funded is readable before, and the proof that
     // the token works at all.
@@ -201,12 +231,8 @@ suite("account deletion through the RPC the app calls", () => {
     expect(before.status).toBe(200);
     expect((before.body as { balance: number }[])[0]?.balance).toBe(25000);
 
-    const deleted = await http(`${REST}/rpc/delete_own_account`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: "{}",
-    });
-    expect(`${deleted.status} ${deleted.raw}`).toMatch(/^20[04] /);
+    expect(await useAuthStore.getState().deleteAccount()).toBe(true);
+    expect(useAuthStore.getState().mode).toBe("guest");
 
     // The same still-valid token now reads nothing, because there is nothing.
     const after = await http(`${REST}/wallets?user_id=eq.${id}&select=balance`, {
@@ -221,6 +247,17 @@ suite("account deletion through the RPC the app calls", () => {
       headers: { Authorization: `Bearer ${LOCAL_SERVICE_KEY}` },
     });
     expect(gone.status).toBe(404);
+
+    // A cold native start creates another SDK client against the same saved
+    // session. Clearing only Zustand would resurrect the deleted identity.
+    disposeAuthSubscription();
+    const restored = sdk();
+    setSupabaseAvailabilityForTests({ status: "ready", client: restored as ArcSupabaseClient });
+    useAuthStore.setState({ hydrated: false, mode: "unknown", session: null });
+    await useAuthStore.getState().hydrate();
+    expect(useAuthStore.getState().mode).toBe("guest");
+    expect(useAuthStore.getState().session).toBeNull();
+    expect((await restored.auth.getSession()).data.session).toBeNull();
 
     // And the credentials no longer sign in.
     const signIn = await http(`${AUTH}/token?grant_type=password`, {

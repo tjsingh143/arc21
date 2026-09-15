@@ -122,11 +122,6 @@ export default function PasswordRecovery() {
               <AppText variant="caption" color="textSecondary">
                 Request a new reset link from Sign in.
               </AppText>
-              <Button
-                label="Go to Sign in"
-                onPress={() => router.replace("/(auth)/sign-in")}
-                style={styles.cta}
-              />
             </SurfaceCard>
           ) : code === null ? (
             // No request sent: an address this app cannot use is not a reason
@@ -175,6 +170,12 @@ export default function PasswordRecovery() {
               />
             </SurfaceCard>
           )}
+          <Button
+            label="Go to Sign in"
+            onPress={() => router.replace("/(auth)/sign-in")}
+            disabled={busy}
+            testID="recovery-sign-in"
+          />
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>

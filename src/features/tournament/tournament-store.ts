@@ -12,10 +12,13 @@ import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
+import { useWalletStore } from "../wallet/wallet-store.js";
 import {
   toEntry,
   toFormat,
   toStandings,
+  tableForEntry,
   type SprintEntry,
   type SprintFormat,
   type SprintStanding,
@@ -58,10 +61,10 @@ export interface TournamentStoreState {
    */
   withdraw: () => Promise<void>;
   /** The table to open, once the field has filled. */
-  seatToOpen: () => { gameId: string } | null;
+  seatToOpen: () => { gameId: string; seatId: string } | null;
 }
 
-const UNREACHABLE = "Could not reach the tournament. Nothing has been charged.";
+const UNREACHABLE = "Could not confirm the tournament. Reconnect to check your entry and balance.";
 /**
  * The server refused the withdrawal, and the only reason it does is that the
  * cards are already out — a player cannot buy out of a tournament they are
@@ -138,7 +141,18 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
     }
 
     const entryResult = await bounded(availability.client.rpc("my_sprint_entry"));
-    const entry = entryResult && !entryResult.error ? toEntry(entryResult.data) : null;
+    if (entryResult === null || entryResult.error) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
+    const entry = toEntry(entryResult.data);
+    // Only the explicit empty rowset proves there is no paid entry. A row we
+    // cannot decode must not offer registration as if the fee never happened.
+    const empty = Array.isArray(entryResult.data) && entryResult.data.length === 0;
+    if (!entry && !empty) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
 
     let standings: SprintStanding[] = [];
     if (entry) {
@@ -173,34 +187,28 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
   },
 
   register: async () => {
+    if (get().registering || get().withdrawing) return;
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
     set({ registering: true, notice: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "REGISTER_SPRINT",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, { action: "REGISTER_SPRINT" });
     set({ registering: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
       set({ notice: UNREACHABLE });
+      await Promise.all([get().load(), useWalletStore.getState().refresh()]);
       return;
     }
-    if (result.error) {
+    if (result.kind === "rejected") {
       // The server's own refusal is the useful one — "the entry fee would
       // overdraw the wallet" says more than any wording invented here.
-      set({ notice: "You were not entered. Nothing has been charged." });
+      set({ notice: result.rejection.message });
       return;
     }
 
     const data = result.data as { entryFee?: unknown } | null;
-    await get().load();
+    await Promise.all([get().load(), useWalletStore.getState().refresh()]);
     if (typeof data?.entryFee === "number" && data.entryFee === 0) {
       // A retry landing on an entry already paid for. Said plainly, because
       // "entered" with no visible charge otherwise reads as a bug — and AFTER
@@ -210,41 +218,38 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
   },
 
   withdraw: async () => {
+    if (get().withdrawing || get().registering) return;
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
     set({ withdrawing: true, notice: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "WITHDRAW_SPRINT",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, { action: "WITHDRAW_SPRINT" });
     set({ withdrawing: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
       // Unreachable, not refused: the entry may or may not still stand, and the
       // reload below is what finds out. Saying "nothing has been charged" here
       // would be a claim about a request whose fate is unknown.
-      set({ notice: "Could not reach the tournament. Your entry has not changed." });
-      await get().load();
+      set({ notice: UNREACHABLE });
+      await Promise.all([get().load(), useWalletStore.getState().refresh()]);
       return;
     }
-    if (result.error) {
+    if (result.kind === "rejected") {
       // Reload FIRST: which refusal this was is a question about what the player
       // still holds, and the reload is the only thing that knows.
       await get().load();
       const current = get().status;
+      if (current.kind !== "ready") {
+        set({ notice: result.rejection.message });
+        return;
+      }
       const stillEntered = current.kind === "ready" && current.entry !== null;
       set({ notice: stillEntered ? WITHDRAW_REFUSED : WITHDRAW_NOTHING_TO_LEAVE });
       return;
     }
 
     const data = result.data as { refundChips?: unknown } | null;
-    await get().load();
+    await Promise.all([get().load(), useWalletStore.getState().refresh()]);
     set({
       notice:
         typeof data?.refundChips === "number" && data.refundChips > 0
@@ -257,7 +262,6 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
 
   seatToOpen: () => {
     const current = get().status;
-    if (current.kind !== "ready" || !current.entry?.game_session_id) return null;
-    return { gameId: current.entry.game_session_id };
+    return current.kind === "ready" ? tableForEntry(current.entry) : null;
   },
 }));

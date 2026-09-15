@@ -95,9 +95,21 @@ appId: com.arc21.app
             - runFlow:
                 when:
                   notVisible:
-                    id: "onboarding-sign-in"
+                    id: "header-chips"
                 commands:
-                  - openLink: arc21://sign-in
+                  # Dismissing Save Password can reveal an already signed-in
+                  # Home during this iteration. Recheck before navigating;
+                  # reopening Sign in would reset its form and invite retyping.
+                  - runFlow:
+                      when:
+                        notVisible: "Save Password?"
+                      commands:
+                        - runFlow:
+                            when:
+                              notVisible:
+                                id: "onboarding-sign-in"
+                            commands:
+                              - openLink: arc21://sign-in
 
       # TYPED, not pasted. `sign-in.yaml` pastes because the CREATE-ACCOUNT
       # screen's `textContentType="newPassword"` raises the strong-password

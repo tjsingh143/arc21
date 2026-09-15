@@ -147,6 +147,20 @@ describe("cards come out of the shoe in order and nowhere else", () => {
     for (const card of dealt) {
       expect(consumedIds.has(card.id)).toBe(true);
     }
+    // Compare the ENGINE's entire dealing stream in order, including cursor
+    // advancement for the concealed hole card. Set membership alone also
+    // passes if the engine swaps two cards within the consumed prefix.
+    let cursor = 0;
+    for (const event of events) {
+      if (event.type === "HOLE_CARD_DEALT") {
+        cursor++;
+      } else if (event.type === "CARD_DEALT") {
+        expect(event.card?.id, `draw ${cursor}`).toBe(expectedOrder[cursor]);
+        cursor++;
+      }
+    }
+    expect(cursor).toBe(consumed);
+
     // Every dealt card is distinct: no card was handed out twice.
     expect(new Set(dealt.map((card) => card.id)).size).toBe(dealt.length);
     // And nothing beyond the cursor ever appeared.

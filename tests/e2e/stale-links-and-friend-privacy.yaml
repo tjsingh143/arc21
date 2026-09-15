@@ -1,0 +1,95 @@
+# Use closed local fixture IDs and an existing friend whose record is private.
+# The observer is read-only and compares the closed game's state and ledgers.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: final-boundaries-before
+- openLink: arc21://table/00000000-0000-4000-8000-000000000001
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: This screen needs a table to open.*
+    timeout: 30000
+- tapOn:
+    id: back-bar
+- openLink: arc21://table/${CLOSED_GAME_ID}?seatId=${CLOSED_SEAT_ID}
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: You are no longer at this table.*
+    timeout: 30000
+- assertNotVisible:
+    id: table-my-stack
+- takeScreenshot: stale-table-settled
+- tapOn:
+    id: back-bar
+- openLink: arc21://room/${CLOSED_ROOM_CODE}
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: room-invite-refused
+    timeout: 30000
+- assertNotVisible:
+    id: room-invite-joining
+- takeScreenshot: stale-room-refused
+- tapOn: Private tables
+- scrollUntilVisible:
+    element:
+      id: room-create
+    direction: DOWN
+    timeout: 30000
+- assertVisible:
+    id: room-code-input
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: friend-row-${PEER_USERNAME}
+    direction: DOWN
+    timeout: 30000
+- tapOn:
+    id: friend-row-${PEER_USERNAME}
+- scrollUntilVisible:
+    element: .*keeps their record private, so none of it is shown here.*
+    direction: DOWN
+    timeout: 30000
+- assertNotVisible:
+    id: friend-record
+- takeScreenshot: friend-record-private
+- scrollUntilVisible:
+    element:
+      id: friend-open-table
+    direction: DOWN
+- tapOn:
+    id: friend-open-table
+- scrollUntilVisible:
+    element:
+      id: room-create
+    direction: DOWN
+    timeout: 30000
+- assertVisible:
+    id: room-code-input
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: final-boundaries-after
+- takeScreenshot: friend-table-destination

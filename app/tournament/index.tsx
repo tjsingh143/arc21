@@ -30,6 +30,7 @@ import {
   describeProgress,
   ordinal,
   sharedPlacements,
+  tableForEntry,
   useTournamentStore,
 } from "../../src/features/tournament";
 
@@ -81,17 +82,10 @@ export default function SprintTournament() {
   const finished = entry !== null && entry.tournament_status === "completed";
   /*
    * The table is only worth opening while it is being played. A completed
-   * tournament's session is `completed` too, and every command against it is
-   * refused SESSION_CLOSED — so the old "Review the table" control could only
-   * ever land on a screen saying the table had gone.
+   * tournament's session and an eliminated player's seat both refuse commands
+   * with SESSION_CLOSED. Their historical IDs are retained for the result.
    */
-  const tableToOpen = useMemo(
-    () =>
-      entry && !finished && entry.game_session_id && entry.game_session_seat_id
-        ? { gameId: entry.game_session_id, seatId: entry.game_session_seat_id }
-        : null,
-    [entry, finished],
-  );
+  const tableToOpen = useMemo(() => tableForEntry(entry), [entry]);
 
   /*
    * The advancement cue, fired on a TRANSITION rather than on a state.
@@ -154,7 +148,10 @@ export default function SprintTournament() {
             Reading the format…
           </AppText>
         ) : status.kind === "unavailable" ? (
-          <UnavailableNote>{status.message}</UnavailableNote>
+          <View style={styles.action}>
+            <UnavailableNote>{status.message}</UnavailableNote>
+            <Button label="Try again" onPress={() => void load()} testID="tournament-retry" />
+          </View>
         ) : (
           <>
             {/* The format, before the fee. */}
@@ -336,6 +333,7 @@ const styles = StyleSheet.create({
     alignSelf: "center",
   },
   header: { gap: spacing.xs },
+  action: { gap: spacing.md },
   prizes: { gap: spacing.xs, paddingTop: spacing.xs },
   standings: { gap: spacing.md },
   standingHeader: {

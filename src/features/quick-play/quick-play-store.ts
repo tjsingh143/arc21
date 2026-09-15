@@ -26,7 +26,7 @@ import { create } from "zustand";
 import type { AssistanceMode } from "../../../shared/contracts/index.js";
 import type { TierId } from "../matchmaking/matchmaking.js";
 import { getSupabase } from "../../lib/supabase/client.js";
-import { readRejection } from "../../lib/supabase/rejection.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { SqliteKeyValueStore, type KeyValueStore } from "../../lib/persistence/key-value-store.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
@@ -41,7 +41,7 @@ export interface QuickPlaySelection {
 
 export const DEFAULT_SELECTION: QuickPlaySelection = { tier: "casual", assistance: "play" };
 
-const UNREACHABLE = "Could not reach the table. Nothing has been charged.";
+const UNREACHABLE = "Could not confirm the table. Check your balance and return to any active table below before trying again.";
 const SIGNED_OUT = "Quick Play needs an account. Practice stays available without one.";
 
 /** Swapped for an in-memory store in tests, exactly as career persistence is. */
@@ -127,6 +127,7 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
   },
 
   open: async (selection) => {
+    if (get().opening) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") {
       set({ notice: availability.message });
@@ -144,25 +145,20 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
     }
 
     set({ opening: true, notice: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "OPEN",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          tier: selection.tier,
-          assistance: selection.assistance,
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, {
+      action: "OPEN",
+      tier: selection.tier,
+      assistance: selection.assistance,
+    });
     set({ opening: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
       set({ notice: UNREACHABLE });
+      await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
-    if (result.error) {
-      const rejection = await readRejection(result.error);
+    if (result.kind === "rejected") {
+      const rejection = result.rejection;
       /*
        * Two refusals deserve their own words, because "could not be opened"
        * sends the player to do the wrong thing in both cases.
@@ -198,6 +194,7 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
       set({
         notice: "The table opened, but the reply could not be read. Reopen Quick Play.",
       });
+      await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
 

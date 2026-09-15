@@ -14,8 +14,8 @@
  * choosing quietly.
  */
 
-import { useEffect } from "react";
-import { router, useLocalSearchParams } from "expo-router";
+import { useCallback } from "react";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -47,6 +47,7 @@ export default function CareerNodeScreen() {
   const { slug } = useLocalSearchParams<{ slug: string }>();
   const node = typeof slug === "string" ? careerNodeBySlug(slug) : null;
   const { progress } = useCareerProgress();
+  const serverProgress = useCareerServerStore((state) => state.progress);
 
   if (!node) {
     return (
@@ -71,7 +72,7 @@ export default function CareerNodeScreen() {
         <View style={styles.header}>
           <View style={styles.titleRow}>
             <AppText variant="pageTitle">{node.title}</AppText>
-            <StarRow earned={best.bestStars} />
+            <StarRow earned={Math.max(best.bestStars, serverProgress[node.slug]?.stars ?? 0)} />
           </View>
           <AppText variant="body" color="textSecondary">
             {node.summary}
@@ -121,7 +122,7 @@ export default function CareerNodeScreen() {
         {best.attempts > 0 ? (
           <SurfaceCard>
             <AppText variant="overline" color="textSecondary">
-              Your best
+              Your offline best
             </AppText>
             <Row label="Attempts" value={String(best.attempts)} />
             {best.bestAccuracyPercent !== null ? (
@@ -174,13 +175,13 @@ function RankedCta({ node }: { node: NonNullable<ReturnType<typeof careerNodeByS
   const offline = useConnectivityStore((state) => state.status) === "offline";
   const notice = useCareerServerStore((state) => state.notice);
   const serverProgress = useCareerServerStore((state) => state.progress);
-  const loaded = useCareerServerStore((state) => state.loaded);
   const refresh = useCareerServerStore((state) => state.refresh);
   const start = useCareerServerStore((state) => state.start);
 
-  useEffect(() => {
-    if (!loaded) void refresh();
-  }, [loaded, refresh]);
+  // The table can finish while this route stays mounted underneath it.
+  useFocusEffect(useCallback(() => {
+    void refresh();
+  }, [refresh]));
 
   const recorded = serverProgress[node.slug];
   const paid = recorded?.rewardClaimed === true;

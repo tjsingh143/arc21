@@ -15,7 +15,7 @@
  */
 
 import { router } from "expo-router";
-import { StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AppText } from "../src/components/ui/AppText";
@@ -26,8 +26,8 @@ import { colors, layout, spacing } from "../src/design/tokens";
 
 export default function NotFoundScreen() {
   return (
-    <SafeAreaView style={styles.screen} edges={["top"]}>
-      <View style={styles.content} testID="not-found">
+    <SafeAreaView style={styles.screen} edges={["top", "bottom"]}>
+      <ScrollView contentContainerStyle={styles.content} testID="not-found">
         <ScreenHeader title="That link led nowhere" subtitle="Nothing is wrong with your account." />
 
         <SurfaceCard>
@@ -49,7 +49,7 @@ export default function NotFoundScreen() {
           onPress={() => router.replace("/game/practice")}
           testID="not-found-practice"
         />
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -57,9 +57,10 @@ export default function NotFoundScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: {
-    flex: 1,
+    flexGrow: 1,
     paddingHorizontal: layout.screenPadding,
     paddingTop: spacing.xl,
+    paddingBottom: spacing.xl,
     gap: spacing.lg,
   },
 });

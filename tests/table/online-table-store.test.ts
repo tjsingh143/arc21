@@ -7,7 +7,7 @@
  * and disagree with four other clients at the same table.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   isMyTurn,
@@ -21,6 +21,7 @@ import {
 } from "../../src/features/table/index.js";
 import { TIMEOUT_RETRY_MS } from "../../src/features/table/table-deadline.js";
 import type { PublicGameState } from "../../shared/blackjack/index.js";
+import { setWalletGateway, useWalletStore } from "../../src/features/wallet/wallet-store.js";
 
 const SEAT = "seat-mine";
 const OTHER = "seat-theirs";
@@ -180,6 +181,11 @@ beforeEach(() => {
     lastAppliedSeq: 0,
     timeoutAskedForVersion: null,
   });
+});
+
+afterEach(() => {
+  setWalletGateway(null);
+  useWalletStore.getState().clear();
 });
 
 /**
@@ -787,6 +793,58 @@ describe("a pushed snapshot", () => {
     expect(useOnlineTableStore.getState().lastEvents).toBe(felt);
   });
 
+  it("does not replay feedback when the broadcast beats the command reply", async () => {
+    const spy = await seated();
+    let reply: (value: TableSnapshotOutcome) => void = () => undefined;
+    spy.command = () => new Promise((resolve) => { reply = resolve; });
+    const action = useOnlineTableStore.getState().act("STAND");
+    spy.recorded.push?.(tableState({ version: 5 }), [published(1, 5)]);
+    const felt = useOnlineTableStore.getState().lastEvents;
+    reply({ ok: true, state: tableState({ version: 5 }), events: [published(1, 5)] });
+    await action;
+    expect(useOnlineTableStore.getState().lastEvents).toBe(felt);
+    expect(useOnlineTableStore.getState().pending).toBe(false);
+  });
+
+  it("does not rewind a newer broadcast when an earlier command reply arrives", async () => {
+    const spy = await seated();
+    let reply: (value: TableSnapshotOutcome) => void = () => undefined;
+    spy.command = () => new Promise((resolve) => { reply = resolve; });
+    const action = useOnlineTableStore.getState().act("STAND");
+    spy.recorded.push?.(tableState({ version: 6 }), [published(2, 6)]);
+    const latest = useOnlineTableStore.getState();
+    reply({ ok: true, state: tableState({ version: 5 }), events: [published(1, 5)] });
+    await action;
+    expect(useOnlineTableStore.getState().status).toEqual(latest.status);
+    expect(useOnlineTableStore.getState().lastEvents).toBe(latest.lastEvents);
+    expect(useOnlineTableStore.getState().lastAppliedSeq).toBe(2);
+  });
+
+  it("ignores an unseen but older broadcast after a newer poll", async () => {
+    const spy = await seated();
+    spy.snapshot = async () => ({ ok: true, state: tableState({ version: 8 }), events: [] });
+    await useOnlineTableStore.getState().refresh();
+    spy.recorded.push?.(tableState({ version: 5 }), [published(1, 5)]);
+    const current = useOnlineTableStore.getState();
+    expect(current.status.kind === "at-table" && current.status.state.version).toBe(8);
+    expect(current.lastEvents).toHaveLength(0);
+  });
+
+  it("ignores a late closed-seat refusal from a previous entry to the same table", async () => {
+    const spy = await seated();
+    let reply: (value: TableSnapshotOutcome) => void = () => undefined;
+    spy.snapshot = () => new Promise((resolve) => { reply = resolve; });
+    const poll = useOnlineTableStore.getState().refresh();
+    spy.snapshot = async () => ({ ok: true, state: tableState({ version: 8 }), events: [] });
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+    reply({ ok: false, reason: "refused", code: "SESSION_CLOSED", message: "Old request" });
+    await poll;
+    const current = useOnlineTableStore.getState();
+    expect(current.status.kind === "at-table" && current.status.state.version).toBe(8);
+    expect(current.notice).toBeNull();
+    expect(spy.recorded.push).not.toBeNull();
+  });
+
   it("adopts the state but plays nothing on a GAP, and fetches a snapshot", async () => {
     const spy = await seated();
     spy.recorded.push?.(tableState({ version: 5 }), [published(1, 5)]);
@@ -1005,6 +1063,32 @@ describe("a seat that is no longer at the table", () => {
     message: "This table has closed. (ref abc)",
     code: "SESSION_CLOSED",
   };
+
+  it("reloads the credited wallet when settlement has already released the seat", async () => {
+    let balance = 25_250;
+    setWalletGateway({
+      kind: "fake",
+      fetch: async () => ({
+        ok: true,
+        wallet: { balance, lifetimeCredited: balance, lifetimeDebited: 0, version: 1, updatedAt: new Date().toISOString() },
+        entries: [], dropped: 0, lastGrantAt: null,
+      }),
+      claimRecoveryGrant: async () => ({ ok: false, reason: "refused", message: "unused" }),
+    });
+    await useWalletStore.getState().refresh();
+    const table = gateway([{ ok: true, state: tableState(), events: [] }, closed]);
+    setTableGateway(table);
+    await useOnlineTableStore.getState().enter("game-1", SEAT);
+
+    // A ranked completion credits its reward and releases the seat on the
+    // server. The next poll sees closure before the player can ask to cash out.
+    balance = 25_450;
+    await useOnlineTableStore.getState().refresh();
+    await useOnlineTableStore.getState().leaveTable();
+
+    expect(table.recorded.cashOuts).toEqual([]);
+    expect(useWalletStore.getState().status).toMatchObject({ kind: "ready", wallet: { balance: 25_450 } });
+  });
 
   it("drops the table when a command says the seat is closed", async () => {
     const spy = gateway([{ ok: true, state: tableState(), events: [] }, closed]);

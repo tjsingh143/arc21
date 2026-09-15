@@ -384,10 +384,10 @@ suite.
 The specification asks that migrations be "reversible where reasonable or include
 documented recovery". This is the position for every one of them, so that a bad
 deploy is answered by reading rather than by improvising. The count was
-forty-four when this section was written and is **fifty-eight** now. The
-fourteen added since are additive DDL, `create or replace` of a function body,
-or a policy replaced by a narrower one, and fall under the "additive" heading
-below without changing what it says. One of them needs a sentence of its own:
+forty-four when this section was written and is **fifty-nine** now. The
+fifteen added since mostly add DDL, replace function bodies, or narrow policies.
+The Career attempt repair also recomputes a derived aggregate, as described
+below. One index change needs a sentence of its own:
 `20260906120000_seat_index_reuse.sql` DROPS `game_session_seats_unique_index`
 and replaces it with a PARTIAL unique index over `status <> 'left'`, because the
 old constraint made a departed seat's index unusable for ever and the eighth
@@ -401,11 +401,21 @@ one-argument board arities — recovery is to recreate them from
 `20260903140000_server_owned_write_guards.sql` (five triggers; dropping them
 restores the prior shape and loses nothing).
 
+`20260909120000_career_attempt_counts.sql` keeps counting attempts at start,
+removes the second increment at completion, and repairs `career_progress.attempts`
+from the retained `career_attempts` rows. Re-running that aggregate repair is
+idempotent; it changes no chips, XP, stars or rewards. Restoring the old function
+would reintroduce double counting. `30_career_attempt_counts.test.sql` covers
+the repair and repeat-completion behavior.
+
 **There is no down-migration framework, and adding one would be worse than not
 having it.** A `down.sql` that nobody runs is a file that describes a rollback
 somebody believes in; the recovery below is what would actually be done.
 
 ### The shape of the history
+
+These classification counts describe the original reviewed subset, rather than
+all 59 current migration files. Later additions are discussed above.
 
 | Class | Count | Reversal |
 |---|---|---|

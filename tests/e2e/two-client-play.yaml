@@ -47,9 +47,15 @@ appId: com.arc21.app
     timeout: 90000
 
 - repeat:
-    times: 14
+    # An iteration can take less than two seconds while the OTHER seat acts.
+    # Allow several full table cycles: 14 iterations once exhausted their
+    # budget before the next betting window after a deadline overtook a tap.
+    times: 60
     while:
-      notVisible: ".*Bet 100.*"
+      notVisible:
+        text: ".*Bet 100.*"
+        rightOf:
+          id: "table-hand-value"
     commands:
       # Insurance. Unreachable at every server table for a whole phase — the
       # screen had no branch for it and fell through to "Waiting for the next
@@ -98,6 +104,12 @@ appId: com.arc21.app
 # THE WAGER THIS CLIENT CHOSE, on the felt. Twenty is what the server stakes for
 # a seat that says nothing; a hundred can only be here because a person pressed
 # Deal at a shared table and the server accepted it.
-- assertVisible: ".*Bet 100.*"
+# HandCards renders the wager beside the value, in a separate accessible text
+# node. Scope it to this player's value; combining id and text on the value
+# itself can never match and caused repeated wagers after successful deals.
+- assertVisible:
+    text: ".*Bet 100.*"
+    rightOf:
+      id: "table-hand-value"
 - assertVisible:
     id: "table-countdown"

@@ -1,0 +1,28 @@
+# Read a dealer column beyond the initial viewport through the real chart.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://learn/strategy-guide
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element: 'Hard 5 against dealer 2:.*'
+    direction: DOWN
+    centerElement: true
+    timeout: 30000
+- scrollUntilVisible:
+    element: 'Hard 5 against dealer ace:.*'
+    direction: RIGHT
+    timeout: 30000
+- tapOn: 'Hard 5 against dealer ace:.*'
+- assertVisible: Hard 5 vs A
+- assertVisible: Close cell detail
+- takeScreenshot: strategy-horizontal-ace-detail
+- tapOn: Close cell detail
+- tapOn:
+    id: back-bar

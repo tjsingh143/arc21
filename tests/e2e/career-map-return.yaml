@@ -1,0 +1,56 @@
+# The ordinary Play route must offer a visible, accessible return from Career.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 30000
+- tapOn: Play
+- scrollUntilVisible:
+    element: 'Career\. Eighteen challenges.*'
+    direction: DOWN
+    timeout: 20000
+- tapOn: 'Career\. Eighteen challenges.*'
+- extendedWaitUntil:
+    visible: First Deal, .* stars.*
+    timeout: 20000
+- waitForAnimationToEnd
+- takeScreenshot: career-map-return
+- assertVisible:
+    id: back-bar
+- tapOn:
+    id: back-bar
+- extendedWaitUntil:
+    visible: Same rules everywhere.
+    timeout: 15000
+- tapOn: Home
+- assertVisible:
+    id: home-practice
+- stopApp
+- openLink: arc21://career
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: back-bar
+    timeout: 30000
+- tapOn:
+    id: back-bar
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: career-cold-return-home

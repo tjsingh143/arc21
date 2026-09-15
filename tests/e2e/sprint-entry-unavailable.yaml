@@ -1,0 +1,16 @@
+# A disposable account already paid through native UI. The local harness
+# temporarily makes my_sprint_entry unreadable and always restores its ACL.
+appId: com.arc21.app
+---
+- extendedWaitUntil:
+    visible:
+      id: tournament-retry
+    timeout: 20000
+- assertVisible: Could not confirm the tournament. Reconnect to check your entry and balance.
+- assertNotVisible:
+    id: tournament-register
+- assertNotVisible:
+    id: tournament-rematch
+- assertNotVisible:
+    id: tournament-withdraw
+- takeScreenshot: sprint-entry-unavailable-no-payment

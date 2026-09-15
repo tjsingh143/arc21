@@ -11,6 +11,8 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
+import { useActiveSessionStore } from "../table/active-session-store.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   toAttempt,
@@ -45,7 +47,7 @@ export interface DailyStoreState {
   start: () => Promise<{ gameId: string; seatId: string; ranked: boolean } | null>;
 }
 
-const UNREACHABLE = "Could not reach the daily challenge. Nothing has been recorded.";
+const UNREACHABLE = "Could not confirm the challenge. Reconnect to check today's attempt and return to any active table from Play.";
 const SIGNED_OUT =
   "The daily challenge needs an account, because everyone plays the same server-held shoe. Practice stays available without one.";
 
@@ -54,7 +56,7 @@ async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   return isTimedOut(result) ? null : result;
 }
 
-export const useDailyStore = create<DailyStoreState>((set) => ({
+export const useDailyStore = create<DailyStoreState>((set, get) => ({
   status: { kind: "loading" },
   notice: null,
   starting: false,
@@ -98,8 +100,18 @@ export const useDailyStore = create<DailyStoreState>((set) => ({
     }
 
     const attemptResult = await bounded(availability.client.rpc("my_daily_entry"));
-    const attempt =
-      attemptResult && !attemptResult.error ? toAttempt(attemptResult.data) : null;
+    if (attemptResult === null || attemptResult.error) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
+    const attempt = toAttempt(attemptResult.data);
+    // Only an explicitly empty result proves there is no ranked entry. A
+    // malformed row (or one from a different day) is an unreadable history.
+    const empty = Array.isArray(attemptResult.data) && attemptResult.data.length === 0;
+    if ((!attempt && !empty) || (attempt && attempt.challengeId !== challenge.id)) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
 
     /*
      * The audit half of the commitment scheme.
@@ -126,35 +138,30 @@ export const useDailyStore = create<DailyStoreState>((set) => ({
   },
 
   start: async () => {
+    if (get().starting) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") return null;
 
     set({ starting: true, notice: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "START_DAILY_CHALLENGE",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, { action: "START_DAILY_CHALLENGE" });
     set({ starting: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
+      await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
       set({ notice: UNREACHABLE });
       return null;
     }
-    if (result.error) {
-      set({ notice: "The challenge could not be opened. Nothing has been recorded." });
+    if (result.kind === "rejected") {
+      set({ notice: result.rejection.message });
       return null;
     }
 
     const data = result.data as
       | { gameId?: unknown; seatId?: unknown; ranked?: unknown }
       | null;
-    if (typeof data?.gameId !== "string" || typeof data.seatId !== "string") {
-      set({ notice: "The challenge opened, but the reply could not be read. Reopen this screen." });
+    if (typeof data?.gameId !== "string" || typeof data.seatId !== "string" || typeof data.ranked !== "boolean") {
+      await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
+      set({ notice: UNREACHABLE });
       return null;
     }
 

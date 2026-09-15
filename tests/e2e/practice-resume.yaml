@@ -40,11 +40,14 @@
 # Run with:
 #   export JAVA_HOME=/opt/homebrew/opt/openjdk
 #   maestro test tests/e2e/practice-resume.yaml
+#
+# Begin with a fresh Practice session at BETTING_OPEN. For a fresh installation
+# use scripts/e2e-fresh-app.ts: Maestro clearState does not erase iOS SQLite.
 
 appId: com.arc21.app
 ---
 - launchApp:
-    clearState: true
+    clearState: false
 
 - runFlow:
     when:
@@ -134,129 +137,85 @@ appId: com.arc21.app
     visible: "Place a bet to be dealt in."
     timeout: 15000
 
-# Commit chips and deal, so there is a hand in progress worth losing.
-- tapOn:
-    id: "chip-100"
-- tapOn:
-    id: "bet-deal"
-
-- runFlow:
-    when:
-      visible: "Dealer is showing an Ace."
+# Reach a LIVE hand. A natural or dealer peek can settle a fair deal at once,
+# so advance those hands instead of assuming that hand one is resumable mid-turn.
+- repeat:
+    times: 8
+    while:
+      notVisible:
+        id: action-stand
     commands:
-      - tapOn:
-          id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: next-hand
+          commands:
+            - tapOn:
+                id: next-hand
+      - runFlow:
+          when:
+            visible:
+              id: bet-deal
+          commands:
+            - repeat:
+                times: 3
+                while:
+                  visible:
+                    id: bet-staged
+                    text: "0"
+                commands:
+                  - tapOn:
+                      id: chip-100
+            - assertVisible:
+                id: bet-staged
+                text: "100"
+            - tapOn:
+                id: bet-deal
+      - runFlow:
+          when:
+            visible:
+              id: insurance-decline
+          commands:
+            - tapOn:
+                id: insurance-decline
 
-# The hand is now live: cards are dealt and the wager is committed.
+- assertVisible:
+    id: action-stand
 - assertVisible: ".*Bet 100.*"
-
-# --- Record what is actually on the felt -----------------------------------
-#
-# Bankroll and wager surviving a kill proves the SAVE happened. It does not
-# prove the same hand came back: a fresh shoe dealt behind a restored bankroll
-# would satisfy both. So the player's and the dealer's totals are copied into
-# `${maestro.copiedText}` here and compared after the relaunch.
-#
-# The totals are the strongest thing the tree can be asked for. They are derived
-# from the actual cards by `evaluateHand`, so a different hand of the same total
-# is the only way to fool this — one chance in a handful per run, and it would
-# have to happen with the wager and the bankroll also intact. A phantom card or
-# a duplicated deal moves the total and fails here.
 - copyTextFrom:
-    id: "player-hand-value"
+    id: player-hand-value
 - evalScript: ${output.playerTotal = maestro.copiedText}
-
 - copyTextFrom:
-    id: "dealer-hand-value"
+    id: dealer-hand-value
 - evalScript: ${output.dealerTotal = maestro.copiedText}
-
-# --- Kill and reopen -------------------------------------------------------
-# A real player does not kill the app in the same millisecond as their last tap.
-# The pause keeps this flow testing persistence rather than racing the write —
-# the write itself is forced by the background flush in usePersistOnBackground.
+- takeScreenshot: practice-before-kill
 - waitForAnimationToEnd:
     timeout: 3000
-
-# clearState: false is the whole point — this is a relaunch, not a fresh install.
 - stopApp
 - launchApp:
     clearState: false
-
-# Hydration is asynchronous — SQLite has to open and the record has to parse —
-# so this waits for the restored bankroll rather than asserting immediately.
-# 4,900 is the proof: a fresh session would read 5,000.
 - extendedWaitUntil:
-    visible: ".*4,900.*"
+    visible: ".*Resume your session.*"
     timeout: 30000
-
-# Home must know a session is in progress. If it says "Play offline" instead,
-# the hand is intact on disk but invisible to the player — which is exactly the
-# bug this flow caught.
-# A REGEX, because Maestro matches text exactly and the card's accessibility
-# label now reads "Resume your session. Bankroll 4,900, hand 1." — the fuller
-# label is the fix above, and an exact match would fail on the very string that
-# proves it works.
-- assertVisible: ".*Resume your session.*"
-
-# --- Back into the table, by deep link -------------------------------------
-#
-# NOT `tapOn: home-practice`, and the reason is worth writing down because the
-# symptom is a convincing impostor.
-#
-# After `stopApp` + `launchApp` inside one Maestro session, the tap on this card
-# reports COMPLETED and the app stays on Home. The failure screenshot shows a
-# perfect Home screen — "Resume your session · Bankroll 4,900 · hand 1" — while
-# the hierarchy dump beside it contains EIGHT nodes: the three with an
-# accessibility identifier, two battery readings and the status bar. Every piece
-# of text on the screen is missing from the tree, and the device log for the
-# same second carries `XCTAS Error: Error getting main window Unknown kAXError
-# value -25218`. The driver is tapping at coordinates from a snapshot it could
-# not actually read.
-#
-# It was not the app. Deep-linking to `arc21://game/practice` from a shell — no
-# Maestro involved — brought back the exact hand every time: dealer 8, player
-# 6♥ A♣ "Soft 17 · Bet 100", Hand 1 · Shoe 1. The assertion below is that same
-# check, made by the flow.
-#
-# So this uses the mechanism CLAUDE.md already names as the reliable one. The
-# Home card is still ASSERTED above — that assertion is what caught a real
-# VoiceOver defect once — it is simply no longer the thing navigation depends on.
 - openLink: arc21://game/practice
-
-# iOS asks for confirmation when the app is already in the foreground.
 - runFlow:
     when:
       visible: "Open"
     commands:
-      - tapOn:
-          text: "Open"
-          # The dialog can dismiss itself between the `when` and the tap.
-          optional: true
-
-# The committed wager and the dealt hand are still there — not a fresh shoe
-# wearing the same bankroll.
+      - tapOn: "Open"
 - extendedWaitUntil:
-    visible: ".*Bet 100.*"
+    visible:
+      id: action-stand
     timeout: 20000
-- assertNotVisible: "Place a bet to be dealt in."
-
-# --- The same hand, not merely a hand --------------------------------------
-# Same cards for the player, same upcard for the dealer, same phase, same
-# active hand. A restored bankroll wearing a freshly dealt hand fails here.
+- assertVisible: ".*Bet 100.*"
 - assertVisible:
-    id: "player-hand-value"
+    id: player-hand-value
     text: ${output.playerTotal}
 - assertVisible:
-    id: "dealer-hand-value"
+    id: dealer-hand-value
     text: ${output.dealerTotal}
-
-# No duplicate settlement: the hand is still IN PROGRESS, so nothing was
-# settled by the relaunch. An outcome badge or the next-hand control appearing
-# here would mean the restored state resolved a hand that was never finished.
 - assertNotVisible:
-    id: "next-hand"
-
-# The shoe carried on rather than starting over: the review surface opens only
-# when there is a settled hand or a bet to place, and neither is true mid-hand.
+    id: next-hand
 - assertNotVisible:
-    id: "open-review"
+    id: open-review
+- takeScreenshot: practice-after-kill

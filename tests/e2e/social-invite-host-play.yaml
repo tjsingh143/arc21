@@ -1,0 +1,62 @@
+# Start the room joined through the inbox, then record a real shared settlement.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: 2 of 2 seated
+    timeout: 30000
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-shared-before
+- scrollUntilVisible:
+    element:
+      id: room-start
+    direction: DOWN
+- tapOn:
+    id: room-start
+- extendedWaitUntil:
+    visible:
+      id: chip-100
+    timeout: 45000
+- tapOn:
+    id: chip-100
+- assertVisible:
+    id: bet-staged
+    text: '100'
+- tapOn:
+    id: bet-deal
+- scrollUntilVisible:
+    element:
+      id: table-hand-value
+    direction: DOWN
+    timeout: 45000
+- assertVisible:
+    text: '.*Bet 100.*'
+    rightOf:
+      id: table-hand-value
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-shared-native-wager
+- takeScreenshot: social-shared-native-wager
+- swipe:
+    direction: UP
+    duration: 500
+- extendedWaitUntil:
+    visible:
+      id: table-next-hand
+    timeout: 120000
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-shared-settled
+- takeScreenshot: social-shared-settled

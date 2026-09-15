@@ -808,25 +808,48 @@ suite("an intentional failure leaves no partial economic mutation", () => {
 // ---------------------------------------------------------------------------
 
 suite("the Recovery Grant is decided entirely by the server", () => {
-  /**
-   * Puts the account under the grant threshold using nothing but ordinary
-   * commands: buy in at Standard (8,000) three times over the opening grant is
-   * impossible, so the balance is lowered by holding chips at a table instead —
-   * escrow is not balance.
-   */
-  async function strandDownTo(player: Player): Promise<string> {
-    // Three Standard buy-ins would be 24,000 of the 25,000 opening grant, but
-    // only one seat may be held at a time. One Standard table (8,000) plus one
-    // High table is level-gated, so the reachable floor with a single seat is
-    // 25,000 - 8,000 = 17,000 — above the threshold.
-    //
-    // So this uses the one legitimate route that lowers the BALANCE rather than
-    // moving it into escrow: a table that loses. That is not deterministic, so
-    // the tests below assert the REFUSALS, which need no particular balance,
-    // and the grant's own arithmetic is asserted in `10_recovery_grant.test.sql`
-    // against a balance the pgTAP fixture owns.
-    const opened = await openTable(player);
-    return opened.body.gameId as string;
+  /** Reach eligibility through real wagers; never seed a wallet or a shoe. */
+  async function playDownToGrant(player: Player): Promise<number> {
+    let balance = await balanceOf(player);
+    for (let hand = 0; hand < 200 && balance >= GRANT_THRESHOLD; hand++) {
+      const standard = balance >= 5_000;
+      const opened = await call("create-session", player.token, {
+        action: "OPEN",
+        clientRequestId: crypto.randomUUID(),
+        tier: standard ? "standard" : "casual",
+        clientSentAt: iso(),
+      });
+      expect(opened.status, opened.raw).toBe(200);
+      const table: Table = {
+        gameId: opened.body.gameId as string,
+        seatId: opened.body.seatId as string,
+        version: (opened.body.publicState as { version: number }).version,
+      };
+      const command = async (type: string, payload?: Record<string, unknown>) => {
+        const result = await send(player, table, type, payload);
+        expect(result.response.status, result.response.raw).toBe(200);
+        return result.phase;
+      };
+      await command("PLACE_BET", { amount: standard ? 1_000 : 500 });
+      let phase = await command("LOCK_BET");
+      if (phase === "INSURANCE_OFFER") phase = await command("DECLINE_INSURANCE");
+      // Naturals resolve at the peek. Otherwise deliberately surrender: this
+      // tests spending, not profitable strategy, and needs no chosen cards.
+      if (phase === "PLAYER_TURNS") phase = await command("SURRENDER");
+      expect(phase).toBe("HAND_COMPLETE");
+      const cashed = await call("create-session", player.token, {
+        action: "CASH_OUT",
+        clientRequestId: crypto.randomUUID(),
+        gameId: table.gameId,
+        clientSentAt: iso(),
+      });
+      expect(cashed.status, cashed.raw).toBe(200);
+      balance = await balanceOf(player);
+      expect(balance).toBeGreaterThanOrEqual(0);
+    }
+    expect(balance).toBeLessThan(GRANT_THRESHOLD);
+    expect((await rpc(player.token, "my_active_session")).body).toEqual([]);
+    return balance;
   }
 
   it("refuses a player who is not broke, and says why", async () => {
@@ -861,30 +884,43 @@ suite("the Recovery Grant is decided entirely by the server", () => {
     expect((await ledgerOf(player)).filter((r) => r.reason === "recovery_grant")).toHaveLength(0);
   });
 
-  it("survives eight simultaneous claims with at most one grant", async () => {
-    /*
-     * The wallet lock is taken FIRST, before the balance is read, so the losers
-     * resume after the winner commits and re-read a balance of 5,000 — above
-     * the threshold, so they are refused rather than granted. A guard placed
-     * ahead of the lock would let all eight through under READ COMMITTED.
-     *
-     * The account is put below the threshold by the only route this suite has
-     * without a database connection: it does not have one. So the assertion is
-     * the safe half — however many callers race, no more than one grant row
-     * exists and the balance never exceeds the restore figure.
-     */
+  it("grants exactly once in an eligible eight-client race and enforces the cooldown", async () => {
     const player = await createPlayer();
-    await strandDownTo(player);
+    const before = await playDownToGrant(player);
     const results = await Promise.all(
       Array.from({ length: 8 }, () => rpc(player.token, "claim_recovery_grant")),
     );
     const granted = results.filter((result) => result.status === 200);
-    expect(granted.length).toBeLessThanOrEqual(1);
+    expect(granted).toHaveLength(1);
+    expect(results.filter((result) => result.status >= 500)).toHaveLength(0);
 
     const rows = (await ledgerOf(player)).filter((r) => r.reason === "recovery_grant");
-    expect(rows.length).toBeLessThanOrEqual(1);
-    if (rows.length === 1) expect(rows[0]!.balance_after).toBe(GRANT_RESTORES_TO);
-  });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      balance_after: GRANT_RESTORES_TO,
+      delta: GRANT_RESTORES_TO - before,
+    });
+    expect(await balanceOf(player)).toBe(GRANT_RESTORES_TO);
+    expect((await ledgerOf(player)).reduce((sum, row) => sum + row.delta, 0)).toBe(GRANT_RESTORES_TO);
+
+    // Lower the available wallet again through a real buy-in. This refusal
+    // must now be the cooldown, not the balance guard that the old test hit.
+    const opened = await call("create-session", player.token, {
+      action: "OPEN", clientRequestId: crypto.randomUUID(), tier: "standard", clientSentAt: iso(),
+    });
+    expect(opened.status, opened.raw).toBe(200);
+    expect(await balanceOf(player)).toBe(0);
+    const cooldown = await rpc(player.token, "claim_recovery_grant");
+    expect(cooldown.status).toBe(400);
+    expect(JSON.stringify(cooldown.body)).toContain("next recovery grant");
+    const closed = await call("create-session", player.token, {
+      action: "CASH_OUT", clientRequestId: crypto.randomUUID(), gameId: opened.body.gameId,
+      clientSentAt: iso(),
+    });
+    expect(closed.status, closed.raw).toBe(200);
+    expect(await balanceOf(player)).toBe(GRANT_RESTORES_TO);
+    expect((await ledgerOf(player)).filter((row) => row.reason === "recovery_grant")).toHaveLength(1);
+  }, 180_000);
 });
 
 // ---------------------------------------------------------------------------

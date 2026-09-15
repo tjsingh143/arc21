@@ -252,7 +252,7 @@ export default function CreateAccountScreen() {
           <Button
             label="I already have an account"
             variant="quiet"
-            onPress={() => router.back()}
+            onPress={() => router.replace("/(auth)/sign-in")}
           />
         </ScrollView>
       </KeyboardAvoidingView>

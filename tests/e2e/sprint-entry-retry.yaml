@@ -1,0 +1,21 @@
+# The authoritative entry read has recovered. Start on the retained unavailable
+# screen; reloading the process would not prove the Try again control works.
+appId: com.arc21.app
+---
+- assertVisible:
+    id: tournament-retry
+- tapOn:
+    id: tournament-retry
+- scrollUntilVisible:
+    element:
+      id: tournament-progress
+    direction: DOWN
+    timeout: 30000
+- assertVisible: ".*Your entry is paid and held.*"
+- assertVisible:
+    id: tournament-withdraw
+- assertNotVisible:
+    id: tournament-register
+- assertNotVisible:
+    id: tournament-retry
+- takeScreenshot: sprint-paid-entry-recovered

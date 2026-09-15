@@ -1,0 +1,57 @@
+# Prerequisite: the signed-in fixture has completed First Deal on the server,
+# and has never completed Hit or Hold. Keep the map and node mounted throughout
+# play: a cold relaunch would hide the stale cached-progress regression.
+appId: com.arc21.app
+---
+- openLink: arc21://career
+- extendedWaitUntil:
+    visible: ".*of 54 stars.*"
+    timeout: 30000
+- assertVisible: ".*1 of 18 nodes completed on the server.*"
+- assertVisible: "Hit or Hold, 0 of 3 stars"
+- tapOn: "Hit or Hold, 0 of 3 stars"
+- scrollUntilVisible:
+    element:
+      id: career-start-ranked
+    direction: DOWN
+    timeout: 20000
+- assertVisible: "Play ranked"
+- assertNotVisible:
+    id: career-server-record
+- tapOn:
+    id: career-start-ranked
+- runFlow: complete-ranked-session.yaml
+# No deep link or relaunch here: this is the same retained detail route.
+- scrollUntilVisible:
+    element:
+      id: career-server-record
+    direction: DOWN
+    timeout: 30000
+- assertVisible: "Play ranked again"
+- assertVisible: ".*Rewards for this node have already been paid.*"
+- assertVisible: "Server record: [1-3] of 3 stars across 1 attempt."
+- takeScreenshot: ranked-career-return-record
+- scrollUntilVisible:
+    element: "Back to Career"
+    direction: DOWN
+    timeout: 20000
+- tapOn: "Back to Career"
+- extendedWaitUntil:
+    visible: ".*2 of 18 nodes completed on the server.*"
+    timeout: 30000
+- assertVisible: "Hit or Hold, [1-3] of 3 stars"
+- scrollUntilVisible:
+    element: "Double Time, 0 of 3 stars"
+    direction: DOWN
+    timeout: 20000
+- tapOn: "Double Time, 0 of 3 stars"
+- scrollUntilVisible:
+    element:
+      id: career-start-ranked
+    direction: DOWN
+    timeout: 20000
+- assertNotVisible: ".*Finish .* on the server first.*"
+- assertVisible:
+    id: career-start-ranked
+    enabled: true
+- takeScreenshot: ranked-career-successor-unlocked

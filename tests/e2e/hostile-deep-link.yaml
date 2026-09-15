@@ -1,0 +1,36 @@
+# The installed Release must remain usable after malformed percent encoding.
+# This follows the actual inbound URL path; no decoder is replaced or mocked.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 30000
+- evalScript: ${output.hostileQuery = new Array(4098).join('%FF')}
+- openLink: arc21://career?x=${output.hostileQuery}
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: First Deal, .* stars.*
+    timeout: 30000
+- takeScreenshot: hostile-link-career-responsive
+- tapOn:
+    id: back-bar
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 15000
+- waitForAnimationToEnd
+- takeScreenshot: hostile-link-home-responsive

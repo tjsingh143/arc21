@@ -21,7 +21,7 @@ import { AppText } from "./AppText";
 export interface BackBarProps {
   /** Announced destination, e.g. "Back to Learn". Defaults to "Back". */
   label?: string;
-  /** Overrides the default `router.back()`. */
+  /** Overrides returning to the previous screen, or Home on a cold deep link. */
   onPress?: () => void;
   testID?: string;
 }
@@ -30,7 +30,10 @@ export function BackBar({ label = "Back", onPress, testID = "back-bar" }: BackBa
   return (
     <View style={styles.bar}>
       <Pressable
-        onPress={onPress ?? (() => router.back())}
+        onPress={onPress ?? (() => {
+          if (router.canGoBack()) router.back();
+          else router.replace("/(tabs)/home");
+        })}
         testID={testID}
         accessibilityRole="button"
         accessibilityLabel={label}

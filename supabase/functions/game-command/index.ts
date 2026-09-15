@@ -572,10 +572,16 @@ async function handle(
   }
   if (grade && !grade.counted && grade.skipped) log.decisionSkipped = grade.skipped;
 
-  const accounting = accountForSettlement(events, seat.id);
-  if (!isEmptyAccounting(accounting)) {
+  // One command can settle every hand at a shared table. Each authenticated
+  // seat owns its own events, regardless of who stood or resolved the timeout.
+  // The engine lock and command replay gate cover this entire transaction.
+  const persistedSeats = [...nextState.seats].sort((a, b) => a.seatId.localeCompare(b.seatId));
+  for (const settledSeat of persistedSeats) {
+    if (!settledSeat.userId) continue;
+    const accounting = accountForSettlement(events, settledSeat.seatId);
+    if (isEmptyAccounting(accounting)) continue;
     await recordHandSettlement(tx, {
-      userId,
+      userId: settledSeat.userId,
       stats: accounting.stats,
       xp: accounting.xp,
       // The UTC calendar day, taken from the SERVER clock. A client-supplied
@@ -596,7 +602,12 @@ async function handle(
   // The TABLE ending — not this seat leaving — is what retires the room, so a
   // five-seat table keeps its code while four people are still playing.
   if (sessionEnded) await closeRoomForSession(tx, command.gameId);
-  await syncSeatRow(tx, seat.id, seatState, closing ? { status: "left", leftAt: now } : {});
+  // Deal, settlement and timeout commands also change other players' stacks or
+  // connection state. Keep their public projections in the same transaction.
+  for (const projectedSeat of persistedSeats) {
+    await syncSeatRow(tx, projectedSeat.seatId, projectedSeat,
+      closing && projectedSeat.seatId === seat.id ? { status: "left", leftAt: now } : {});
+  }
   // A LEAVE that closed the seat ends the room membership too, migrating the
   // host role if this player held it. Shared with the CASH_OUT route, down to
   // the SQL function, so the two cannot disagree about who inherits a room.

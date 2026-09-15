@@ -255,6 +255,7 @@ suite("a career node grants what it promised", () => {
     const row = progress.find((candidate) => candidate.node_code === node.slug);
     expect(row).toBeTruthy();
     expect(row?.status).toBe("completed");
+    expect(row?.attempts).toBe(1);
     // Completion always awards one, so bad cards can never block progression.
     expect(row?.stars).toBeGreaterThanOrEqual(1);
     expect(row?.reward_claimed_at).toBeTruthy();
@@ -303,7 +304,7 @@ suite("a career node grants what it promised", () => {
       { node_code: string; attempts: number }[];
     const row = progress.find((candidate) => candidate.node_code === node.slug);
     // Counted, though. An attempt is an attempt whether or not it paid.
-    expect(row?.attempts).toBeGreaterThanOrEqual(2);
+    expect(row?.attempts).toBe(2);
   }, 300_000);
 
   it("refuses a node whose predecessor has not been completed", async () => {
@@ -346,6 +347,9 @@ suite("a career node grants what it promised", () => {
     // went better, which is the career equivalent of a second ranked daily run.
     expect(again.body.gameId).toBe(first.body.gameId);
     expect(again.body.attemptId).toBe(first.body.attemptId);
+    expect((await rpc(token, "my_career_progress")).body).toEqual([
+      expect.objectContaining({ node_code: node.slug, attempts: 1 }),
+    ]);
   }, 60_000);
 });
 
@@ -405,6 +409,9 @@ suite("a drill is graded by the server", () => {
     expect((graded.body.verdicts as unknown[])).toHaveLength(scenarios.length);
 
     expect(await balanceOf(token)).toBe(beforeChips + drill!.reward.chips);
+
+    const progress = (await rpc(token, "my_career_progress")).body as { node_code: string; attempts: number }[];
+    expect(progress.find((row) => row.node_code === drill!.slug)?.attempts).toBe(1);
 
     // Grading twice must not pay twice, and must not overwrite the record.
     const replay = await call("create-session", token, {

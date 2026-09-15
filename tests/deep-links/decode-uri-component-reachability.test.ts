@@ -1,49 +1,20 @@
 /**
- * GHSA-vcc3-ghjq-m6fr — `decode-uri-component`, and why this app is not exposed
- * to it.
+ * GHSA-vcc3-ghjq-m6fr: guard the current Expo inbound-link boundary.
  *
- * `npm audit` reports it against `decode-uri-component@0.2.2`, reached only
- * through `query-string@7.1.3`, reached only through `expo-router`. The flaw is
- * real and expensive: malformed percent-encoding falls out of the built-in
- * decoder into a recursive splitting fallback. Measured in Node on this
- * machine, decoding a single hostile value costs
+ * decode-uri-component@0.2.2 is bundled through query-string@7. Expo supplies
+ * its forked resolver, whose inbound query parsing uses URLSearchParams and
+ * bounded built-in decoding. The upstream parser remains bundled but is
+ * overridden; active query-string calls construct outbound URLs.
  *
- *       195 chars     51 ms          1 539 chars      4 259 ms
- *       387 chars    225 ms          3 075 chars     22 330 ms
- *       771 chars    992 ms
+ * These checks cover the installed dependency graph and resolver wiring. The
+ * upstream dangerous call is a positive control for the source scan. The CPU
+ * check establishes the malformed-input hazard without claiming its asymptotic
+ * complexity or extrapolating an iOS watchdog outcome from a Node timing.
  *
- * so if an inbound deep link's query reached it, three kilobytes in a URL would
- * freeze the JavaScript thread — the whole user interface — for long enough
- * that iOS's watchdog would kill the app.
- *
- * IT DOES NOT REACH IT. `expo-router` ships two copies of the resolver: the
- * vendored upstream `react-navigation/core/getStateFromPath.js`, whose
- * `parseQueryParams` does call `queryString.parse`, and the FORK in
- * `fork/getStateFromPath.js` that actually runs — where that call is commented
- * out and replaced by `expo.parseQueryParams`, which reads
- * `parseUrlUsingCustomBase(path).searchParams` (the platform's own
- * `URLSearchParams`) and decodes with a `safelyDecodeURIComponent` that catches
- * and returns the raw string. No fallback, no recursion. The vendored copy is
- * imported by nothing. Every surviving `query-string` call is `stringify`, the
- * OUTBOUND direction, which never touches the decoder.
- *
- * Confirmed on the simulator as well as by reading: with a 12 291-character
- * `%FF` payload in the query, `arc21://career?x=…` navigated in 1.0 s. The same
- * string takes minutes in Node. The vulnerable function is in the bundle and is
- * dead.
- *
- * SO WHY IS THERE A TEST. Because that conclusion is a property of a
- * dependency's internals, and nothing else in this repository would notice it
- * changing. If an `expo-router` upgrade re-wires the inbound path back onto
- * `queryString.parse`, the app acquires a remote freeze from any link anybody
- * can open, `npm audit`'s output does not change by one character, and every
- * other test still passes. This file fails instead — and the fix, should that
- * day come, is a `redirectSystemPath` in `app/+native-intent.tsx` refusing a
- * query the platform decoder rejects, which is exactly the input that takes the
- * slow path.
- *
- * This replaces a guard that was written before the reachability was checked.
- * Measuring it on the device is what showed the guard was defending nothing.
+ * Native Release results and the matching source-map inventory are recorded in
+ * docs/astra-refresh/dependency-disposition.md. Recheck both when the installed
+ * router, parser or dependency graph changes; presence in the bundle alone
+ * neither proves nor disproves exposure through the application's entry points.
  */
 
 import { readFileSync } from "node:fs";
@@ -67,7 +38,7 @@ describe("the hazard is real", () => {
     expect(installed.version).toBe("0.2.2");
   });
 
-  it("decodes malformed percent-encoding exponentially, as the advisory says", () => {
+  it("spends excessive CPU in the malformed-encoding fallback", () => {
     const decode = require("decode-uri-component") as (value: string) => string;
     const payload = "%" + "FF%".repeat(400) + "FF";
 
@@ -87,7 +58,9 @@ describe("and the inbound deep-link path does not go near it", () => {
   it("resolves an incoming URL with the fork, not the vendored upstream copy", () => {
     const linking = withoutComments(routerFile("getLinkingConfig.js"));
     expect(linking).toMatch(/getStateFromPath/);
-    // Nothing imports the vendored copy that still calls `queryString.parse`.
+    expect(linking).toContain('require("./link/linking")');
+    expect(withoutComments(routerFile("link/linking.js"))).toContain('require("../fork/getStateFromPath")');
+    // The override cannot resolve to the core fallback that still parses.
     for (const file of ["getLinkingConfig.js", "fork/getStateFromPath.js"]) {
       expect(withoutComments(routerFile(file))).not.toMatch(/react-navigation\/core\/getStateFromPath/);
     }
@@ -144,5 +117,12 @@ describe("and the inbound deep-link path does not go near it", () => {
     expect(queryStringPath).toContain("node_modules/query-string");
     const consumer = require("query-string/package.json") as { version: string };
     expect(consumer.version).toMatch(/^7\./);
+    const lock = JSON.parse(readFileSync(new URL("../../package-lock.json", import.meta.url), "utf8")) as {
+      packages: Record<string, { dependencies?: Record<string, string> }>;
+    };
+    const consumers = Object.entries(lock.packages)
+      .filter(([, pkg]) => pkg.dependencies?.["query-string"] !== undefined)
+      .map(([path]) => path);
+    expect(consumers).toEqual(["node_modules/expo-router"]);
   });
 });

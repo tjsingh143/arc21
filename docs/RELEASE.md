@@ -3,7 +3,29 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Last updated:** 2026-09-04 (phase 12, the production release candidate).
+**Last updated:** 2026-09-14 PDT (Refresh A final local verification).
+
+**ASTRA BASELINE AUDIT: PASS**
+
+**KNOWN CURRENT RELEASE-BLOCKING SOFTWARE DEFECTS: 0**
+
+The independent [baseline audit](./astra-refresh/baseline-audit.md) is the current
+software evidence: all 22 product findings verified, 2,446 unit tests, 2,420
+coverage tests with per-area thresholds, 320 real server tests, 592 SQL
+assertions, a clean reset of all 59 migrations and the final iOS Release
+installed on both simulators. Final postflight confirms wallet/ledger equality,
+restored permissions and running application services. Refresh B has not begun;
+nothing was pushed, submitted or deployed.
+
+The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
+four advisories across 18 package entries and explains their actual runtime/build
+exposure; this is not a clean npm audit. No reachable release-blocking exploit
+was established in the audited paths.
+
+The activation requirements and verification gaps below remain open. Phase-12
+measurements, pricing and store-policy statements below are historical, not
+newly verified activation evidence. Refresh A does not claim an Android build,
+physical-device pass, live push delivery or cloud deployment.
 
 Three documents end at this one — [STORE_LISTING.md](./STORE_LISTING.md),
 [PRIVACY.md](./PRIVACY.md) and [TERMS.md](./TERMS.md) — because each of them
@@ -47,7 +69,7 @@ written.
 | **Google Play Console** | $25 once | Play submission and the Data safety declaration | `com.arc21.app`, `versionCode`, an app-bundle build profile, and the Play half of the listing copy |
 | **Expo account + EAS project id** | free tier | `eas build`, `eas submit`, and `getExpoPushTokenAsync` — **no device can be issued a push token without it**, which is why push is graded ABSENT in AUDIT.md | `eas.json`, schema-validated. `eas config` has never run: it needs the account |
 | **A domain and hosting** | varies | The privacy-policy URL Apple requires, the support URL both stores require, and the **account-deletion request page Google Play requires in addition to the in-app path** | The text those pages must serve, in PRIVACY.md and TERMS.md, and the deletion route itself (`delete_own_account()`, Settings → Delete account). Publish them at stable URLs and record the URLs in STORE_LISTING.md's "Support and marketing URLs" section |
-| **A Supabase cloud project** | free tier | Deploying the 58 migrations, the three Edge Functions, and the function secrets; and filling the two `EXPO_PUBLIC_*` values a shipped bundle needs | Everything, locally: `supabase db reset && supabase test db` passes, the functions serve, and `.env.example` names every variable and where each one comes from |
+| **A Supabase cloud project** | free tier | Deploying the 59 migrations, the three Edge Functions, and the function secrets; and filling the two `EXPO_PUBLIC_*` values a shipped bundle needs | Everything, locally: `supabase db reset && supabase test db` passes, the functions serve, and `.env.example` names every variable and where each one comes from |
 | **APNs key / FCM credentials** | with the accounts above | A real push. The sender records `mocked` rather than `sent` when no credentials exist, so this fails honestly rather than silently | `send-notifications`, the token schema, the four `PermissionMoment`s, and the no-op adapter |
 | **A physical iOS device** | — | Removing the largest verification gap below | Simulator coverage, on iPhone 17 Pro and 17 Pro Max / iOS 26.5, against a **Release** build |
 | **An Android SDK, and an emulator or device** | free | Building and running the Android app at all | The generated Gradle project (`npx expo prebuild --platform android`), `targetSdk 36`, and a permission set with no `SYSTEM_ALERT_WINDOW`. **Nothing Android has ever been compiled or run**: this machine has no Android SDK, no `adb` and no emulator |
@@ -57,10 +79,13 @@ written.
 - `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY` in the
   build environment. These are public by design and safe in the bundle.
 - Function secrets — **never** behind an `EXPO_PUBLIC_` prefix:
-  `SUPABASE_DB_URL`, `SUPABASE_SERVICE_ROLE_KEY` and
-  `DAILY_CHALLENGE_SEED_SECRET`. `ARC21_JWT_ISSUER` is optional and is left
+  `SUPABASE_DB_URL` and `SUPABASE_SERVICE_ROLE_KEY`.
+  `ARC21_JWT_ISSUER` is optional and is left
   unset locally on purpose; see `supabase/functions/_shared/env.ts`, which is
   the only module that reads any of them.
+- Daily seeds need no environment variable. `ensure_daily_challenge_for()`
+  generates each day's secret with Postgres CSPRNG bytes, stores it in the
+  protected `daily_challenges.seed_secret` column, and publishes its commitment.
 - The password-reset redirect string registered in `additional_redirect_urls`.
   GoTrue refuses to redirect anywhere not on that list, so the value the client
   passes and the value the project allows must agree by more than convention.
@@ -95,9 +120,11 @@ not because anything stands in the way.
 
 - **The six store screenshots have never been captured.** STORE_LISTING.md's
   screenshot plan names each screen, its caption and the rules the images are
-  held to; no image file exists. The simulator can produce every required size —
-  Apple requires a 6.9-inch iPhone set (1320 × 2868) and, because
-  `ios.supportsTablet` is true, a 13-inch iPad set (2064 × 2752). Curating and
+  held to; the audit screenshots are verification evidence, not a curated store
+  set. The current app is portrait-phone only: `app.json` sets
+  `ios.supportsTablet` to **false**, so the previous iPad screenshot claim did
+  not match the shipped configuration. Confirm current store size requirements
+  when preparing the listing. Curating and
   captioning them is an owner decision rather than an engineering task, which is
   why it is listed and not done.
 

@@ -13,7 +13,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
-import { readRejection } from "../../lib/supabase/rejection.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   OFFER_ALTERNATIVES_AFTER_MS,
@@ -22,6 +22,7 @@ import {
   type TierId,
 } from "./matchmaking.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
+import { useActiveSessionStore } from "../table/active-session-store.js";
 
 export type MatchmakingStatus =
   | { readonly kind: "idle" }
@@ -62,7 +63,8 @@ export interface MatchmakingStoreState {
   cancel: () => Promise<void>;
 }
 
-const UNREACHABLE = "Could not reach matchmaking. Nothing has been charged.";
+const UNREACHABLE = "Could not reach matchmaking. Check your connection and try again.";
+const SEAT_UNCONFIRMED = "Could not confirm your seat. Check your balance and return to any active table from Play before trying again.";
 const SIGNED_OUT = "Public tables need an account. Practice stays available without one.";
 /*
  * "Leave that table first" was advice the player could not act on: the game id
@@ -173,21 +175,16 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
      * seated in the lobby — costs nothing, which is why this is a separate,
      * deliberate step rather than a side effect of finding a table.
      */
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "JOIN_PUBLIC_TABLE",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          roomId: current.place.roomId,
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
-    if (result === null) {
-      set({ notice: UNREACHABLE });
+    const result = await sendSessionIntent(availability.client, {
+      action: "JOIN_PUBLIC_TABLE",
+      roomId: current.place.roomId,
+    });
+    if (result.kind === "unknown") {
+      set({ notice: SEAT_UNCONFIRMED });
+      await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
-    if (result.error) {
+    if (result.kind === "rejected") {
       /*
        * Which refusal it is matters. "Nothing has been charged" is true of
        * every one of them, but it is USEFUL advice only when the seat is
@@ -197,7 +194,7 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
        * for ever. That state was reachable, and paid twice, until the server
        * grew the guard that produces this code.
        */
-      const rejection = await readRejection(result.error);
+      const rejection = result.rejection;
       if (rejection?.code === "SESSION_ALREADY_ACTIVE") {
         set({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
         return null;
@@ -224,6 +221,7 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
       // The seat may well have been taken; only the echo is unreadable. Say so
       // rather than reporting a failure that would invite a second attempt.
       set({ notice: "Your seat was taken, but the reply could not be read. Reopen Public Table." });
+      await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
 

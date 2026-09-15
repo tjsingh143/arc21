@@ -26,6 +26,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const invoke = vi.fn();
 const rpc = vi.fn();
 const getSession = vi.fn();
+vi.mock("../../src/features/wallet/wallet-store.js", () => ({
+  useWalletStore: { getState: () => ({ refresh: async () => undefined }) },
+}));
 
 vi.mock("../../src/lib/supabase/client.js", () => ({
   getSupabase: () => ({
@@ -101,6 +104,19 @@ beforeEach(() => {
 });
 
 describe("leaving the sprint queue", () => {
+  it("replays a lost withdrawal reply with the same intent and reloads the refunded entry", async () => {
+    entryRow = WAITING_ENTRY;
+    await useTournamentStore.getState().load();
+    invoke.mockImplementationOnce(async () => {
+      entryRow = null;
+      return { data: null, error: { name: "FunctionsFetchError" } };
+    }).mockResolvedValueOnce({ data: { status: "sprint_withdrawn", refundChips: 0 }, error: null });
+    await useTournamentStore.getState().withdraw();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls[1]).toEqual(invoke.mock.calls[0]);
+    expect(useTournamentStore.getState().status).toMatchObject({ kind: "ready", entry: null });
+    expect(useTournamentStore.getState().notice).toContain("No second refund was made");
+  });
   it("tells the player their entry fee came back, and the message survives the reload", async () => {
     entryRow = WAITING_ENTRY;
     await useTournamentStore.getState().load();
@@ -153,7 +169,9 @@ describe("leaving the sprint queue", () => {
     entryRow = { ...WAITING_ENTRY, tournament_status: "running" as const };
     await useTournamentStore.getState().load();
 
-    invoke.mockResolvedValue({ data: null, error: { name: "FunctionsHttpError" } });
+    invoke.mockResolvedValue({ data: null, error: { name: "FunctionsHttpError",
+      context: { json: async () => ({ status: "rejected", code: "INVALID_PHASE", message: "Cannot withdraw." }) },
+    } });
     await useTournamentStore.getState().withdraw();
     expect(useTournamentStore.getState().notice).toContain("already been dealt");
 
@@ -195,6 +213,13 @@ describe("entering", () => {
 });
 
 describe("the background poll", () => {
+  it("does not turn an unreadable entry into an invitation to register again", async () => {
+    rpc.mockImplementation(async (name: string) => name === "sprint_format"
+      ? { data: [FORMAT], error: null }
+      : { data: null, error: { message: "offline" } });
+    await useTournamentStore.getState().load();
+    expect(useTournamentStore.getState().status.kind).toBe("unavailable");
+  });
   it("does not wipe a message the player has not read yet", async () => {
     // The screen re-reads itself every three seconds while a tournament is
     // live. A notice destroyed by that is a notice nobody sees.

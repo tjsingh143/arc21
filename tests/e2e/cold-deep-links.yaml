@@ -1,0 +1,100 @@
+# Cold links have no previous screen. A Back control must still leave the page.
+# Run after onboarding has been completed on a configured Release build.
+appId: com.arc21.app
+---
+- stopApp
+- openLink: arc21://learn/how-to-play
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "back-bar"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000
+- repeat:
+    times: 3
+    while:
+      notVisible:
+        id: "home-practice"
+    commands:
+      - tapOn:
+          id: "back-bar"
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 10000
+
+# A malformed password-reset link must offer a real recovery destination.
+- stopApp
+- openLink: arc21://auth/recovery
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible: ".*missing its reset code.*"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000
+- takeScreenshot: recovery-missing-code
+- repeat:
+    times: 3
+    while:
+      notVisible:
+        id: "auth-email"
+    commands:
+      - tapOn:
+          id: "recovery-sign-in"
+- extendedWaitUntil:
+    visible:
+      id: "auth-email"
+    timeout: 10000
+- assertVisible:
+    id: "auth-submit"
+
+- stopApp
+- openLink: arc21://auth/recovery?error=access_denied
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn: "Open"
+- extendedWaitUntil:
+    visible:
+      id: "recovery-link-error"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000
+- repeat:
+    times: 3
+    while:
+      notVisible:
+        id: "auth-email"
+    commands:
+      - tapOn:
+          id: "recovery-sign-in"
+- extendedWaitUntil:
+    visible:
+      id: "auth-email"
+    timeout: 10000
+
+# The account-switch CTA names Sign in even when Create Account was a cold link.
+- stopApp
+- openLink: arc21://create-account
+- extendedWaitUntil:
+    visible:
+      id: auth-username
+    timeout: 30000
+- scrollUntilVisible:
+    element: I already have an account
+    direction: DOWN
+    timeout: 20000
+- tapOn: I already have an account
+- extendedWaitUntil:
+    visible: Email me a reset link
+    timeout: 15000

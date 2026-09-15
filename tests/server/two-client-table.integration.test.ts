@@ -49,6 +49,7 @@ import {
 } from "../../src/features/table/online-table-gateway.js";
 import type { ArcSupabaseClient } from "../../src/lib/supabase/client.js";
 import type { PublicGameState } from "../../shared/blackjack/index.js";
+import { createSupabaseRoomsGateway } from "../../src/features/rooms/rooms-gateway.js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const REST = `${SUPABASE_URL}/rest/v1`;
@@ -205,6 +206,161 @@ function cardsOnTable(state: PublicGameState): string {
 }
 
 const suite = stackUp ? describe : describe.skip;
+
+suite("shared settlement bookkeeping", () => {
+  it("records every settled player's hand and seat projection exactly once", async () => {
+    const clients = [await signedInClient(), await signedInClient()];
+    const rooms = clients.map((client) => createSupabaseRoomsGateway(client.supabase));
+    const created = await rooms[0]!.create(2);
+    if (!created.ok) throw new Error(created.message);
+    const joined = await rooms[1]!.join(created.room.code);
+    if (!joined.ok) throw new Error(joined.message);
+    const started = await rooms[0]!.start(created.room.id);
+    if (!started.ok) throw new Error(started.message);
+    const { gameId } = started;
+    let state = await readTable(clients[0]!, gameId);
+    let last: { client: Client; body: Record<string, unknown>; reply: unknown } | null = null;
+    async function act(client: Client, type: string, payload = {}) {
+      const body = { gameId, type, payload, expectedVersion: state.version,
+        clientActionId: crypto.randomUUID(), clientSentAt: iso() };
+      const response = await callFunction("game-command", client.token, body);
+      expect(response.status).toBe(200);
+      state = (response.body as { publicState: PublicGameState }).publicState;
+      last = { client, body, reply: response.body };
+    }
+    try {
+      for (const client of clients) {
+        await act(client, "PLACE_BET", { amount: 100 });
+        await act(client, "LOCK_BET");
+      }
+      for (const client of clients) {
+        const seat = state.seats.find((row) => row.userId === client.id)!;
+        if (state.legalActions[seat.seatId]?.canDeclineInsurance) {
+          await act(client, "DECLINE_INSURANCE");
+        }
+      }
+      for (let guard = 0; state.phase === "PLAYER_TURNS" && guard < 8; guard++) {
+        const seat = state.seats.find((row) => row.seatId === state.activeSeatId)!;
+        await act(clients.find((client) => client.id === seat.userId)!, "STAND");
+      }
+      expect(state.phase).toBe("HAND_COMPLETE");
+      // Replay the command that settled the shared hand, including its original
+      // intent ID. Neither the actor nor their neighbour may be credited twice.
+      const replay = last as { client: Client; body: Record<string, unknown>; reply: unknown } | null;
+      if (!replay) throw new Error("no settlement command");
+      const repeated = await callFunction("game-command", replay.client.token, replay.body);
+      expect(repeated.status).toBe(200);
+      expect(repeated.body).toEqual(replay.reply);
+      for (const client of clients) {
+        const seat = state.seats.find((row) => row.userId === client.id)!;
+        const stats = await client.supabase.from("player_stats")
+          .select("hands_played,chips_wagered,chips_net").eq("user_id", client.id).single();
+        expect(stats.error).toBeNull();
+        expect.soft(stats.data, `settled record for ${client.id}`).toEqual({
+          hands_played: 1, chips_wagered: 100, chips_net: seat.hands[0]!.outcome!.net,
+        });
+        const profile = await client.supabase.from("profiles").select("xp").eq("id", client.id).single();
+        expect(profile.error).toBeNull();
+        expect.soft(profile.data?.xp, `hand XP for ${client.id}`).toBe(5);
+        const projected = await client.supabase.from("game_session_seats")
+          .select("stack,connected").eq("id", seat.seatId).single();
+        expect(projected.error).toBeNull();
+        expect.soft(projected.data).toEqual({ stack: seat.stack, connected: seat.connected });
+      }
+    } finally {
+      for (const client of clients) {
+        const cashedOut = await client.table.cashOut(gameId);
+        expect(cashedOut.ok).toBe(true);
+      }
+    }
+  }, 60_000);
+});
+
+suite("five independent authenticated clients using the shipped gateways", () => {
+  it("plays three shared hands, migrates the host, reconnects, and leaves without moving wallets", async () => {
+    const clients: Client[] = [];
+    for (let index = 0; index < 5; index++) clients.push(await signedInClient());
+    const rooms = clients.map((client) => createSupabaseRoomsGateway(client.supabase));
+    const created = await rooms[0]!.create(5);
+    if (!created.ok) throw new Error(created.message);
+    for (const room of rooms.slice(1)) {
+      const joined = await room.join(created.room.code);
+      if (!joined.ok) throw new Error(joined.message);
+      expect(joined.room.id).toBe(created.room.id);
+    }
+    const started = await rooms[0]!.start(created.room.id);
+    if (!started.ok) throw new Error(started.message);
+    const { gameId } = started;
+    let table = await readTable(clients[0]!, gameId);
+    expect(table.seats).toHaveLength(5);
+    expect(new Set(table.seats.map((seat) => seat.userId))).toEqual(new Set(clients.map((client) => client.id)));
+
+    for (let hand = 1; hand <= 3; hand++) {
+      expect(table.phase).toBe("BETTING_OPEN");
+      expect(table.handNumber).toBe(hand);
+      for (const client of clients) {
+        table = (await send(client, gameId, "PLACE_BET", table.version, { amount: 100 })).state;
+        table = (await send(client, gameId, "LOCK_BET", table.version)).state;
+      }
+      for (const client of clients) {
+        const seat = table.seats.find((candidate) => candidate.userId === client.id)!;
+        expect(seat.hands[0]?.wager).toBe(100);
+        if (table.legalActions[seat.seatId]?.canDeclineInsurance) {
+          table = (await send(client, gameId, "DECLINE_INSURANCE", table.version)).state;
+        }
+      }
+      for (let guard = 0; table.phase === "PLAYER_TURNS" && guard < 20; guard++) {
+        const seat = table.seats.find((candidate) => candidate.seatId === table.activeSeatId)!;
+        const actor = clients.find((client) => client.id === seat.userId);
+        if (!actor) throw new Error("server named a seat with no independent client");
+        table = (await send(actor, gameId, "STAND", table.version)).state;
+      }
+      expect(table.phase).toBe("HAND_COMPLETE");
+      for (const client of clients) {
+        const observed = await readTable(client, gameId);
+        // Commands may omit optional advice; snapshot reads explicitly send
+        // null. Both mean no coaching at a private table. Compare every game
+        // field while treating those two wire representations equivalently.
+        expect({ ...observed, advice: observed.advice ?? null })
+          .toEqual({ ...table, advice: table.advice ?? null });
+        expect(observed.advice ?? null).toBeNull();
+        expect(observed.dealer.holeCardRevealed).toBe(true);
+        expect(observed.seats.every((seat) => seat.hands[0]?.outcome !== undefined)).toBe(true);
+      }
+      if (hand < 3) table = (await send(clients[hand]!, gameId, "NEXT_HAND", table.version)).state;
+    }
+
+    expect(await clients[0]!.table.cashOut(gameId)).toEqual({ ok: true, walletBalance: 25_000 });
+    const migrated = await rooms[1]!.read(created.room.id);
+    if (!migrated.ok) throw new Error(migrated.message);
+    expect(migrated.state.members).toHaveLength(4);
+    expect(migrated.state.room.hostUserId).toBe(clients[1]!.id);
+
+    // Discard the gateway and socket, then resolve the live seat through RLS.
+    await clients[4]!.supabase.realtime.disconnect();
+    const reclaimed = await rooms[4]!.findSeat(gameId);
+    if (!reclaimed.ok) throw new Error(reclaimed.message);
+    expect(reclaimed.seatId).toBe(table.seats.find((seat) => seat.userId === clients[4]!.id)!.seatId);
+    const reconnected = createSupabaseTableGateway(clients[4]!.supabase);
+    const snapshot = await reconnected.snapshot(gameId);
+    if (!snapshot.ok) throw new Error(snapshot.message);
+    expect(snapshot.state.handNumber).toBe(3);
+    expect(snapshot.state.seats.filter((seat) => seat.connected)).toHaveLength(4);
+
+    for (const client of clients.slice(1)) {
+      expect(await client.table.cashOut(gameId)).toEqual({ ok: true, walletBalance: 25_000 });
+    }
+    for (const client of clients) {
+      const wallet = await client.supabase.from("wallets").select("balance").eq("user_id", client.id).single();
+      expect(wallet.error).toBeNull();
+      expect(wallet.data?.balance).toBe(25_000);
+      const ledger = await client.supabase.from("wallet_ledger").select("delta,reason").eq("user_id", client.id);
+      expect(ledger.error).toBeNull();
+      expect(ledger.data).toEqual([{ delta: 25_000, reason: "initial_grant" }]);
+      expect((await rpc(client, "my_active_session")).body).toEqual([]);
+    }
+  }, 180_000);
+});
 
 suite("two independent clients at one private table", () => {
   it(

@@ -262,6 +262,9 @@ export interface OnlineTableStoreState {
  * for the table and once for the handle to the thing that delivered it.
  */
 let unsubscribe: (() => void) | null = null;
+// Requests can outlive a cash-out, route change, or a second entry to the same
+// game. A game id alone cannot distinguish those separate screen lifetimes.
+let tableGeneration = 0;
 
 let gatewayOverride: TableGateway | null = null;
 
@@ -352,6 +355,10 @@ function dropIfSeatIsClosed(
   // would keep pushing a stranger's hands at a screen that has moved on.
   get().forgetTable();
   set({ status: { kind: "unavailable", message: SEAT_CLOSED_MESSAGE } });
+  // Ranked completion and a lost cash-out reply can both close the seat before
+  // leaveTable runs. Reconcile the reward/refund here too, or retained headers
+  // keep showing the balance from before settlement.
+  void useWalletStore.getState().refresh();
   return true;
 }
 
@@ -364,6 +371,30 @@ function statusForFailure(failure: TableFailure): OnlineTableStatus {
     default:
       return { kind: "unavailable", message: failure.message };
   }
+}
+
+/** HTTP replies and Realtime share one monotonically increasing server state. */
+function snapshotUpdate(
+  get: () => OnlineTableStoreState,
+  state: PublicGameState,
+  events?: TableEvents,
+): Partial<OnlineTableStoreState> {
+  const current = get().status;
+  if (current.kind !== "at-table" || current.state.gameId !== state.gameId ||
+      state.version < current.state.version) return {};
+  const update: Partial<OnlineTableStoreState> = {
+    status: { kind: "at-table", state, seatId: current.seatId },
+  };
+  if (events === undefined) return update;
+  const seq = seqRangeOf(events);
+  // A broadcast may beat the HTTP reply for the very same command. Keep the
+  // event array's identity in that case, so feedback does not play twice.
+  if (seq && seq.last <= get().lastAppliedSeq) return update;
+  return {
+    ...update,
+    lastAppliedSeq: seq?.last ?? get().lastAppliedSeq,
+    lastEvents: state.version === current.state.version && seq ? EMPTY_EVENTS : events,
+  };
 }
 
 export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => ({
@@ -380,10 +411,13 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   lastEvents: EMPTY_EVENTS,
 
   enter: async (gameId, seatId) => {
+    get().forgetTable();
+    const generation = tableGeneration;
     // A fresh entry starts live even if a previous table left this reconnecting —
     // there is no hand to reconnect to yet.
     set({ status: { kind: "loading" }, connection: LIVE, notice: null });
     const read = await activeTableGateway().snapshot(gameId);
+    if (generation !== tableGeneration) return;
     if (!read.ok) {
       // A table this player has already left. Said in the app's own words, not
       // the server's — "This table has closed. (ref f77e1b11-…)" is a developer
@@ -420,6 +454,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
      */
     unsubscribe?.();
     unsubscribe = activeTableGateway().subscribe(gameId, (pushed, events) => {
+      if (generation !== tableGeneration) return;
       applyPushedState(get, set, pushed, events);
     });
   },
@@ -427,11 +462,13 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   refresh: async () => {
     const current = get().status;
     if (current.kind !== "at-table") return;
+    const generation = tableGeneration;
 
     // The poll is already a retry loop running every three seconds — stacking
     // the gateway's own backoff inside it would leave several polls in flight
     // at once against a server that is already struggling. See TableCallOptions.
     const read = await activeTableGateway().snapshot(current.state.gameId, { retry: false });
+    if (generation !== tableGeneration) return;
     if (!read.ok) {
       // ...unless the seat itself is gone, which is not a transient.
       if (dropIfSeatIsClosed(get, set, read)) return;
@@ -441,8 +478,10 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       set({ connection, notice });
       return;
     }
+    const latest = get().status;
+    if (latest.kind !== "at-table" || read.state.version < latest.state.version) return;
     set({
-      status: { kind: "at-table", state: read.state, seatId: current.seatId },
+      ...snapshotUpdate(get, read.state, EMPTY_EVENTS),
       // A poll that lands is how a reconnecting client discovers it is live
       // again — there is no other signal, since the poll itself is silent
       // on success.
@@ -523,6 +562,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   lockBet: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
 
     const staged = get().stagedBet;
     const legal = current.state.legalActions[current.seatId];
@@ -536,7 +576,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     // Fires the moment an attempt inside EITHER command comes back silent, so
     // the banner appears from the first failure rather than after the whole
     // backoff for both commands has run out.
-    const onRetry = () => set({ connection: RECONNECTING });
+    const onRetry = () => {
+      if (generation === tableGeneration) set({ connection: RECONNECTING });
+    };
 
     // Two commands, in order: the bet must be recorded before it is locked.
     const placed = await activeTableGateway().command(
@@ -544,6 +586,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { type: "PLACE_BET", expectedVersion: current.state.version, payload: { amount: staged } },
       { onRetry },
     );
+    if (generation !== tableGeneration) return;
     if (!placed.ok) {
       if (dropIfSeatIsClosed(get, set, placed)) return;
       const { connection, notice } = afterFailure(placed);
@@ -556,6 +599,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { type: "LOCK_BET", expectedVersion: placed.state.version, payload: {} },
       { onRetry },
     );
+    if (generation !== tableGeneration) return;
     if (!locked.ok) {
       if (dropIfSeatIsClosed(get, set, locked)) return;
       const { connection, notice } = afterFailure(locked);
@@ -563,10 +607,8 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
         pending: false,
         stagedBet: 0,
         connection,
-        status: { kind: "at-table", state: placed.state, seatId: current.seatId },
+        ...snapshotUpdate(get, placed.state, placed.events),
         notice,
-        lastAppliedSeq: seqRangeOf(placed.events)?.last ?? get().lastAppliedSeq,
-        lastEvents: placed.events,
       });
       return;
     }
@@ -577,13 +619,8 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       // refused or clamped bet is not the one to offer again.
       lastBet: staged,
       connection: LIVE,
-      status: { kind: "at-table", state: locked.state, seatId: current.seatId },
+      ...snapshotUpdate(get, locked.state, locked.events),
       notice: null,
-      // The broadcast of this very command is about to arrive on the channel
-      // carrying the same events. Recording the sequence here is what makes it
-      // a duplicate rather than a second deal.
-      lastAppliedSeq: seqRangeOf(locked.events)?.last ?? get().lastAppliedSeq,
-      lastEvents: locked.events,
     });
   },
 
@@ -602,13 +639,17 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   nextHand: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
 
     set({ pending: true, notice: null });
     const result = await activeTableGateway().command(
       current.state.gameId,
       { type: "NEXT_HAND", expectedVersion: current.state.version, payload: {} },
-      { onRetry: () => set({ connection: RECONNECTING }) },
+      { onRetry: () => {
+        if (generation === tableGeneration) set({ connection: RECONNECTING });
+      } },
     );
+    if (generation !== tableGeneration) return;
 
     if (!result.ok) {
       if (dropIfSeatIsClosed(get, set, result)) return;
@@ -620,15 +661,14 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       pending: false,
       stagedBet: 0,
       connection: LIVE,
-      status: { kind: "at-table", state: result.state, seatId: current.seatId },
-      lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
-      lastEvents: result.events,
+      ...snapshotUpdate(get, result.state, result.events),
     });
   },
 
   resolveTimeout: async () => {
     const current = get().status;
     if (current.kind !== "at-table") return;
+    const generation = tableGeneration;
     if (
       !shouldRequestTimeoutResolution({
         deadlineAt: current.state.deadlineAt,
@@ -654,6 +694,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       // version has not moved, and the next tick asks again.
       { retry: false },
     );
+    if (generation !== tableGeneration) return;
 
     if (!result.ok) {
       /*
@@ -671,9 +712,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     }
     set({
       connection: LIVE,
-      status: { kind: "at-table", state: result.state, seatId: current.seatId },
-      lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
-      lastEvents: result.events,
+      ...snapshotUpdate(get, result.state, result.events),
     });
   },
 
@@ -684,9 +723,11 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       get().forgetTable();
       return true;
     }
+    const generation = tableGeneration;
 
     set({ pending: true, notice: null });
     const outcome = await activeTableGateway().cashOut(current.state.gameId);
+    if (generation !== tableGeneration) return false;
     set({ pending: false });
 
     if (!outcome.ok) {
@@ -721,9 +762,11 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   resetStack: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
 
     set({ pending: true, notice: null });
     const outcome = await activeTableGateway().resetPrivateStack(current.state.gameId);
+    if (generation !== tableGeneration) return;
 
     if (!outcome.ok) {
       // A seat that closed under this player is the one failure worth leaving
@@ -747,7 +790,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     set({
       pending: false,
       connection: LIVE,
-      status: { kind: "at-table", state: outcome.state, seatId: current.seatId },
+      ...snapshotUpdate(get, outcome.state),
       // A different stack is a different set of affordable bets, and the wager
       // this seat last had accepted was made against chips it no longer has.
       stagedBet: 0,
@@ -757,6 +800,7 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
   },
 
   forgetTable: () => {
+    tableGeneration++;
     unsubscribe?.();
     unsubscribe = null;
     set({
@@ -809,14 +853,15 @@ function applyPushedState(
 ): void {
   const current = get().status;
   if (current.kind !== "at-table" || current.state.gameId !== pushed.gameId) return;
+  // Polling may already have adopted a newer state without any event sequence.
+  // An unseen event number does not make an older snapshot current again.
+  if (pushed.version <= current.state.version) return;
 
   const seq = seqRangeOf(events);
   const lastApplied = get().lastAppliedSeq;
 
   if (seq === null) {
-    // No sequence to reason about. An equal or older version is a duplicate of
-    // something already on screen.
-    if (pushed.version <= current.state.version) return;
+    // No event sequence; the version check above establishes freshness.
     set({ status: { kind: "at-table", state: pushed, seatId: current.seatId } });
     return;
   }
@@ -864,13 +909,17 @@ async function sendSimpleCommand(
 ): Promise<void> {
   const current = get().status;
   if (current.kind !== "at-table" || get().pending) return;
+  const generation = tableGeneration;
 
   set({ pending: true, notice: null });
   const result = await activeTableGateway().command(
     current.state.gameId,
     { type, expectedVersion: current.state.version, payload: {} },
-    { onRetry: () => set({ connection: RECONNECTING }) },
+    { onRetry: () => {
+      if (generation === tableGeneration) set({ connection: RECONNECTING });
+    } },
   );
+  if (generation !== tableGeneration) return;
 
   if (!result.ok) {
     if (dropIfSeatIsClosed(get, set, result)) return;
@@ -881,9 +930,7 @@ async function sendSimpleCommand(
   set({
     pending: false,
     connection: LIVE,
-    status: { kind: "at-table", state: result.state, seatId: current.seatId },
-    lastAppliedSeq: seqRangeOf(result.events)?.last ?? get().lastAppliedSeq,
-    lastEvents: result.events,
+    ...snapshotUpdate(get, result.state, result.events),
   });
 }
 

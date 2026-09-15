@@ -3,7 +3,7 @@
  * font sizes, which keeps the hierarchy consistent and auditable.
  */
 
-import { Text, type TextProps, type TextStyle } from "react-native";
+import { Text, useWindowDimensions, type TextProps, type TextStyle } from "react-native";
 
 import { useSecondaryTextColor } from "../../design/accessibility";
 import { colors, type ColorToken } from "../../design/tokens";
@@ -25,6 +25,7 @@ export function AppText({
   style,
   ...rest
 }: AppTextProps) {
+  const { fontScale } = useWindowDimensions();
   // The only colour "Increased contrast" changes app-wide: everywhere else a
   // token is already at or above the AA bar (see check-contrast.ts), so there
   // is nothing to strengthen.
@@ -33,6 +34,11 @@ export function AppText({
 
   return (
     <Text
+      // Fabric 0.86 can retain the old measured box after a live Dynamic Type
+      // change while drawing larger glyphs. Remount only the native text node
+      // when that scale changes; screen, form and game state stay mounted.
+      // https://github.com/react/react-native/issues/57512
+      key={fontScale}
       style={[
         typography[variant] as TextStyle,
         { color: resolved },

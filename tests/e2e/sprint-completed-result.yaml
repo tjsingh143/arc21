@@ -1,0 +1,46 @@
+# Continue a completed Sprint in the retained native process. Expected values
+# come from the independent server observation, supplied by the audit runner.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- assertVisible: You are no longer at this table.*
+- tapOn: Leave table
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: tournament-result
+    timeout: 45000
+- assertVisible:
+    id: tournament-progress
+    text: ${EXPECTED_PROGRESS}
+- assertVisible:
+    id: tournament-result
+    text: ${EXPECTED_RESULT}
+- assertVisible:
+    id: tournament-rematch
+- assertNotVisible:
+    id: tournament-open-table
+- assertNotVisible:
+    id: tournament-withdraw
+- takeScreenshot: sprint-completed-result
+- scrollUntilVisible:
+    element:
+      text: ${EXPECTED_STANDING}
+    direction: DOWN
+- assertVisible: ${EXPECTED_STANDING}
+- takeScreenshot: sprint-completed-standings
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- assertVisible: ${EXPECTED_WALLET}
+- takeScreenshot: sprint-completed-wallet

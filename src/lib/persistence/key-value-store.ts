@@ -6,6 +6,15 @@
  * tests. Nothing above this layer knows which it is talking to.
  */
 
+import { openSqliteDatabase, type SqliteDatabase } from "./open-sqlite.js";
+
+// Settings, guest identity and onboarding hydrate through separate store
+// instances at startup. Share their database initialization before native work
+// begins: Expo dispatches opens concurrently and lazily creates its filesystem
+// manager. Serializing opens also covers callers using different database names.
+const databases = new Map<string, Promise<SqliteDatabase>>();
+let openingDatabase: Promise<void> = Promise.resolve();
+
 export interface KeyValueStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;
@@ -40,20 +49,25 @@ export class MemoryKeyValueStore implements KeyValueStore {
  * test process, where `expo-sqlite` has no native backing.
  */
 export class SqliteKeyValueStore implements KeyValueStore {
-  private ready: Promise<SqliteDatabase> | null = null;
-
   constructor(private readonly databaseName = "arc21.db") {}
 
   private async database(): Promise<SqliteDatabase> {
-    this.ready ??= (async () => {
-      const SQLite = (await import("expo-sqlite")) as unknown as SqliteModule;
-      const db = await SQLite.openDatabaseAsync(this.databaseName);
+    const existing = databases.get(this.databaseName);
+    if (existing) return existing;
+
+    const ready = openingDatabase.then(async () => {
+      const db = await openSqliteDatabase(this.databaseName);
       await db.execAsync(
         "create table if not exists kv (key text primary key not null, value text not null);",
       );
       return db;
-    })();
-    return this.ready;
+    });
+    databases.set(this.databaseName, ready);
+    openingDatabase = ready.then(() => undefined, () => {
+      // A transient initialization failure must not poison every later read.
+      if (databases.get(this.databaseName) === ready) databases.delete(this.databaseName);
+    });
+    return ready;
   }
 
   async get(key: string): Promise<string | null> {
@@ -77,16 +91,4 @@ export class SqliteKeyValueStore implements KeyValueStore {
     const db = await this.database();
     await db.runAsync("delete from kv where key = ?;", [key]);
   }
-}
-
-// Structural types for the lazily imported module, so this file needs no
-// build-time dependency on expo-sqlite's typings.
-interface SqliteDatabase {
-  execAsync(sql: string): Promise<void>;
-  runAsync(sql: string, params: unknown[]): Promise<unknown>;
-  getFirstAsync<T>(sql: string, params: unknown[]): Promise<T | null>;
-}
-
-interface SqliteModule {
-  openDatabaseAsync(name: string): Promise<SqliteDatabase>;
 }

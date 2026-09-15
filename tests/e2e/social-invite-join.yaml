@@ -1,0 +1,45 @@
+# Open the server inbox receipt and follow its shipped room-code route.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://notifications
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: notification-${INVITATION_ID}
+    direction: DOWN
+    timeout: 45000
+- tapOn:
+    id: notification-${INVITATION_ID}
+- extendedWaitUntil:
+    visible: 2 of 2 seated
+    timeout: 45000
+- assertVisible:
+    id: room-code
+    text: ${ROOM_CODE}
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-invite-joined
+- scrollUntilVisible:
+    element:
+      id: room-ready
+    direction: DOWN
+- tapOn:
+    id: room-ready
+- extendedWaitUntil:
+    visible:
+      id: room-member-ready-2
+      text: Ready
+    timeout: 15000
+- runScript:
+    file: observe-audit.js
+    env:
+      STAGE: social-invite-ready
+- takeScreenshot: social-invite-ready
