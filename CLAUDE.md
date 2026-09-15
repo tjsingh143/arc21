@@ -2,8 +2,10 @@
 
 A **simulated** blackjack game. Expo (iOS/Android) + Supabase. Virtual chips only.
 
-Read `docs/IMPLEMENTATION_STATUS.md` for where the build actually is, and
+Read `docs/LAUNCH_STATE.md` for where the build actually is (it points to the
+Astra Refresh A baseline audit, the current release evidence), and
 `docs/AUDIT.md` for how strongly each area has been verified.
+`docs/IMPLEMENTATION_STATUS.md` is a historical tracker.
 
 ---
 

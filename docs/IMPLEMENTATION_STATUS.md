@@ -16,6 +16,11 @@ Last updated: 2026-09-04 (phase 12 — migration counts corrected; see the point
 > `docs/phase-reports/`. What is below remains accurate about the areas it
 > describes; it is simply not the whole picture any more.
 > (Pointer added 2026-09-02, end of phase 9; updated 2026-09-04, end of phase 12.)
+>
+> **Superseded again by Astra Refresh A (PASS, 2026-09-14 PDT).** The current
+> release index is `docs/LAUNCH_STATE.md`, and the current software evidence is
+> `docs/astra-refresh/baseline-audit.md`; the phase 12 report above is now
+> historical too. (Pointer added 2026-09-14.)
 
 ---
 
