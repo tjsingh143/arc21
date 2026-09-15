@@ -139,8 +139,16 @@ jobs:
         run: npm ci
 
       - uses: supabase/setup-cli@v1
+        # Pinned for the same reason Node is: `latest` let an upstream release
+        # turn a green commit red. CLI v2.117.0 (published 2026-09-07) fails
+        # `supabase start` on these migrations with "failed to create seed
+        # table: current transaction is aborted" — reproduced locally, with and
+        # without the newest migration — while v2.115.0 applies all of them and
+        # seeds. v2.115.0 is what every local verification, including Astra
+        # Refresh A's clean reset, ran on. Move the pin deliberately, after a
+        # local `supabase start` from empty passes on the new version.
         with:
-          version: latest
+          version: 2.115.0
 
       - name: Start the stack
         run: supabase start
