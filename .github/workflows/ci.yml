@@ -279,7 +279,7 @@ jobs:
             --format 'edge_runtime oom={{.State.OOMKilled}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}}' || true
           echo "::endgroup::"
           echo "::group::edge runtime log (timestamped)"
-          docker logs --timestamps supabase_edge_runtime_arc21 2>&1 | tail -n 4000 || true
+          docker logs --timestamps supabase_edge_runtime_arc21 2>&1 || true
           echo "::endgroup::"
           echo "::group::resource samples"
           cat "$RUNNER_TEMP/resources.log" || true
