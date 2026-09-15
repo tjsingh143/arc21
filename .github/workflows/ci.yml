@@ -258,6 +258,18 @@ jobs:
             })();
           '
 
+      - name: "DIAGNOSTIC: sample runner and container resources"
+        run: |
+          (
+            while true; do
+              echo "=== $(date -u +%H:%M:%S) load $(cut -d' ' -f1-3 /proc/loadavg)"
+              free -m | awk 'NR==2{print "mem used " $3 " MB free " $4 " MB avail " $7 " MB"}'
+              docker stats --no-stream --format '{{.Name}} cpu={{.CPUPerc}} mem={{.MemUsage}} pids={{.PIDs}}' \
+                | grep -E 'edge_runtime|_db_|kong|rest_|auth_' || true
+              sleep 5
+            done
+          ) > "$RUNNER_TEMP/resources.log" 2>&1 &
+
       - name: Server integration tests
         # `npm run test:server` carries BOTH halves of what this step needs, and
         # carrying them in the script rather than here is deliberate:
@@ -270,3 +282,21 @@ jobs:
         #   real race or a real clock open time out on a busy machine. A gate
         #   must not depend on how idle the runner is.
         run: npm run test:server
+
+      - name: "DIAGNOSTIC: edge runtime and runner evidence"
+        if: always()
+        run: |
+          echo "::group::container state"
+          docker ps -a --format '{{.Names}} {{.Status}}'
+          docker inspect supabase_edge_runtime_arc21 \
+            --format 'edge_runtime oom={{.State.OOMKilled}} exit={{.State.ExitCode}} restarts={{.RestartCount}} started={{.State.StartedAt}}' || true
+          echo "::endgroup::"
+          echo "::group::edge runtime log (timestamped)"
+          docker logs --timestamps supabase_edge_runtime_arc21 2>&1 | tail -n 4000 || true
+          echo "::endgroup::"
+          echo "::group::resource samples"
+          cat "$RUNNER_TEMP/resources.log" || true
+          echo "::endgroup::"
+          echo "::group::kernel messages"
+          sudo dmesg --ctime 2>/dev/null | tail -n 80 || true
+          echo "::endgroup::"
