@@ -143,12 +143,17 @@ jobs:
         # turn a green commit red. CLI v2.117.0 (published 2026-09-07) fails
         # `supabase start` on these migrations with "failed to create seed
         # table: current transaction is aborted" — reproduced locally, with and
-        # without the newest migration — while v2.115.0 applies all of them and
-        # seeds. v2.115.0 is what every local verification, including Astra
-        # Refresh A's clean reset, ran on. Move the pin deliberately, after a
+        # without the newest migration. v2.116.0 is the last version this job
+        # passed on (2026-09-04), and it also applies every migration and seeds
+        # from empty locally; v2.115.0 does too, and is what local verification
+        # including Astra Refresh A ran on, but neither of its two runs here
+        # passed: a stack probe timed out mid-suite, then the edge runtime died
+        # on start ("Bus error (core dumped)"). Not shown to be the CLI's fault,
+        # so the pin prefers the version with a green run. Move it deliberately,
+        # after a
         # local `supabase start` from empty passes on the new version.
         with:
-          version: 2.115.0
+          version: 2.116.0
 
       - name: Start the stack
         run: supabase start
