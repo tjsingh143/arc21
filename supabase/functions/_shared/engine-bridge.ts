@@ -16,9 +16,11 @@
 
 import {
   assertNoHiddenCardLeak,
+  canCloseSeat,
   CryptoRandomSource,
   EngineError,
   getLegalActions,
+  isBettingTurn,
   toPublicState,
   type BlackjackGameState,
   type EngineCommand,
@@ -180,6 +182,22 @@ export function assertCommandIsLegal(
   const seat = seatOf(state, seatId);
   const legal = getLegalActions(state, seatId);
 
+  /*
+   * A sequential table takes bets one seat at a time, and a seat whose turn has
+   * not arrived is not doing anything illegal. The same distinction the player
+   * actions below draw: NOT_YOUR_TURN is a synchronisation problem the client
+   * recovers from by re-reading the snapshot, where WRONG_PHASE reads as a bug
+   * and ILLEGAL_ACTION reads as an attack.
+   */
+  if (
+    (request.type === "PLACE_BET" || request.type === "LOCK_BET") &&
+    state.phase === "BETTING_OPEN" &&
+    !seat.betLocked &&
+    !isBettingTurn(state, seatId)
+  ) {
+    throw new EngineError("NOT_YOUR_TURN", "it is not this seat's turn to bet");
+  }
+
   switch (request.type) {
     case "NEXT_HAND":
       if (legal.canStartNextHand) return;
@@ -226,25 +244,16 @@ export function assertCommandIsLegal(
   }
 }
 
-/** Phases in which no wager is committed, so a seat may safely cash out. */
-const SAFE_TO_CLOSE_PHASES = new Set([
-  "SESSION_READY",
-  "BETTING_OPEN",
-  "HAND_COMPLETE",
-  "BETWEEN_HANDS",
-  "SESSION_COMPLETE",
-]);
-
 /**
  * Whether the table can be closed and the stack returned right now.
  *
- * "Leaving is never a way to escape a committed wager" — SECURITY.md. A seat
- * mid-hand, or one that has locked a bet for a hand about to be dealt, must see
- * that hand resolve first.
+ * The rule itself is `canCloseSeat` in `shared/blackjack/table-closure.ts`,
+ * because the CLIENT needs the same answer: a player who taps "Leave table"
+ * mid-hand has their intent held until the table reaches a phase this permits,
+ * and a second copy of the phase list here would be a second answer to one
+ * question. This wrapper exists only to keep the server's call sites reading in
+ * the server's own vocabulary.
  */
 export function canCloseSession(state: EngineState, seatId: string): boolean {
-  if (!SAFE_TO_CLOSE_PHASES.has(state.phase)) return false;
-  if (state.phase !== "BETTING_OPEN") return true;
-  const seat = state.seats.find((candidate) => candidate.seatId === seatId);
-  return seat ? !seat.betLocked : true;
+  return canCloseSeat(state, seatId);
 }

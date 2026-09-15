@@ -73,6 +73,27 @@ export function isSeatsTurn(state: BlackjackGameState, seatId: string): boolean 
 }
 
 /**
+ * Whether this seat may stake chips right now.
+ *
+ * True for every seat at an ordinary table, which takes bets from all of them at
+ * once. At a SEQUENTIAL table — the Sprint Tournament — it is true only for the
+ * seat the engine has named, so that earlier bets are committed and visible
+ * before the next player chooses theirs.
+ *
+ * One definition, three callers: `getLegalActions` draws the controls from it,
+ * the reducer refuses a command that contradicts it, and the server's
+ * `assertCommandIsLegal` uses it to answer NOT_YOUR_TURN rather than
+ * WRONG_PHASE — a distinction that matters because the first is a
+ * synchronisation problem a client recovers from by re-reading the snapshot and
+ * the second reads as a bug.
+ */
+export function isBettingTurn(state: BlackjackGameState, seatId: string): boolean {
+  if (!state.rules.sequentialBetting) return true;
+  if (state.activeSeatIndex === null) return false;
+  return state.seats[state.activeSeatIndex]?.seatId === seatId;
+}
+
+/**
  * The maximum bet a seat can afford, respecting table limits and increment.
  * Rounds *down* to the increment so the returned value is always placeable.
  */
@@ -115,6 +136,18 @@ export function getLegalActions(state: BlackjackGameState, actorId: string): Leg
   }
 
   if (state.phase === "BETTING_OPEN") {
+    /*
+     * A sequential table takes bets one seat at a time, so every seat but the
+     * current bettor may look and not touch.
+     *
+     * Returning NO_ACTIONS rather than a set with `canPlaceBet: false` matters
+     * for the CONTROL as much as for the command: `betBounds` goes with it, and
+     * a client that still saw bounds would happily offer a chip tray to a player
+     * whose turn has not arrived. The other seats' committed bets are on the
+     * snapshot regardless — that is the whole point of betting in turn.
+     */
+    if (!isBettingTurn(state, actorId)) return NO_ACTIONS;
+
     const canBet = !seat.betLocked && maxPlaceableBet(seat, rules) >= rules.minBet;
     return {
       ...NO_ACTIONS,
@@ -216,7 +249,19 @@ export function getLegalActions(state: BlackjackGameState, actorId: string): Leg
   };
 }
 
-/** Convenience predicate used by the server before applying a command. */
+/**
+ * Convenience predicate over `getLegalActions`, for a caller that wants one
+ * answer rather than the whole set.
+ *
+ * It used to claim the SERVER called it "before applying a command". The server
+ * does not: `engine-bridge.assertCommandIsLegal` reads the full
+ * `LegalActionSet`, because it has to distinguish "not your turn" from "not a
+ * legal action" and needs the chip costs anyway. Nothing else calls this either.
+ * It is kept because it is the natural one-question form of the same lookup, and
+ * `tests/engine/engine-api.test.ts` pins it to `getLegalActions` so the two can
+ * never answer differently — but the comment now says what is true, because a
+ * false claim about a call site is how a control ends up guarded by nothing.
+ */
 export function isActionLegal(
   state: BlackjackGameState,
   actorId: string,

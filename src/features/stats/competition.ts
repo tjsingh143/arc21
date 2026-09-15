@@ -32,7 +32,13 @@ export type CompetitionState =
   | { status: "ready"; record: CompetitionRecord; stale: boolean };
 
 export interface CompetitionContext {
-  /** True once an authenticated session exists. Always false in this build. */
+  /**
+   * True once an authenticated session exists.
+   *
+   * It was written as the literal `false` at both call sites — a fact about a
+   * build with no sign-in, never revisited once accounts shipped — so every
+   * signed-in player was told their competition record required an account.
+   */
   hasAccount: boolean;
   online: boolean;
   /** A record already fetched and cached for this account, if any. */
@@ -72,10 +78,20 @@ export function describeCompetitionUnavailable(
     case "NO_ACCOUNT":
       return {
         title: "Requires an account",
+        /*
+         * THE SECOND SENTENCE USED TO READ "This build has no sign-in yet."
+         *
+         * True when it was written, false by the time anybody read it — the
+         * same expiry `STATS_VISIBILITY_NOTE` documents, and worse here,
+         * because it told the player nothing they could act on. The screen was
+         * simultaneously carrying a working sign-in and telling them one did
+         * not exist. A refusal has to name something the player can do.
+         */
         body:
           "Tournament and Daily Challenge records are kept on the server so they " +
-          "cannot be edited from a phone. This build has no sign-in yet, so there " +
-          "is no record to show — not a record of zero.",
+          "cannot be edited from a phone. You are playing as a guest, so there is " +
+          "no record to show — not a record of zero. Create an account and every " +
+          "ranked result from then on is kept here.",
       };
     case "OFFLINE":
       return {

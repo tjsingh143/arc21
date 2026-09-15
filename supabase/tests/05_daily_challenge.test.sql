@@ -13,7 +13,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(13);
+select plan(18);
 
 -- This file mints its OWN challenges, and a real one for today may already exist:
 -- `ensure_daily_challenge_for` creates today's row the first time anyone opens the
@@ -174,6 +174,58 @@ select is(
   ),
   true,
   'the revealed seed hashes to the commitment published before play began'
+);
+
+-- -----------------------------------------------------------------------------
+-- Somebody has to actually publish it
+-- -----------------------------------------------------------------------------
+--
+-- THE DEFECT THIS CLOSES. Everything above held for the whole life of the
+-- feature and nothing in the product ever wrote `revealed_seed`: the column, the
+-- trigger, the client projection, the parser and the render branch all existed,
+-- and no code path outside this file had ever set it. So the commitment could
+-- never be checked by anybody, while the Daily screen told the player in so many
+-- words that it could be. `reveal_closed_daily_seeds` is the missing half, and
+-- `ensure_todays_daily_challenge` calls it, so opening the screen publishes
+-- every seed whose window has closed.
+
+-- Undo this file's own reveal so the function has something to do, and so the
+-- count below is about the function rather than about the update above.
+update public.daily_challenges
+set revealed_seed = null, seed_revealed_at = null
+where challenge_date = (current_date + 399);
+
+select is(
+  (select public.reveal_closed_daily_seeds() >= 1),
+  true,
+  'the reveal publishes a challenge whose window has closed'
+);
+
+select is(
+  (select revealed_seed = seed_secret from public.daily_challenges
+   where challenge_date = (current_date + 399)),
+  true,
+  'and what it published is the seed the commitment was made from'
+);
+
+select is(
+  (select revealed_seed from public.daily_challenges
+   where challenge_date = (current_date + 400)),
+  null,
+  'while a challenge still RUNNING keeps its seed, which is the whole point'
+);
+
+select is(
+  (select challenge_date from public.latest_verifiable_daily_challenge()),
+  (select max(challenge_date) from public.daily_challenges where revealed_seed is not null),
+  'the fairness view names the most recently published challenge'
+);
+
+select is(
+  (select count(*)::int from public.latest_verifiable_daily_challenge()
+   where revealed_seed is null),
+  0,
+  'and never returns a row whose seed has not been published'
 );
 
 select * from finish();

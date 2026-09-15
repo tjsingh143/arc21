@@ -11,12 +11,30 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
+import { useActiveSessionStore } from "../table/active-session-store.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
-import { toAttempt, toChallenge, type Attempt, type Challenge } from "./daily.js";
+import {
+  toAttempt,
+  toChallenge,
+  toVerification,
+  type Attempt,
+  type Challenge,
+  type Verification,
+} from "./daily.js";
 
 export type DailyStatus =
   | { readonly kind: "loading" }
-  | { readonly kind: "ready"; readonly challenge: Challenge; readonly attempt: Attempt | null }
+  | {
+      readonly kind: "ready";
+      readonly challenge: Challenge;
+      readonly attempt: Attempt | null;
+      /**
+       * The most recent challenge whose seed has been PUBLISHED, so the
+       * commitment can actually be checked. Null until one has closed.
+       */
+      readonly verification: Verification | null;
+    }
   | { readonly kind: "unavailable"; readonly message: string };
 
 export interface DailyStoreState {
@@ -29,7 +47,7 @@ export interface DailyStoreState {
   start: () => Promise<{ gameId: string; seatId: string; ranked: boolean } | null>;
 }
 
-const UNREACHABLE = "Could not reach the daily challenge. Nothing has been recorded.";
+const UNREACHABLE = "Could not confirm the challenge. Reconnect to check today's attempt and return to any active table from Play.";
 const SIGNED_OUT =
   "The daily challenge needs an account, because everyone plays the same server-held shoe. Practice stays available without one.";
 
@@ -38,7 +56,7 @@ async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   return isTimedOut(result) ? null : result;
 }
 
-export const useDailyStore = create<DailyStoreState>((set) => ({
+export const useDailyStore = create<DailyStoreState>((set, get) => ({
   status: { kind: "loading" },
   notice: null,
   starting: false,
@@ -82,42 +100,68 @@ export const useDailyStore = create<DailyStoreState>((set) => ({
     }
 
     const attemptResult = await bounded(availability.client.rpc("my_daily_entry"));
-    const attempt =
-      attemptResult && !attemptResult.error ? toAttempt(attemptResult.data) : null;
+    if (attemptResult === null || attemptResult.error) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
+    const attempt = toAttempt(attemptResult.data);
+    // Only an explicitly empty result proves there is no ranked entry. A
+    // malformed row (or one from a different day) is an unreadable history.
+    const empty = Array.isArray(attemptResult.data) && attemptResult.data.length === 0;
+    if ((!attempt && !empty) || (attempt && attempt.challengeId !== challenge.id)) {
+      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      return;
+    }
 
-    set({ status: { kind: "ready", challenge, attempt }, notice: null });
+    /*
+     * The audit half of the commitment scheme.
+     *
+     * TODAY's seed is secret by design, so a fairness view that only ever looked
+     * at today could never show anything — which is precisely what happened for
+     * the whole life of the feature: the column, the trigger, the projection,
+     * the parser and the render branch all existed and nothing ever published a
+     * seed. `ensure_todays_daily_challenge` publishes every closed one as its
+     * first act, so this is the row the player can actually check.
+     *
+     * A failure here does not fail the screen. Today's challenge is still
+     * playable when yesterday's seed cannot be read.
+     */
+    const verificationResult = await bounded(
+      availability.client.rpc("latest_verifiable_daily_challenge"),
+    );
+    const verification =
+      verificationResult && !verificationResult.error
+        ? toVerification(verificationResult.data)
+        : null;
+
+    set({ status: { kind: "ready", challenge, attempt, verification }, notice: null });
   },
 
   start: async () => {
+    if (get().starting) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") return null;
 
     set({ starting: true, notice: null });
-    const result = await bounded(
-      availability.client.functions.invoke("create-session", {
-        body: {
-          action: "START_DAILY_CHALLENGE",
-          clientRequestId: globalThis.crypto.randomUUID(),
-          clientSentAt: new Date().toISOString(),
-        },
-      }),
-    );
+    const result = await sendSessionIntent(availability.client, { action: "START_DAILY_CHALLENGE" });
     set({ starting: false });
 
-    if (result === null) {
+    if (result.kind === "unknown") {
+      await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
       set({ notice: UNREACHABLE });
       return null;
     }
-    if (result.error) {
-      set({ notice: "The challenge could not be opened. Nothing has been recorded." });
+    if (result.kind === "rejected") {
+      set({ notice: result.rejection.message });
       return null;
     }
 
     const data = result.data as
       | { gameId?: unknown; seatId?: unknown; ranked?: unknown }
       | null;
-    if (typeof data?.gameId !== "string" || typeof data.seatId !== "string") {
-      set({ notice: "The challenge opened, but the reply could not be read. Reopen this screen." });
+    if (typeof data?.gameId !== "string" || typeof data.seatId !== "string" || typeof data.ranked !== "boolean") {
+      await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
+      set({ notice: UNREACHABLE });
       return null;
     }
 

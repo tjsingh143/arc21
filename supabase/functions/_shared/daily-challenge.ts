@@ -82,6 +82,38 @@ export function hmacCounterStream(seedSecret: string): RandomSource {
   });
 }
 
+/**
+ * The card stream for ONE shuffle of a challenge's shoe.
+ *
+ * THE DEFECT THIS CLOSES. The shoe was built from `hmacCounterStream(seed)` at
+ * session creation and nowhere else, while `game-command` handed every command
+ * `serverRandom()` — the CSPRNG. Randomness reaches the engine at exactly two
+ * points, `createShoe` and `reshuffle`, and the second one is inside
+ * `openBetting`: so the moment an attempt crossed the cut card, the next shoe
+ * was shuffled from the CSPRNG and the two ranked entrants stopped facing the
+ * same cards. Nothing would have failed — both attempts would run to twenty
+ * hands and simply disagree, which is the mode's central claim quietly ceasing
+ * to hold.
+ *
+ * At twenty hands heads-up the cut card is not reached in practice (measured;
+ * see the phase report), so this was latent rather than live — but `hand_count`
+ * is the CHALLENGE ROW's, constrained only to 1..100 and honoured as authored,
+ * and past roughly forty hands a reshuffle becomes ordinary. A guarantee that
+ * holds only because of a number nobody is checking is not a guarantee.
+ *
+ * Keying on the shuffle number is what makes shuffle two reproducible AND
+ * different from shuffle one. Every entrant therefore faces the same stream —
+ * `shuffle 1 || shuffle 2 || …` — however differently they play, which is what
+ * "the same deterministic card sequence" actually means: they draw from one
+ * agreed order, at whatever rate their own decisions consume it.
+ */
+export function dailyShoeSource(seedSecret: string, shuffleNumber: number): RandomSource {
+  if (!Number.isInteger(shuffleNumber) || shuffleNumber < 1) {
+    throw new Error(`shuffleNumber must be a positive integer, received ${shuffleNumber}`);
+  }
+  return hmacCounterStream(`${seedSecret}:shuffle:${shuffleNumber}`);
+}
+
 /** Verifies a published commitment against a revealed seed, for the audit view. */
 export function commitmentMatches(seedSecret: string, commitment: string): boolean {
   return createHash("sha256").update(seedSecret).digest("hex") === commitment;
@@ -134,4 +166,41 @@ export function isRankedAttempt(existingEntry: { status: string } | null): boole
  */
 export function isComplete(handsPlayed: number, handCount: number): boolean {
   return handsPlayed >= handCount;
+}
+
+/** Why an attempt stopped. Both are completions; neither is a failure. */
+export type DailyCompletion = "hand_count" | "bankroll_exhausted";
+
+/**
+ * Whether the attempt is over, and why.
+ *
+ * THE DEFECT THIS EXISTS TO CLOSE. Only the hand count was ever checked, and a
+ * challenge stack can be exhausted long before hand twenty: 5,000 chips with a
+ * 1,000 ceiling is five losing hands at the maximum. Below the table minimum
+ * there is no legal bet left to place — `getLegalActions` answers with no
+ * actions and null bounds — and a Daily Challenge deliberately carries NO
+ * CLOCKS, so no timeout can move it either. The attempt therefore sat at
+ * BETTING_OPEN for ever: the entry stayed `in_progress`, no score was written,
+ * no reward was paid, the player never appeared on the board, and because
+ * `startDailyChallenge` resumes an in-progress attempt, that account's one
+ * ranked run for the day was permanently unfinishable. Nothing failed; the
+ * screen simply stopped offering anything.
+ *
+ * `careerBoundary` has had this branch since career sessions shipped —
+ * "BANKROLL EXHAUSTION IS A COMPLETION" — and the same reasoning applies here
+ * with more force, because a career node can be replayed and a ranked daily
+ * attempt cannot.
+ *
+ * The score is unaffected either way: the specification's primary metric is the
+ * ending bankroll, and an attempt that ends at zero scores zero honestly.
+ */
+export function attemptCompletion(params: {
+  handsPlayed: number;
+  handCount: number;
+  finalChips: number;
+  minBet: number;
+}): DailyCompletion | null {
+  if (isComplete(params.handsPlayed, params.handCount)) return "hand_count";
+  if (params.finalChips < params.minBet) return "bankroll_exhausted";
+  return null;
 }

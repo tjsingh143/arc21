@@ -19,7 +19,7 @@
  */
 
 import { useMemo, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -30,7 +30,7 @@ import { SurfaceCard } from "../../src/components/ui/Card";
 import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
 import { ARC_STANDARD_STRATEGY_TABLE } from "../../shared/strategy/index.js";
 import type { ColorToken } from "../../src/design/tokens";
-import { format } from "../../src/features/practice/advice";
+import { format, formatProbability } from "../../src/features/practice/advice";
 import {
   buildStrategyChart,
   chartRowAccessibilityLabel,
@@ -65,6 +65,14 @@ export default function StrategyGuideScreen() {
   const [tab, setTab] = useState<ChartTab>("hard");
   const [selected, setSelected] = useState<ChartCell | null>(null);
   const insets = useSafeAreaInsets();
+  const { fontScale } = useWindowDimensions();
+  // Keep complete row labels and action letters inside their cells at every
+  // text size. The chart already scrolls horizontally when columns get wider.
+  const chartScale = Math.max(1, fontScale);
+  const cellSize = Math.ceil(CELL * chartScale);
+  const labelWidth = Math.ceil(LABEL_COLUMN * chartScale);
+  const headerHeight = Math.ceil(HEADER_HEIGHT * chartScale);
+  const cellSizeStyle = { width: cellSize, height: cellSize };
 
   const chart = useMemo(() => buildStrategyChart(ARC_STANDARD_STRATEGY_TABLE, tab), [tab]);
   const activeTab = CHART_TABS.find((entry) => entry.id === tab) ?? CHART_TABS[0]!;
@@ -140,8 +148,8 @@ export default function StrategyGuideScreen() {
             dealer columns scroll under your thumb on a phone.
         ---------------------------------------------------------------- */}
         <View style={styles.grid}>
-          <View style={styles.labelColumn}>
-            <View style={[styles.headerCell, styles.labelCell]}>
+          <View style={[styles.labelColumn, { width: labelWidth }]}>
+            <View style={[styles.headerCell, styles.labelCell, { width: labelWidth, height: headerHeight }]}>
               <AppText variant="overline" color="textDisabled">
                 You
               </AppText>
@@ -149,7 +157,7 @@ export default function StrategyGuideScreen() {
             {chart.rows.map((row) => (
               <View
                 key={row.rowValue}
-                style={[styles.rowLabel, styles.labelCell]}
+                style={[styles.rowLabel, styles.labelCell, { width: labelWidth, height: cellSize }]}
                 accessible
                 accessibilityLabel={row.accessibilityLabel}
               >
@@ -168,7 +176,7 @@ export default function StrategyGuideScreen() {
             <View>
               <View style={styles.gridRow} accessibilityRole="summary" accessibilityLabel="Dealer upcard">
                 {chart.upcards.map((upcard) => (
-                  <View key={upcard.value} style={[styles.cellBox, styles.headerCell]}>
+                  <View key={upcard.value} style={[styles.cellBox, styles.headerCell, { width: cellSize, height: headerHeight }]}>
                     <AppText variant="caption" color="textSecondary" numeric>
                       {upcard.label}
                     </AppText>
@@ -185,7 +193,7 @@ export default function StrategyGuideScreen() {
                       // advisor uses.
                       <View
                         key={`${row.rowValue}:${index}`}
-                        style={[styles.cellBox, styles.emptyCell]}
+                        style={[styles.cellBox, styles.emptyCell, cellSizeStyle]}
                         accessible
                         accessibilityLabel={`${row.accessibilityLabel}: no entry`}
                       >
@@ -197,6 +205,7 @@ export default function StrategyGuideScreen() {
                       <Cell
                         key={cell.key}
                         cell={cell}
+                        size={cellSize}
                         selected={selected?.key === cell.key}
                         onPress={() =>
                           setSelected((current) => (current?.key === cell.key ? null : cell))
@@ -223,7 +232,11 @@ export default function StrategyGuideScreen() {
           {CHART_LEGEND.map((entry) => (
             <View key={entry.code} style={styles.legendRow}>
               <View
-                style={[styles.legendChip, { backgroundColor: CODE_STYLE[entry.code].background }]}
+                style={[styles.legendChip, {
+                  backgroundColor: CODE_STYLE[entry.code].background,
+                  width: Math.ceil(32 * chartScale),
+                  height: Math.ceil(32 * chartScale),
+                }]}
               >
                 <AppText variant="bodyStrong" color={CODE_STYLE[entry.code].ink}>
                   {entry.code}
@@ -283,10 +296,12 @@ export default function StrategyGuideScreen() {
 
 function Cell({
   cell,
+  size,
   selected,
   onPress,
 }: {
   cell: ChartCell;
+  size: number;
   selected: boolean;
   onPress: () => void;
 }) {
@@ -300,6 +315,7 @@ function Cell({
       accessibilityState={{ selected }}
       style={({ pressed }) => [
         styles.cellBox,
+        { width: size, height: size },
         styles.cell,
         { backgroundColor: style.background },
         selected ? styles.cellSelected : null,
@@ -351,13 +367,14 @@ function CellDetail({
   onClose: () => void;
 }) {
   return (
-    <View style={[styles.detail, { paddingBottom: spacing.lg + bottomInset }]}>
+    <View
+      style={[styles.detail, { paddingBottom: spacing.lg + bottomInset }]}
+      accessibilityViewIsModal
+      onAccessibilityEscape={onClose}
+    >
       <View style={styles.detailHead}>
         <View style={styles.detailTitle}>
           <AppText variant="bodyStrong">{cellTitle(cell)}</AppText>
-          <AppText variant="body" color="accent">
-            {cell.meaning}
-          </AppText>
         </View>
         <Pressable
           onPress={onClose}
@@ -371,36 +388,80 @@ function CellDetail({
         </Pressable>
       </View>
 
-      {cell.evs.length > 0 ? (
-        <>
-          <View style={styles.evRow}>
-            {cell.evs.map((entry) => (
-              <View key={entry.action} style={styles.evChip}>
+      <ScrollView
+        style={styles.detailBody}
+        contentContainerStyle={styles.detailContent}
+        testID="strategy-detail-scroll"
+      >
+        <AppText variant="body" color="accent">
+          {cell.meaning}
+        </AppText>
+        {cell.evs.length > 0 ? (
+          <>
+            <View style={styles.evRow}>
+              {cell.evs.map((entry) => (
+                <View key={entry.action} style={styles.evChip}>
+                  <AppText variant="caption" color="textSecondary">
+                    {entry.action.charAt(0) + entry.action.slice(1).toLowerCase()}
+                  </AppText>
+                  <AppText
+                    variant="bodyStrong"
+                    numeric
+                    color={entry.action === cell.action ? "accent" : "textPrimary"}
+                  >
+                    {format(entry.ev)}
+                  </AppText>
+                </View>
+              ))}
+            </View>
+            <AppText variant="caption" color="textDisabled">
+              Expected result per unit of the original bet, from the solver. Doubling
+              ranges wider because a doubled loss really does cost twice the bet.
+              Actions the hand in front of you cannot take are still priced here —
+              this is the chart, not a live hand.
+            </AppText>
+          </>
+        ) : (
+          <AppText variant="caption" color="textDisabled">
+            This cell carries no priced actions, so no expected values are shown.
+          </AppText>
+        )}
+
+        {/*
+          The same two probabilities the Analysis mode shows at the table, from
+          the same solved cell. Absent entirely when the table does not carry
+          them — a chart generated before they existed is still a valid chart, and
+          a figure computed here to fill the gap would be indistinguishable from
+          a solved one.
+        */}
+        {cell.probabilities ? (
+          <>
+            <View style={styles.evRow}>
+              <View style={styles.evChip}>
                 <AppText variant="caption" color="textSecondary">
-                  {entry.action.charAt(0) + entry.action.slice(1).toLowerCase()}
+                  Bust if you hit
                 </AppText>
-                <AppText
-                  variant="bodyStrong"
-                  numeric
-                  color={entry.action === cell.action ? "accent" : "textPrimary"}
-                >
-                  {format(entry.ev)}
+                <AppText variant="bodyStrong" numeric>
+                  {formatProbability(cell.probabilities.bustIfHit)}
                 </AppText>
               </View>
-            ))}
-          </View>
-          <AppText variant="caption" color="textDisabled">
-            Expected result per unit of the original bet, from the solver. Doubling
-            ranges wider because a doubled loss really does cost twice the bet.
-            Actions the hand in front of you cannot take are still priced here —
-            this is the chart, not a live hand.
-          </AppText>
-        </>
-      ) : (
-        <AppText variant="caption" color="textDisabled">
-          This cell carries no priced actions, so no expected values are shown.
-        </AppText>
-      )}
+              <View style={styles.evChip}>
+                <AppText variant="caption" color="textSecondary">
+                  Dealer busts
+                </AppText>
+                <AppText variant="bodyStrong" numeric>
+                  {formatProbability(cell.probabilities.dealerBust)}
+                </AppText>
+              </View>
+            </View>
+            <AppText variant="caption" color="textDisabled">
+              Both from the same solve as the values above. The dealer figure
+              assumes they have already checked for blackjack and do not have one,
+              which is the only position you are ever asked to play from.
+            </AppText>
+          </>
+        ) : null}
+      </ScrollView>
     </View>
   );
 }
@@ -503,6 +564,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
+    maxHeight: "85%",
     gap: spacing.sm,
     padding: spacing.lg,
     backgroundColor: colors.surfaceRaised,
@@ -518,6 +580,8 @@ const styles = StyleSheet.create({
     gap: spacing.md,
   },
   detailTitle: { flexShrink: 1, gap: 2 },
+  detailBody: { flexShrink: 1 },
+  detailContent: { gap: spacing.sm },
   close: {
     width: MIN_TOUCH_TARGET,
     height: MIN_TOUCH_TARGET,

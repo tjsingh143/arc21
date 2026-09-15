@@ -1,0 +1,40 @@
+# On the sender's device, keep Social mounted with an outgoing request.
+# Accept that request through the other account's native UI, then run this flow
+# without restarting the sender. The accepted graph must replace both the
+# pending-request list and any old search-result relationship.
+appId: com.arc21.app
+---
+# iOS can report an offscreen ScrollView child's original bounds as visible.
+# Move the viewport to the top before capturing the pending request itself.
+- repeat:
+    times: 2
+    commands:
+      - swipe:
+          start: 50%, 25%
+          end: 50%, 85%
+          duration: 500
+- assertVisible: ".*Sent — waiting for them to accept.*"
+- assertNotVisible:
+    id: friend-row-${FRIEND_USERNAME}
+- takeScreenshot: pending-before-tab-return
+- tapOn: Home
+- assertVisible:
+    id: home-practice
+- tapOn: Social
+- extendedWaitUntil:
+    visible:
+      id: friend-row-${FRIEND_USERNAME}
+    timeout: 15000
+- assertNotVisible: ".*Sent — waiting for them to accept.*"
+- assertNotVisible: ".*Request sent — waiting for them.*"
+- takeScreenshot: accepted-friend-after-tab-return
+- scrollUntilVisible:
+    element:
+      id: friends-search-input
+    direction: DOWN
+    timeout: 15000
+- assertNotVisible:
+    id: friends-search-clear
+- assertVisible: ".*Search by username or display name.*"
+- assertNotVisible: ".*Request sent — waiting for them.*"
+- takeScreenshot: relationship-search-cleared-after-tab-return

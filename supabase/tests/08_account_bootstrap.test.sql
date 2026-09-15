@@ -15,7 +15,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(9);
+select plan(13);
 
 insert into auth.users (id, email, raw_user_meta_data) values
   ('00000000-0000-4000-8000-00000000000a', 'alice@arc21.test',
@@ -103,6 +103,52 @@ select is(
   (select count(*) from public.player_stats s join bootstrap_fixture f on f.user_id = s.user_id),
   4::bigint,
   'a statistics row is created alongside each profile'
+);
+
+-- ---------------------------------------------------------------------------
+-- A handle the filter refuses must not stop the account existing
+-- ---------------------------------------------------------------------------
+-- Some accounts could not be created AT ALL. The derived handle — 'p' plus
+-- twelve hex digits of the account id — never went through the filter a
+-- REQUESTED handle goes through, and `username_is_permitted` folds digits
+-- before matching (0→o 1→i 3→e 4→a 5→s 7→t). So `p24552abcdef0` folds to
+-- `p2ass2abcdef0`, splits on its digits into {p, ass, abcdef0}, and is refused.
+-- The CHECK rejected the row, the trigger aborted, and GoTrue answered the
+-- signup with HTTP 500 — about one account in nine hundred, at random.
+
+select ok(
+  not public.username_is_permitted('p24552abcdef0'),
+  'the filter still refuses the handle that reproduced it, so this test is not vacuous'
+);
+
+insert into auth.users (id, email, aud, role) values
+  ('24552abc-def0-4000-8000-00000000000a', 'fold-a@arc21.test', 'authenticated', 'authenticated');
+
+select is(
+  (select count(*)::int from public.profiles where id = '24552abc-def0-4000-8000-00000000000a'),
+  1,
+  'an account whose derived handle folds into a forbidden word is still created'
+);
+
+select ok(
+  (select public.username_is_permitted(username)
+   from public.profiles where id = '24552abc-def0-4000-8000-00000000000a'),
+  'and the handle it was given passes the same filter a rename would'
+);
+
+-- The ordinary collision path is unchanged: a permitted base that is taken gets
+-- a suffix, and stays tied to the account id.
+insert into auth.users (id, email, aud, role) values
+  ('1a2b3c4d-5e6f-4000-8000-00000000000b', 'coll-a@arc21.test', 'authenticated', 'authenticated');
+update public.profiles set username = 'p1a2b3c4d5e6f'
+where id = '1a2b3c4d-5e6f-4000-8000-00000000000b';
+insert into auth.users (id, email, aud, role) values
+  ('1a2b3c4d-5e6f-4000-8000-00000000000c', 'coll-b@arc21.test', 'authenticated', 'authenticated');
+
+select is(
+  (select username from public.profiles where id = '1a2b3c4d-5e6f-4000-8000-00000000000c'),
+  'p1a2b3c4d5e6f_1',
+  'a permitted handle that is taken is suffixed, not replaced'
 );
 
 select * from finish();

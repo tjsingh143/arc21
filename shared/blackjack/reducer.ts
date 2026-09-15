@@ -16,13 +16,15 @@
  */
 
 import { cardValue, isAce, isSplitEligible } from "./cards.js";
-import { evaluateHand, evaluatePlayerHand } from "./hand-value.js";
+import { dealerMustDraw, evaluateHand, evaluatePlayerHand } from "./hand-value.js";
 import {
   activeHandOf,
   findSeat,
   getLegalActions,
   isBetAmountValid,
+  isBettingTurn,
   isSeatsTurn,
+  maxPlaceableBet,
 } from "./legal-actions.js";
 import { assertRulesAreCoherent, ARC_STANDARD_RULES, type BlackjackRules } from "./rules.js";
 import type { RandomSource } from "./rng.js";
@@ -35,6 +37,7 @@ import {
 } from "./shoe.js";
 import { insuranceStakeFor, settleSeat, describeDealerFinal } from "./settlement.js";
 import {
+  DEAD_TERMINAL_STATUSES,
   EngineError,
   type BlackjackGameState,
   type Card,
@@ -246,6 +249,7 @@ function handlePlaceBet(
 ): EngineState {
   requirePhase(state, "BETTING_OPEN");
   const seat = requireSeat(state, seatId);
+  requireBettingTurn(state, seatId);
 
   if (seat.betLocked) {
     throw new EngineError("ILLEGAL_ACTION", `Seat ${seatId} has already locked its bet`);
@@ -286,6 +290,7 @@ function handleLockBet(
   const seat = requireSeat(state, seatId);
 
   if (seat.betLocked) return state; // Idempotent: re-locking is a no-op.
+  requireBettingTurn(state, seatId);
 
   const check = isBetAmountValid(seat.originalBet, { ...seat, stack: seat.stack + seat.originalBet }, state.rules);
   if (!check.valid) {
@@ -396,7 +401,7 @@ function handleResolveTimeout(
   }
   // Only the server's own clock may authorise this; `now` is supplied by the
   // server, never forwarded from a client payload.
-  if (Date.parse(now) < Date.parse(state.actionDeadlineAt)) {
+  if (!isDeadlineReached(state, now)) {
     throw new EngineError("DEADLINE_NOT_REACHED", "The action deadline has not passed yet");
   }
 
@@ -405,7 +410,20 @@ function handleResolveTimeout(
   // recorded decision accuracy and their chips.
   switch (state.phase) {
     case "BETTING_OPEN": {
-      for (const seat of state.seats) {
+      /*
+       * At a sequential table the clock belongs to ONE seat, so the default is
+       * applied to that seat and the turn then moves on. Staking the minimum for
+       * everybody here would collapse the whole betting round the moment the
+       * first player looked away — and the players after them would never see
+       * the bets they are entitled to bet against.
+       */
+      const waiting = state.rules.sequentialBetting
+        ? state.activeSeatIndex === null
+          ? []
+          : [state.seats[state.activeSeatIndex]!]
+        : state.seats;
+
+      for (const seat of waiting) {
         if (seat.betLocked || seat.sittingOut) continue;
         const restored = seat.stack + seat.originalBet;
         const fallback = seat.originalBet > 0 ? seat.originalBet : state.rules.minBet;
@@ -472,6 +490,16 @@ function handleLeave(
     seat.sittingOut = true;
   }
 
+  // An unanswered insurance offer is answered the way the clock would answer it.
+  // The alternative is a table that waits on somebody who has gone: the cascade
+  // holds at INSURANCE_OFFER while any decision is PENDING, and on a table with
+  // no insurance clock there is then nothing left to move it. Declining is the
+  // stated default, costs the departing seat nothing, and touches no card.
+  if (state.phase === "INSURANCE_OFFER" && seat.insuranceDecision === "PENDING") {
+    seat.insuranceDecision = "DECLINED";
+    events.push({ type: "INSURANCE_DECLINED", seatId });
+  }
+
   events.push({ type: "SEAT_LEFT", seatId });
   return cascade(state, events, context);
 }
@@ -507,10 +535,20 @@ function cascade(state: EngineState, events: EngineEvent[], context: CommandCont
          * shared table must carry timing and a solo one need not — with one seat,
          * "everyone has locked" is the same question either way.
          */
+        /*
+         * A sequential table picks its next bettor BEFORE the question above is
+         * asked, because positioning is also what sits out a seat that can no
+         * longer cover the minimum — and a seat still counted as eligible while
+         * unable to bet is a round that can never close.
+         */
+        positionBettor(state, context);
+
         const eligible = state.seats.filter((seat) => !seat.sittingOut);
         if (eligible.length === 0 || !eligible.every((seat) => seat.betLocked)) {
           return state;
         }
+        // Betting is over; the cursor belongs to PLAYER_TURNS from here.
+        state.activeSeatIndex = null;
         state.phase = "BETTING_LOCKED";
         break;
       }
@@ -537,7 +575,13 @@ function cascade(state: EngineState, events: EngineEvent[], context: CommandCont
       case "INSURANCE_OFFER": {
         const pending = state.seats.some((seat) => seat.insuranceDecision === "PENDING");
         if (pending) return state;
-        state.phase = "DEALER_PEEK";
+        // Insurance is settled BEFORE the peek, which is the whole reason the
+        // offer exists — but taking the offer must not conjure a peek a ruleset
+        // has switched off. `performInitialDeal` already routes a non-peeking
+        // ruleset straight to PLAYER_TURNS on a ten upcard; an ace upcard has to
+        // arrive at the same answer after the offer, or insurance would quietly
+        // change how the dealer's blackjack is checked.
+        state.phase = state.rules.dealerPeeksForBlackjack ? "DEALER_PEEK" : "PLAYER_TURNS";
         state.actionDeadlineAt = null;
         break;
       }
@@ -692,9 +736,26 @@ function openBetting(state: EngineState, events: EngineEvent[], context: Command
       // the tournament's whole shape.
       seat.sittingOut = true;
       seat.sitOutNextHand = false;
-    } else if (seat.sittingOut && seat.connected && seat.stack >= state.rules.minBet) {
+    } else if (!seat.connected) {
+      /*
+       * A seat that has gone is not dealt in, and is never staked again.
+       *
+       * `connected` is only ever cleared by LEAVE, by a table closure or by a
+       * tournament elimination, and nothing in the engine or the server sets it
+       * back — so a disconnected seat is a DEPARTED seat, not a flaky one.
+       *
+       * Without this branch a player who left MID-HAND kept a live seat: the
+       * closure path only runs at a phase where no wager is committed, so their
+       * seat came back round to BETTING_OPEN still eligible, and the betting
+       * deadline then staked the table minimum out of their stack — hand after
+       * hand, in absentia, until it fell below the minimum. "Leaving is never a
+       * way to escape a committed wager" is right; leaving must not become a way
+       * to keep committing them either.
+       */
+      seat.sittingOut = true;
+    } else if (seat.sittingOut && seat.stack >= state.rules.minBet) {
       // A seat that sat out for lack of chips rejoins as soon as it can afford
-      // the table minimum again.
+      // the table minimum again. Reaching here means it is connected.
       seat.sittingOut = false;
     }
   }
@@ -702,7 +763,70 @@ function openBetting(state: EngineState, events: EngineEvent[], context: Command
   state.phase = "BETTING_OPEN";
   state.actionDeadlineAt = deadlineFrom(context.now, state.timing?.betMillis);
   events.push({ type: "BETTING_OPENED", handNumber: state.handNumber });
+  // Sequential tables need a first bettor before any command arrives.
+  // `startSession` opens the first round WITHOUT cascading, so positioning only
+  // in the cascade would leave hand one with no bettor and refuse everybody.
+  positionBettor(state, context);
   return state;
+}
+
+/**
+ * Whose turn it is to bet, at a table that bets one seat at a time.
+ *
+ * A no-op unless `rules.sequentialBetting` is set, so an ordinary table is
+ * unaffected in every respect — including its single shared betting clock.
+ *
+ * `state.seats` is action order (the Sprint Tournament rotates that array to
+ * move its button), so "the next bettor" is simply the next seat in it that is
+ * still in the hand and has not locked. There is no second ordering to keep in
+ * step, which is the same reason the button is implemented as a rotation.
+ *
+ * A SEAT THAT CANNOT COVER THE MINIMUM IS SAT OUT HERE rather than left to time
+ * out. With one shared clock a broke seat costs the table one betting window;
+ * with a clock EACH it would cost seven seconds of everybody's time per broke
+ * seat, every hand, and the round cannot close until every eligible seat has
+ * locked. It is the same condition `openBetting` uses to let a seat back in,
+ * read in the other direction.
+ */
+function positionBettor(state: EngineState, context: CommandContext): void {
+  if (!state.rules.sequentialBetting) return;
+
+  let next: number | null = null;
+  for (let index = 0; index < state.seats.length; index++) {
+    const seat = state.seats[index]!;
+    if (seat.sittingOut || seat.betLocked) continue;
+    if (maxPlaceableBet(seat, state.rules) < state.rules.minBet) {
+      seat.sittingOut = true;
+      continue;
+    }
+    next = index;
+    break;
+  }
+
+  if (state.activeSeatIndex === next) return;
+
+  state.activeSeatIndex = next;
+  // Betting has no hand cursor; leaving a stale one would point PLAYER_TURNS
+  // consumers at a hand that does not exist yet.
+  state.activeHandIndex = null;
+  if (next !== null) {
+    // The clock restarts only when the turn genuinely moves — the same rule
+    // `positionCursor` follows, and for the same reason: a seat must not be able
+    // to extend its own deadline by sending commands that change nothing.
+    state.actionDeadlineAt = deadlineFrom(context.now, state.timing?.betMillis);
+  }
+}
+
+/**
+ * Refuses a bet from a seat that is not the current bettor.
+ *
+ * Only at a sequential table. `NOT_YOUR_TURN` rather than `ILLEGAL_ACTION`
+ * because it is a synchronisation problem the client can recover from by
+ * re-reading the snapshot, exactly as it is for a player action out of turn.
+ */
+function requireBettingTurn(state: EngineState, seatId: string): void {
+  if (isBettingTurn(state, seatId)) return;
+  throw new EngineError("NOT_YOUR_TURN", `Seat ${seatId} is not the current bettor`);
 }
 
 /**
@@ -773,22 +897,20 @@ function playDealer(state: EngineState, events: EngineEvent[]): EngineState {
   // would consume cards without affecting any outcome.
   const mustDraw = state.seats.some((seat) =>
     seat.hands.some((hand) => {
-      if (hand.status === "BUSTED" || hand.status === "SURRENDERED") return false;
+      if (DEAD_TERMINAL_STATUSES.includes(hand.status)) return false;
       const value = evaluatePlayerHand(hand, state.rules.splitAceTwentyOneIsBlackjack);
       return !value.isNaturalBlackjack;
     }),
   );
 
   if (mustDraw) {
+    // `dealerMustDraw` is the ONLY statement of the drawing rule; the solver
+    // that builds the strategy chart calls the same function, so the chart
+    // cannot be solved against a dealer this engine does not play.
     for (;;) {
       const value = evaluateHand(state.dealer.cards);
-      if (value.isBust) break;
-      const hitsSoft17 = value.bestTotal === 17 && value.isSoft && state.rules.dealerHitsSoft17;
-      if (value.bestTotal < 17 || hitsSoft17) {
-        state = dealToDealer(state, events);
-        continue;
-      }
-      break;
+      if (!dealerMustDraw(value, state.rules)) break;
+      state = dealToDealer(state, events);
     }
   }
 
@@ -1030,6 +1152,23 @@ function requireSeat(state: EngineState, seatId: string): SeatState {
   const seat = findSeat(state, seatId);
   if (!seat) throw new EngineError("UNKNOWN_SEAT", `No seat "${seatId}" at this table`);
   return seat as SeatState;
+}
+
+/**
+ * Whether the table's current deadline has passed by the SERVER's clock.
+ *
+ * Exported because two callers need the same answer and a second copy of the
+ * comparison is a second answer. `handleResolveTimeout` asks it before applying
+ * a default; `game-command` asks it before running a competition boundary for a
+ * settlement-window timeout, because that boundary can END a tournament and must
+ * not be reachable a moment early by a client with a fast clock.
+ *
+ * `now` is always the server's own timestamp. A client's `clientSentAt` is
+ * telemetry and never reaches here.
+ */
+export function isDeadlineReached(state: BlackjackGameState, now: string): boolean {
+  if (state.actionDeadlineAt === null) return false;
+  return Date.parse(now) >= Date.parse(state.actionDeadlineAt);
 }
 
 function deadlineFrom(now: string | undefined, millis: number | undefined): string | null {

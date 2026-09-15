@@ -27,7 +27,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(29);
+select plan(32);
 
 -- ---------------------------------------------------------------------------
 -- The limits live in one place
@@ -43,8 +43,39 @@ select bag_eq(
   $$ select distinct action from public.rate_limit_policies $$,
   $$ values ('friend_request'), ('room_create'), ('room_join'),
             ('matchmaking_enroll'), ('profile_username_change'),
-            ('profile_display_name_change'), ('game_command_outside_game') $$,
+            ('profile_display_name_change'), ('game_command_outside_game'),
+            ('player_search') $$,
   'every action the specification names has a policy, and no action has one it does not'
+);
+
+-- `player_search` is phase 11's. Every OTHER social action was limited and the
+-- directory search was not, so the two-character minimum inside `search_players`
+-- was the only thing between an account and a walk of the player directory —
+-- and that minimum was defeated by two metacharacters. Measured before the fix:
+-- 108 calls, 445 distinct accounts, nothing refused.
+select is(
+  (select count(*)::int from public.rate_limit_policies where action = 'player_search'),
+  2,
+  'the player directory search is limited per minute AND per hour'
+);
+
+select ok(
+  (select pg_get_functiondef(p.oid) ~ 'enforce_rate_limit\(''player_search''\)'
+   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'search_players'),
+  'the limit is spent INSIDE search_players, where a modified client cannot skip it'
+);
+
+-- A `stable` function may not write, so the limit could not live inside a
+-- `stable` search. The tempting shape — a limited wrapper beside an unlimited
+-- body still granted to `authenticated` — is a control the client enforces and
+-- the server does not.
+select is(
+  (select provolatile::text
+   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'search_players'),
+  'v',
+  'search_players is volatile, which is what makes the limit enforceable in it'
 );
 
 -- The specification asks for room creation "per minute/hour", so that action

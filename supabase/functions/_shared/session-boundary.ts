@@ -1,7 +1,8 @@
 /**
  * What happens between hands in a mode that has a shape.
  *
- * An ordinary table just deals the next hand. A Daily Challenge stops after
+ * An ordinary table just deals the next hand. A Career node stops after its own
+ * hand count and awards its stars; a Daily Challenge stops after
  * twenty; a Sprint Tournament changes its bet ceiling at hand nine, eliminates
  * the lowest stack after hand six, plays sudden death when that boundary ties,
  * and settles placements after hand twelve. All of that has to happen at exactly
@@ -15,11 +16,12 @@
  * never told what a hand is worth.
  */
 
+import { isDeadlineReached } from "../../../shared/blackjack/index.js";
 import type { EngineState } from "../../../shared/blackjack/index.js";
 import { CommandError } from "./command-errors.ts";
 import { toInteger, type Tx } from "./postgres-client.ts";
 import { applyWalletDelta, findLedgerEntry } from "./session-repository.ts";
-import { dailyScore, isComplete } from "./daily-challenge.ts";
+import { attemptCompletion, dailyScore } from "./daily-challenge.ts";
 import {
   activeEntries,
   buttonOffsetFor,
@@ -33,6 +35,8 @@ import {
   type EntryStanding,
 } from "./tournament-format.ts";
 import { notifyTournamentResult } from "./notify.ts";
+import { careerNodeBySlug, evaluateStars } from "./career/index.ts";
+import { settleCareerReward } from "./career-rewards.ts";
 
 export interface BoundaryResult {
   /**
@@ -42,6 +46,41 @@ export interface BoundaryResult {
   finished: boolean;
   /** Human-readable, for the structured log. Never contains card identities. */
   note?: string;
+}
+
+/**
+ * Whether this command is the one that starts the next hand.
+ *
+ * THE DEFECT THIS EXISTS TO CLOSE, measured against the running stack before it
+ * did. `game-command` ran the boundary for `NEXT_HAND` and for nothing else —
+ * but a settled hand also advances when its REST WINDOW lapses and any connected
+ * client asks the server to resolve the deadline. The engine's
+ * `RESOLVE_TIMEOUT` handler calls `advanceToNextHand` at HAND_COMPLETE, so the
+ * next hand was dealt with no boundary at all: a four-player sprint whose table
+ * sat idle for eight seconds after a settlement kept `scheduled_hands_played` at
+ * zero, never eliminated anybody after hand six, never raised its bet ceiling,
+ * never rotated its button for that hand and — because the counter never reaches
+ * twelve — could never finalise or pay a prize. The Daily Challenge's twenty-hand
+ * stop and a Career node's stars went the same way. Nothing failed: the table
+ * simply played on.
+ *
+ * THE DEADLINE CHECK IS PART OF THE PREDICATE, not a detail. `assertCommandIsLegal`
+ * returns early for `RESOLVE_TIMEOUT` — the engine owns that clock — and the
+ * boundary runs BEFORE the engine, so a boundary that can end a tournament would
+ * otherwise be reachable by any client willing to ask early. `isDeadlineReached`
+ * is the engine's own comparison, exported rather than copied.
+ */
+export function commandStartsNextHand(
+  state: EngineState,
+  commandType: string,
+  now: string,
+): boolean {
+  if (commandType === "NEXT_HAND") return true;
+  return (
+    commandType === "RESOLVE_TIMEOUT" &&
+    state.phase === "HAND_COMPLETE" &&
+    isDeadlineReached(state, now)
+  );
 }
 
 /**
@@ -63,7 +102,122 @@ export async function resolveHandBoundary(
 ): Promise<BoundaryResult> {
   if (params.mode === "daily_challenge") return await dailyBoundary(tx, params);
   if (params.mode === "tournament") return await sprintBoundary(tx, params);
+  if (params.mode === "career") return await careerBoundary(tx, params);
   return { finished: false };
+}
+
+// ---------------------------------------------------------------------------
+// Career
+// ---------------------------------------------------------------------------
+
+/**
+ * Stop after the node's hand count, award the stars, pay the reward once.
+ *
+ * Every number `evaluateStars` is given here was written by the server: the
+ * hand count is the engine's, the finishing bankroll is the seat's stack in the
+ * authoritative state, and the decision counters were accumulated by
+ * `game-command` as each action was graded against the strategy tables BEFORE
+ * it was applied. The client reports nothing, which is the whole of "a
+ * reward-bearing attempt requires server authority".
+ *
+ * `evaluateStars` is the same pure function the offline runner calls — moved to
+ * `_shared/career`, not copied, so there is one definition of what a star is.
+ *
+ * BANKROLL EXHAUSTION IS A COMPLETION. A player who runs out of chips has
+ * finished what they came to do; the specification's rule is that one star is
+ * always awarded for completing a node, so variance can slow progression and
+ * can never wall anybody out of the rest of the product.
+ */
+async function careerBoundary(
+  tx: Tx,
+  params: { gameId: string; state: EngineState; now: string },
+): Promise<BoundaryResult> {
+  const rows = await tx<
+    {
+      attempt_id: string;
+      user_id: string;
+      node_id: string;
+      node_code: string;
+      decisions_total: unknown;
+      decisions_optimal: unknown;
+      unaided_total: unknown;
+      unaided_optimal: unknown;
+      ev_lost_micros: unknown;
+      starting_chips: unknown;
+    }[]
+  >`
+    select a.id as attempt_id, a.user_id, a.career_node_id as node_id, n.code as node_code,
+           a.decisions_total, a.decisions_optimal, a.unaided_total, a.unaided_optimal,
+           a.ev_lost_micros, a.starting_chips
+    from public.career_attempts a
+    join public.career_nodes n on n.id = a.career_node_id
+    where a.game_session_id = ${params.gameId}::uuid and a.status = 'in_progress'
+    for update of a
+  `;
+  const row = rows[0];
+  // No live attempt means this session has already been finalised — a replayed
+  // NEXT_HAND, most likely. Nothing to do, and nothing to pay twice.
+  if (!row) return { finished: false };
+
+  const node = careerNodeBySlug(row.node_code);
+  if (!node) throw new CommandError("INTERNAL", `attempt names unknown node ${row.node_code}`);
+
+  const seat = params.state.seats[0];
+  if (!seat) throw new CommandError("INTERNAL", "career session has no seat");
+
+  const handsTarget = node.hands ?? 0;
+  const finalChips = seat.stack;
+  // Below the table minimum there is no legal bet left to place, so the session
+  // cannot continue whatever the hand count says.
+  const broke = finalChips < params.state.rules.minBet;
+  const reachedTarget = handsTarget > 0 && params.state.handNumber >= handsTarget;
+  if (!reachedTarget && !broke) return { finished: false };
+
+  const decisions = toInteger(row.decisions_total, "career_attempts.decisions_total");
+  const correct = toInteger(row.decisions_optimal, "career_attempts.decisions_optimal");
+  const unaided = toInteger(row.unaided_total, "career_attempts.unaided_total");
+  const unaidedCorrect = toInteger(row.unaided_optimal, "career_attempts.unaided_optimal");
+  const evLostMicros = toInteger(row.ev_lost_micros, "career_attempts.ev_lost_micros");
+  const startingChips = toInteger(row.starting_chips, "career_attempts.starting_chips");
+
+  const evaluation = evaluateStars(node, {
+    nodeId: node.id,
+    completed: true,
+    completionReason: broke && !reachedTarget ? "bankroll_exhausted" : "target_reached",
+    handsPlayed: params.state.handNumber,
+    decisions,
+    correct,
+    unaidedDecisions: unaided,
+    unaidedCorrect,
+    estimatedEvLost: evLostMicros / 1_000_000,
+    startingBankroll: startingChips,
+    endingBankroll: finalChips,
+  });
+
+  await tx`
+    update public.career_attempts
+    set status = 'completed', completed_at = ${params.now}::timestamptz,
+        stars = ${evaluation.stars}::int,
+        hands_played = ${params.state.handNumber}::int,
+        final_chips = ${finalChips}::bigint
+    where id = ${row.attempt_id}::uuid
+  `;
+
+  await settleCareerReward(tx, {
+    userId: row.user_id,
+    nodeId: row.node_id,
+    node,
+    stars: evaluation.stars,
+    // The finishing bankroll is the node's own score. A drill scores on correct
+    // answers instead; both are best-of in `record_career_completion`.
+    score: finalChips,
+  });
+
+  closeOut(params.state);
+  return {
+    finished: true,
+    note: `career ${node.slug} complete: ${evaluation.stars}★ at ${finalChips}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -103,11 +257,26 @@ async function dailyBoundary(
   if (!row) throw new CommandError("INTERNAL", "no daily challenge for this session");
 
   const handCount = toInteger(row.hand_count, "daily_challenges.hand_count");
-  if (!isComplete(params.state.handNumber, handCount)) return { finished: false };
 
   const seat = params.state.seats[0];
   if (!seat) throw new CommandError("INTERNAL", "daily challenge session has no seat");
   const finalChips = seat.stack;
+
+  /*
+   * Two ways an attempt ends, and for a long time only one of them was here.
+   * A stack below the table minimum cannot place a legal bet, and this mode
+   * carries no clocks, so an attempt that ran out of chips stopped at
+   * BETTING_OPEN for ever with nothing on screen to press. See
+   * `attemptCompletion`.
+   */
+  const completion = attemptCompletion({
+    handsPlayed: params.state.handNumber,
+    handCount,
+    finalChips,
+    minBet: params.state.rules.minBet,
+  });
+  if (!completion) return { finished: false };
+
   const score = dailyScore({ handsPlayed: params.state.handNumber, finalChips });
 
   /*
@@ -161,7 +330,7 @@ async function dailyBoundary(
   await tx`select public.grant_earned_cosmetics_for(${row.user_id}::uuid)`;
 
   closeOut(params.state);
-  return { finished: true, note: `daily complete at ${finalChips}` };
+  return { finished: true, note: `daily ${completion} at ${finalChips}` };
 }
 
 // ---------------------------------------------------------------------------

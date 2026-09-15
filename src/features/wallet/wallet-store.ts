@@ -49,7 +49,25 @@ export type WalletStatus =
 
 export interface WalletStoreState {
   readonly status: WalletStatus;
+  /**
+   * What the last claim said, or null. Held separately from `status` because a
+   * refusal is not a broken wallet — the balance on screen is still correct and
+   * still worth showing.
+   */
+  readonly grantNotice: string | null;
+  readonly claiming: boolean;
   refresh: () => Promise<void>;
+  /**
+   * Ask the server for a Recovery Grant.
+   *
+   * An ASK, not a write. It sends no amount and no balance: `claim_recovery_grant`
+   * reads the caller's identity from the JWT, evaluates the identical rule
+   * `evaluateRecoveryGrant` displays against authoritative state, and credits
+   * under a unique idempotency key. A modified client that forced the button
+   * visible gains nothing — the server refuses, and a replayed claim credits at
+   * most once regardless.
+   */
+  claim: () => Promise<boolean>;
   /** Drops the cached balance. Called on sign-out so no number outlives a session. */
   clear: () => void;
 }
@@ -72,6 +90,8 @@ export function activeWalletGateway(): WalletGateway {
 
 export const useWalletStore = create<WalletStoreState>((set, get) => ({
   status: { kind: "idle" },
+  grantNotice: null,
+  claiming: false,
 
   refresh: async () => {
     if (get().status.kind === "loading") return;
@@ -113,7 +133,36 @@ export const useWalletStore = create<WalletStoreState>((set, get) => ({
     });
   },
 
-  clear: () => set({ status: { kind: "idle" } }),
+  claim: async () => {
+    if (get().claiming) return false;
+    set({ claiming: true, grantNotice: null });
+
+    let outcome;
+    try {
+      outcome = await activeWalletGateway().claimRecoveryGrant();
+    } catch {
+      set({ claiming: false, grantNotice: "The grant could not be requested. Nothing has changed." });
+      return false;
+    }
+    set({ claiming: false });
+
+    if (!outcome.ok) {
+      // The server's own wording where there is one. It knows the authoritative
+      // balance and the authoritative cooldown; this layer knows a cached copy
+      // of both, and saying something different from the server would be worse
+      // than saying nothing.
+      set({ grantNotice: outcome.message });
+      return false;
+    }
+
+    // The balance moved, so everything showing it must be re-read rather than
+    // patched locally — the ledger has a new row too.
+    await get().refresh();
+    set({ grantNotice: "Recovery grant credited." });
+    return true;
+  },
+
+  clear: () => set({ status: { kind: "idle" }, grantNotice: null, claiming: false }),
 }));
 
 /**

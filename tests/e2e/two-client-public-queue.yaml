@@ -1,0 +1,110 @@
+# Arc 21 — PUBLIC TABLE, two clients, step 1: device A joins the queue.
+#
+# THE EVIDENCE GAP THIS SCENARIO CLOSES. Phase 7 built public multiplayer and
+# said so; what it did NOT do was watch two devices share a public table.
+# `public-matchmaking.yaml` proves the lone-player wait, the twenty-second
+# offer and the tier gate, and stops before a seat is ever taken — deliberately,
+# because one account cannot be two players. Everything past that point had been
+# proved only by `tests/server`, which posts commands over HTTP and never
+# presses anything.
+#
+# So this is the first time the app itself has been asked whether two real
+# accounts, on two real devices, are matched into the SAME public room, both
+# charged, both dealt, and — the one that matters most — whether one of them
+# leaving ends the table for the other. `settleTableClosure` returns
+# `sessionEnded` only when no other connected seat remains, and until now
+# nothing had ever looked at the second player's screen to see it.
+#
+# RUN IN ORDER, one `maestro test` at a time. Two drivers at once is the load
+# condition CLAUDE.md warns about, and it has cost this project several runs.
+#
+#   supabase db reset && supabase start
+#   npx tsx scripts/e2e-account.ts --udid <A> --email e2e-lobby@arc21.test
+#   npx tsx scripts/e2e-account.ts --udid <B> --email e2e-guest@arc21.test
+#   .env.local must be PRESENT
+#
+#   maestro test --device <A> -e EMAIL=e2e-lobby@arc21.test tests/e2e/mc-sign-in.yaml
+#   maestro test --device <B> -e EMAIL=e2e-guest@arc21.test  tests/e2e/mc-sign-in.yaml
+#   maestro test --device <A> tests/e2e/two-client-public-queue.yaml
+#   maestro test --device <B> tests/e2e/two-client-public-join.yaml
+#   maestro test --device <A> -e OTHER=$(npx tsx scripts/two-client-public.ts \
+#       --email e2e-guest@arc21.test --what display-name) \
+#       tests/e2e/two-client-public-seat.yaml
+#   maestro test --device <B> tests/e2e/two-client-public-leave.yaml
+#
+# BOTH DEVICES ARE SIGNED IN BEFORE ANY OF THIS. A queue entry expires five
+# minutes after it is created while it is still `waiting`, so the window between
+# this flow ending and step 3 taking the seat is the whole of step 2 — signing
+# in there as well would put it at risk for no reason.
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# A deep link, not the tab bar: several runs have been lost to selectors that
+# "COMPLETED" while the app sat on the wrong tab.
+- openLink: arc21://table/public
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# The header carries a balance only for a signed-in account — a guest gets the
+# word GUEST and no number. `mc-sign-in.yaml` records why Home is not evidence
+# of a session, and this scenario depends on TWO of them.
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-tier-casual"
+    timeout: 45000
+
+# TAPPED INSIDE A `repeat`, not once.
+#
+# A tap issued while the screen is still settling can be swallowed: measured
+# here as `Tap on id: matchmaking-tier-casual ... COMPLETED` with the screenshot
+# still showing the tier chooser and NO queue row ever written — which then
+# presents as the other device never being matched, a minute and a half later
+# and on the other simulator. COMPLETED means Maestro found something matching
+# the selector and sent a tap at it; it does not mean anything happened.
+#
+# The loop is guarded on the tier list itself, because choosing a tier replaces
+# it with either the wait card or the seat offer. So it stops as soon as the tap
+# has landed, whichever of the two states follows.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "matchmaking-tier-casual"
+    commands:
+      - tapOn:
+          optional: true
+          id: "matchmaking-tier-casual"
+
+# Queued and genuinely waiting, because nobody else is at these stakes yet.
+# This is the state device B will collapse by queueing at the same tier.
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-wait"
+    timeout: 30000
+- assertVisible:
+    id: "matchmaking-cancel"
+
+# NOT CHARGED YET, and this is the assertion that keeps the two steps honest.
+# `matchmaking-store.ts` splits queueing from `takeSeat` on purpose: a matched
+# player has not paid. The card says so, and it says so before any money moves.
+- assertVisible: ".*only charged once a seat is opened.*"

@@ -17,6 +17,9 @@ import {
   CATEGORY_COPY,
   LEADERBOARD_CATEGORIES,
   describePosition,
+  nextPageRequest,
+  PAGE_SIZE,
+  pageWasLast,
   formatValue,
   toEntries,
   toPosition,
@@ -170,6 +173,45 @@ const ITEM: CosmeticItem = {
   requirement: "Reach level 3",
   sort_order: 3,
 };
+
+/**
+ * Paging a board.
+ *
+ * The predicates rather than the store, because what goes wrong here is a
+ * CONTROL: a "Load more" that fires twice appends the same page twice, and one
+ * that never stops asks the server for an empty page for ever. This project has
+ * been bitten by testing the function behind a button instead of whether the
+ * button could be pressed — `betting-affordance.ts` is the shape.
+ */
+describe("paging a leaderboard", () => {
+  it("keeps asking while a full page comes back", () => {
+    expect(pageWasLast(PAGE_SIZE)).toBe(false);
+  });
+
+  it("stops on a short page, without a further round trip to discover it", () => {
+    expect(pageWasLast(PAGE_SIZE - 1)).toBe(true);
+    expect(pageWasLast(0)).toBe(true);
+  });
+
+  it("asks for the next page starting where the last one ended", () => {
+    expect(nextPageRequest({ loaded: 25, hasMore: true, busy: false })).toEqual({
+      limit: PAGE_SIZE,
+      offset: 25,
+    });
+    expect(nextPageRequest({ loaded: 50, hasMore: true, busy: false })?.offset).toBe(50);
+  });
+
+  it("asks for nothing once the board has run out", () => {
+    expect(nextPageRequest({ loaded: 12, hasMore: false, busy: false })).toBeNull();
+  });
+
+  it("asks for nothing while a page is already in flight", () => {
+    // Two taps on "Load more" would otherwise fetch the same offset twice and
+    // append it twice — a duplicated block of rows, not a missing one, which is
+    // the harder kind to notice.
+    expect(nextPageRequest({ loaded: 25, hasMore: true, busy: true })).toBeNull();
+  });
+});
 
 describe("reading the inventory", () => {
   it("parses a catalogue row", () => {

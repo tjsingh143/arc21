@@ -126,3 +126,47 @@ export function describePosition(
   if (!position) return null;
   return `You are ${position.rank} of ${position.total_ranked} with ${formatValue(category, position.value)}.`;
 }
+
+// ---------------------------------------------------------------------------
+// Paging
+// ---------------------------------------------------------------------------
+
+/**
+ * One page.
+ *
+ * The specification's board is a top 100, and 25 at a time is what a phone shows
+ * without a scroll that never ends. Four pages reach the hundred; past it,
+ * "Load more" keeps going rather than pretending the board stops there.
+ */
+export const PAGE_SIZE = 25;
+
+/**
+ * Whether the page just received was the last one.
+ *
+ * A page SHORTER than it asked for is the end of the board. Asking again to
+ * discover that would be a wasted round trip for every player who reaches the
+ * bottom, which is most of them on a board this size.
+ */
+export function pageWasLast(received: number, pageSize: number = PAGE_SIZE): boolean {
+  return received < pageSize;
+}
+
+/**
+ * What to ask the server for next, or nothing.
+ *
+ * Extracted rather than left inline because it is the ENABLEMENT of a control,
+ * and this project has been bitten by testing the function behind a button
+ * instead of whether the button could be pressed — `betting-affordance.ts` is
+ * the shape being copied. A "Load more" that fires while a page is already in
+ * flight asks for the same offset twice and appends it twice.
+ */
+export function nextPageRequest(params: {
+  /** How many rows are on screen. The next offset, by definition. */
+  readonly loaded: number;
+  readonly hasMore: boolean;
+  readonly busy: boolean;
+  readonly pageSize?: number;
+}): { readonly limit: number; readonly offset: number } | null {
+  if (!params.hasMore || params.busy) return null;
+  return { limit: params.pageSize ?? PAGE_SIZE, offset: params.loaded };
+}

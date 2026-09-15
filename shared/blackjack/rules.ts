@@ -56,6 +56,27 @@ export interface BlackjackRules {
   minBet: number;
   maxBet: number;
   betIncrement: number;
+
+  /**
+   * Whether seats bet ONE AT A TIME, in seating order, or all at once.
+   *
+   * A posted table property, like the bet band above it — not a rule of
+   * blackjack. It changes who may stake chips at a given moment and nothing
+   * about what a hand is worth, so it does NOT alter basic strategy and does not
+   * bump `version`; the strategy tables keyed to `id@version` are untouched by
+   * it.
+   *
+   * False everywhere except the Sprint Tournament, where the specification is
+   * explicit that betting is "sequential and visible" with a bet timer of
+   * "7 seconds/person", because tournament strategy derives partly from seeing
+   * what the players before you have committed. With it false, every seat may
+   * stake at any moment during BETTING_OPEN and one shared clock covers them
+   * all, which is what an ordinary casino table does.
+   *
+   * Optional so that engine states persisted before it existed load unchanged —
+   * the same reason `SeatState.sitOutNextHand` is optional.
+   */
+  sequentialBetting?: boolean;
 }
 
 /**
@@ -101,6 +122,10 @@ export const ARC_STANDARD_RULES: BlackjackRules = {
   minBet: 50,
   maxBet: 1000,
   betIncrement: 10,
+
+  // Stated rather than left to the optional's default: an ordinary Arc 21 table
+  // takes bets from every seat at once.
+  sequentialBetting: false,
 };
 
 /** Table tiers differ only in stakes; all other rules stay identical. */
@@ -187,6 +212,38 @@ export function assertRulesAreCoherent(rules: BlackjackRules): void {
   }
   if (rules.dealerHoleCard === false && rules.dealerPeeksForBlackjack) {
     problems.push("cannot peek without a hole card");
+  }
+
+  /*
+   * The engine has no model of "double on 9-11 only".
+   *
+   * `doubleOnAnyTwoCards: false` reads like a restriction to certain totals, and
+   * that is what a future ruleset author would mean by it — but `getLegalActions`
+   * has no allowlist to consult, so the flag does not restrict doubling, it
+   * REMOVES it. A table advertising "double on 9, 10 and 11" that in fact offers
+   * no double at all is exactly the silent divergence this guard exists to stop.
+   * Model the restriction first, then relax this check.
+   */
+  if (rules.doubleAllowed && !rules.doubleOnAnyTwoCards) {
+    problems.push(
+      "doubleOnAnyTwoCards: false does not restrict doubling to certain totals — " +
+        "the engine models no such allowlist, so it disables doubling entirely. " +
+        "Set doubleAllowed: false to mean that, or add the allowlist first",
+    );
+  }
+
+  /*
+   * Split aces that may be hit are ordinary split hands, and a hand that keeps
+   * drawing has no "exactly one card" rule to break. But split aces that may NOT
+   * be hit are completed by the engine the instant they receive their card, so a
+   * ruleset that forbids hitting them and permits doubling them is asking for a
+   * decision the player will never be offered.
+   */
+  if (rules.splitAcesAllowed && rules.doubleSplitAcesAllowed && !rules.hitSplitAcesAllowed) {
+    problems.push(
+      "doubleSplitAcesAllowed requires hitSplitAcesAllowed: a split ace that " +
+        "cannot be hit is completed on its one card and never offered a decision",
+    );
   }
 
   // A blackjack payout on the minimum bet must be exact, or the house is

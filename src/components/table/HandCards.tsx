@@ -11,6 +11,7 @@ import { StyleSheet, View } from "react-native";
 import { evaluateHand } from "../../../shared/blackjack/hand-value.js";
 import { describeHandValue, handValueAccessibilityLabel } from "../../../shared/blackjack/hand-value.js";
 import { isHiddenCard, isVisibleCard, type MaybeHiddenCard } from "../../../shared/blackjack/types.js";
+import { useTableTextVariant } from "../../design/accessibility";
 import { cardSizes, colors, radius, spacing, type CardSize } from "../../design/tokens";
 import { AppText } from "../ui/AppText";
 import { DealtCard } from "../cards/DealtCard";
@@ -25,6 +26,17 @@ export interface HandCardsProps {
   dimmed?: boolean;
   /** Highlights the hand currently being acted on. */
   focused?: boolean;
+  /**
+   * Applied to the VALUE text, not to the container.
+   *
+   * `tests/e2e/practice-resume.yaml` copies this text before killing the app and
+   * asserts the same string after relaunching, which is how the on-device flow
+   * proves the same CARDS came back rather than only the same bankroll. It has
+   * to sit on the text node because `copyTextFrom` reads a node's text, and on
+   * iOS a label on an ancestor would replace the child text it is trying to
+   * read — the failure this repository has already been caught by twice.
+   */
+  testID?: string;
 }
 
 export function HandCards({
@@ -34,6 +46,7 @@ export function HandCards({
   detail,
   dimmed = false,
   focused = false,
+  testID,
 }: HandCardsProps) {
   const visible = cards.filter(isVisibleCard);
   const hasHidden = cards.some(isHiddenCard);
@@ -55,6 +68,8 @@ export function HandCards({
     value && !hasHidden ? handValueAccessibilityLabel(value) : derivedLabel ?? "";
 
   const overlap = cardSizes[size].width * 0.32;
+  const valueVariant = useTableTextVariant(size === "hero" ? "sectionTitle" : "caption");
+  const detailVariant = useTableTextVariant("caption");
 
   return (
     <View style={[styles.container, focused ? styles.focused : null]}>
@@ -76,15 +91,17 @@ export function HandCards({
       {derivedLabel ? (
         <View style={styles.valueRow}>
           <AppText
-            variant={size === "hero" ? "sectionTitle" : "caption"}
+            variant={valueVariant}
             color={dimmed ? "textSecondary" : "textPrimary"}
             numeric
+            testID={testID}
             accessibilityLabel={accessibleValue}
+            style={styles.valueText}
           >
             {derivedLabel}
           </AppText>
           {detail ? (
-            <AppText variant="caption" color="textSecondary" numeric>
+            <AppText variant={detailVariant} color="textSecondary" numeric style={styles.valueText}>
               {` · ${detail}`}
             </AppText>
           ) : null}
@@ -97,6 +114,7 @@ export function HandCards({
 const styles = StyleSheet.create({
   container: {
     alignItems: "center",
+    maxWidth: "100%",
     gap: spacing.sm,
     paddingVertical: spacing.xs,
   },
@@ -113,6 +131,10 @@ const styles = StyleSheet.create({
   },
   valueRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "center",
     alignItems: "baseline",
+    maxWidth: "100%",
   },
+  valueText: { maxWidth: "100%", textAlign: "center" },
 });

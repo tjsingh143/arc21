@@ -8,6 +8,7 @@
 
 import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "react-native";
 
+import { useBorderColor } from "../../design/accessibility";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
 import { AppText } from "./AppText";
 
@@ -43,8 +44,29 @@ export function SurfaceCard({
   selected,
   testID,
 }: SurfaceCardProps) {
+  const borderColor = useBorderColor();
+
   if (!onPress) {
-    return <View style={[styles.card, disabled ? styles.disabled : null, style]}>{children}</View>;
+    /*
+     * `testID` travels down this branch too.
+     *
+     * It did not, and the omission was invisible in the way this project's
+     * accessibility defects always are: `app/table/[gameId].tsx` has carried
+     * `<SurfaceCard testID="table-advice">` with no `onPress` since the advice
+     * panel shipped, so the id existed in the source, matched nothing in the
+     * tree, and any flow selecting on it would have failed while looking like a
+     * broken screen. An inert card is the RIGHT shape for a container whose
+     * control is a Button inside it — a labelled Pressable replaces the text of
+     * everything within it on iOS — so this branch needs to stay addressable.
+     */
+    return (
+      <View
+        testID={testID}
+        style={[styles.card, { borderColor }, disabled ? styles.disabled : null, style]}
+      >
+        {children}
+      </View>
+    );
   }
 
   return (
@@ -58,6 +80,14 @@ export function SurfaceCard({
       accessibilityState={selected === undefined ? { disabled } : { disabled, selected }}
       style={({ pressed }) => [
         styles.card,
+        // Only the pressable variant needs the floor: a plain, non-interactive
+        // SurfaceCard can be any height. Without this, a card whose only
+        // content is a short label — a category tab, a compact chip — renders
+        // under 48dp, which `scripts/check-contrast.ts`'s sibling concern
+        // (touch target size) has no automated check for, so it goes unnoticed
+        // until someone measures it. `inventory-tab-*` was exactly this shape.
+        styles.pressableMinHeight,
+        { borderColor },
         pressed && !disabled ? styles.pressed : null,
         disabled ? styles.disabled : null,
         style,
@@ -108,8 +138,9 @@ export function Tile({
  * standing in for real numbers — reads as broken or, much worse, as true.
  */
 export function UnavailableNote({ children }: { children: React.ReactNode }) {
+  const borderColor = useBorderColor();
   return (
-    <View style={styles.unavailable} accessibilityRole="summary">
+    <View style={[styles.unavailable, { borderColor }]} accessibilityRole="summary">
       <AppText variant="caption" color="textSecondary">
         {children}
       </AppText>
@@ -130,6 +161,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minHeight: MIN_TOUCH_TARGET + spacing.lg,
     justifyContent: "center",
+  },
+  pressableMinHeight: {
+    minHeight: MIN_TOUCH_TARGET,
   },
   pressed: {
     opacity: 0.8,

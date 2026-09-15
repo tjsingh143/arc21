@@ -77,17 +77,28 @@ export function initialsFor(displayName: string): string {
 export function profileIdentity(context: {
   hasAccount: boolean;
   displayName?: string | null;
+  /** The server-normalised handle, rendered as `@handle`. */
+  username?: string | null;
 }): ProfileIdentity {
   if (!context.hasAccount) return GUEST_IDENTITY;
 
   const name = context.displayName?.trim();
   if (!name) return GUEST_IDENTITY;
 
+  const handle = context.username?.trim();
   return {
     kind: "account",
     displayName: name,
     initials: initialsFor(name),
-    detail: "Signed in to Arc 21.",
+    /*
+     * The handle, when there is one. The specification's profile hierarchy is
+     * "Avatar / Display name / @username", and this line is the third of those.
+     *
+     * It used to read "Signed in to Arc 21." beneath a display name that was
+     * the player's EMAIL ADDRESS — the largest type on the screen, in a
+     * screenshot anybody might share.
+     */
+    detail: handle ? `@${handle}` : "Signed in to Arc 21.",
   };
 }
 
@@ -135,10 +146,18 @@ export function describeProgressionUnavailable(
     case "NO_ACCOUNT":
       return {
         title: "No level yet",
+        /*
+         * "This build has no sign-in" was true when it was written and false by
+         * the time anybody read it — the identical expiry that
+         * `describeCompetitionUnavailable` carried, found in the same sweep.
+         * The screen offering this note also offers a working sign-in, so the
+         * note now names it instead of denying it exists.
+         */
         body:
           "Level and XP are awarded by the server so they cannot be edited from a phone. " +
-          "This build has no sign-in, so there is no level to show — and showing " +
-          "“Level 1” would be inventing one.",
+          "You are playing as a guest, so there is no level to show — and showing " +
+          "“Level 1” would be inventing one. Create an account and your XP is " +
+          "kept from then on.",
       };
     case "OFFLINE":
       return {
@@ -166,6 +185,8 @@ export interface ProfileHeadline {
   careerStars: CareerStars;
   /** Progress through the career map, for the stars ring. */
   careerProgress: Rate;
+  /** Server-recorded tournament wins, or null when unread. Never a defaulted zero. */
+  tournamentWins: number | null;
 }
 
 export interface ProfileSummary {
@@ -181,7 +202,10 @@ export function summariseProfile(input: {
   careerStars: CareerStars;
   hasAccount?: boolean;
   displayName?: string | null;
+  username?: string | null;
   progression?: ProgressionRecord | null;
+  /** Server-recorded, or null when it could not be read. Never defaulted to 0. */
+  tournamentWins?: number | null;
 }): ProfileSummary {
   const hasAccount = input.hasAccount ?? false;
   const stats = input.stats;
@@ -191,7 +215,11 @@ export function summariseProfile(input: {
   const available = nonNegative(input.careerStars.available);
 
   return {
-    identity: profileIdentity({ hasAccount, displayName: input.displayName ?? null }),
+    identity: profileIdentity({
+      hasAccount,
+      displayName: input.displayName ?? null,
+      username: input.username ?? null,
+    }),
     progression: progressionState({ hasAccount, record: input.progression ?? null }),
     headline: {
       accuracy: rate(stats.unaidedCorrect, stats.unaidedDecisions),
@@ -199,6 +227,12 @@ export function summariseProfile(input: {
       handsPlayed,
       careerStars: { earned, available },
       careerProgress: rate(earned, available),
+      /*
+       * Null, not zero, when it has not been read. A zero is a value, and a
+       * value nobody earned asserts the app is keeping score of something it is
+       * not — the same rule the level bar follows two fields up.
+       */
+      tournamentWins: input.tournamentWins ?? null,
     },
     hasPlayed: handsPlayed > 0 || nonNegative(stats.decisions) > 0,
   };

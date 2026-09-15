@@ -13,9 +13,20 @@
  */
 
 import { getLegalActions } from "../../../shared/blackjack/index.js";
-import type { EngineState, PlayerActionType } from "../../../shared/blackjack/index.js";
+import type {
+  EngineState,
+  PlayerActionType,
+  PublicGameState,
+} from "../../../shared/blackjack/index.js";
 import { activeHandOf } from "../../../shared/blackjack/legal-actions.js";
-import { adviseAction, describeStrategyState, evMistakeForDecision } from "./strategy/index.ts";
+import {
+  adviseAction,
+  describeStrategyState,
+  describeStrategyStateLabel,
+  describeUpcardLabel,
+  evForAction,
+  evMistakeForDecision,
+} from "./strategy/index.ts";
 
 /**
  * Modes whose decisions count towards strategy accuracy.
@@ -29,17 +40,55 @@ import { adviseAction, describeStrategyState, evMistakeForDecision } from "./str
  *     format properly;
  *   * `private_table` is excluded because the product calls private tables
  *     unranked. Their chips are unranked, so their decisions are too;
- *   * the remaining three are the ranked server-authoritative modes, and none of
- *     them offers assistance — the shared table screen renders no advice, which
- *     is what satisfies "the answer was not shown before the choice".
+ *   * the remaining three are the ranked server-authoritative modes. Two of them
+ *     offer no assistance at all; `solo` (Quick Play) does, so its eligibility
+ *     is additionally gated on the session's recorded assistance — see
+ *     `countsTowardsAccuracy` below. That used to hold by construction, because
+ *     the shared table screen rendered no advice; it now holds by a column.
  *
  * Listing the ELIGIBLE modes rather than the excluded ones is deliberate: a new
  * mode is not counted until somebody adds it here on purpose.
  */
 export const ACCURACY_ELIGIBLE_MODES = ["solo", "public_table", "daily_challenge"] as const;
 
-export function countsTowardsAccuracy(mode: string): boolean {
+/**
+ * Assistance modes that SHOW the answer before the choice.
+ *
+ * The specification excludes "modes where answer was shown before choice" from
+ * the qualified accuracy board. Until Quick Play grew its selector this held by
+ * construction — the shared table screen rendered no advice at all — and the
+ * comment above said so. It is now a fact about the SESSION, recorded on the
+ * row at OPEN so a client cannot revise it per decision and opt a mistake out of
+ * its own accuracy.
+ */
+const ASSISTED_MODES = ["learn", "analysis"] as const;
+
+export function assistanceShowsTheAnswer(assistance: string): boolean {
+  return (ASSISTED_MODES as readonly string[]).includes(assistance);
+}
+
+export function countsTowardsAccuracy(mode: string, assistance = "play"): boolean {
+  if (assistanceShowsTheAnswer(assistance)) return false;
   return (ACCURACY_ELIGIBLE_MODES as readonly string[]).includes(mode);
+}
+
+/**
+ * Modes whose decisions are GRADED, which is a wider set than the ones counted.
+ *
+ * A career node has to be graded — its second and third stars are accuracy
+ * thresholds — but it must not reach the ranked board: half the nodes run in
+ * "learn", which puts the recommended play on screen before the choice, and the
+ * specification excludes "modes where answer was shown before choice" by name.
+ * Grading it and not counting it is the only combination that satisfies both.
+ *
+ * Kept as a separate predicate rather than widening `ACCURACY_ELIGIBLE_MODES`,
+ * because that list is the leaderboard's definition and it is asserted as such
+ * in `tests/progression`. Two questions, two answers.
+ */
+export const GRADED_MODES = [...ACCURACY_ELIGIBLE_MODES, "career"] as const;
+
+export function isGradedMode(mode: string): boolean {
+  return (GRADED_MODES as readonly string[]).includes(mode);
 }
 
 /** The five decisions the chart covers. `RESOLVE_TIMEOUT` is not one of them. */
@@ -162,5 +211,81 @@ export function gradeDecision(params: {
     counted: true,
     optimal: recommendation.action === params.action,
     evLostMicros: evLost === null ? 0 : Math.max(0, Math.round(evLost * EV_MICROS)),
+  };
+}
+
+/**
+ * The recommendation a Learn or Analysis table shows, from authoritative state.
+ *
+ * Deliberately the SAME advisor `gradeDecision` uses, reading the same state
+ * before the same action. A client that rebuilt this locally would be a second
+ * implementation of the chart, and the two would disagree the first time a
+ * ruleset changed — which is the whole reason `shared/strategy` exists as one
+ * module.
+ *
+ * Returns null whenever there is nothing honest to say: not this seat's turn,
+ * no active hand, or a coordinate the validated tables do not cover. The
+ * advisor answers null rather than guessing, and so does this.
+ *
+ * `actionEvMicros` is filled only for `analysis`, in MILLIONTHS of one unit
+ * wagered — integers, because nothing a player is scored on is decided by a
+ * float.
+ */
+export function adviceFor(params: {
+  state: EngineState;
+  seatId: string;
+  assistance: string;
+}): NonNullable<PublicGameState["advice"]> | null {
+  if (!assistanceShowsTheAnswer(params.assistance)) return null;
+  if (params.state.phase !== "PLAYER_TURNS") return null;
+  // The engine holds an INDEX, not an id — the seat order is the table order.
+  const activeSeat = params.state.seats[params.state.activeSeatIndex ?? -1];
+  if (!activeSeat || activeSeat.seatId !== params.seatId) return null;
+
+  const seat = params.state.seats.find((candidate) => candidate.seatId === params.seatId);
+  if (!seat) return null;
+  const hand = activeHandOf(seat);
+  if (!hand || hand.status !== "ACTIVE") return null;
+
+  // Index 0 is the upcard. The hole card lives at index 1 and is never read.
+  const upcard = params.state.dealer.cards[0];
+  if (!upcard) return null;
+
+  const strategyState = describeStrategyState(hand.cards, upcard, {
+    splitPolicy: params.state.rules.splitPolicy,
+    cameFromSplit: hand.cameFromSplit,
+    cameFromSplitAces: hand.cameFromSplitAces,
+    splitAceTwentyOneIsBlackjack: params.state.rules.splitAceTwentyOneIsBlackjack,
+  });
+  if (!strategyState) return null;
+
+  const legal = getLegalActions(params.state, params.seatId).actions;
+  const recommendation = adviseAction({
+    rules: params.state.rules,
+    state: strategyState,
+    legalActions: legal,
+  });
+  if (!recommendation) return null;
+
+  let actionEvMicros: Record<string, number> | null = null;
+  if (params.assistance === "analysis") {
+    actionEvMicros = {};
+    for (const action of legal) {
+      // Priced from the cell the recommendation came from. `evForAction`
+      // answers null where the table prices nothing, and an unpriced action is
+      // OMITTED rather than shown as zero — "we do not know" and "this play is
+      // free" are different statements.
+      const ev = evForAction(recommendation.decision, action as never);
+      if (ev !== null) actionEvMicros[action] = Math.round(ev * 1_000_000);
+    }
+  }
+
+  return {
+    seatId: params.seatId,
+    recommended: recommendation.action as PlayerActionType,
+    explanation: `${describeStrategyStateLabel(strategyState)} against ${describeUpcardLabel(
+      recommendation.decision.dealerUpcardValue,
+    )}`,
+    actionEvMicros,
   };
 }

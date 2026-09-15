@@ -1,0 +1,1585 @@
+# Arc 21 — Final production-MVP closure ledger
+
+**Mission:** take the repository as it stands to a production-MVP release candidate
+against the authoritative specification
+(`Arc 21 — Deep Research, Product Specification, and Claude Code Master Build Prompt.pdf`,
+137 pages; Part B "MASTER BUILD PROMPT" is the binding half, and the
+"MVP ACCEPTANCE CRITERIA" and "DEFINITION OF DONE" sections at its end are the gate).
+
+**STATUS, 2026-09-04: SUPERSEDED AS THE GATE, KEPT AS THE LEDGER.** The launch
+sequence ran to completion and phase 12 produced the release candidate.
+**`docs/FINAL_RELEASE_REPORT.md` is the document that now answers "is the MVP
+done"** — it carries the acceptance-criteria matrix item by item, every command
+and its result, the device evidence, the security re-check and the ten external
+owner actions. This file remains the historical record of how each area got
+there, and is accurate about what it describes.
+
+This file is the finite release ledger. It is not a progress report and it is not
+a roadmap. Every material MVP requirement appears here exactly once with the
+evidence that decided its status. **A row is VERIFIED COMPLETE only from objective
+evidence — a command and its output, a file and its line — never from a document
+claiming it.**
+
+| Status | Meaning |
+|---|---|
+| **VERIFIED COMPLETE** | Objective evidence recorded in the row |
+| **IN PROGRESS** | Being worked in this mission |
+| **FAILED** | Defect found, fix required |
+| **EXTERNAL BLOCKER** | Needs a credential/account/device this machine does not have. Implementation, configuration and local verification are finished |
+| **DEFERRED V1.1/FUTURE** | Explicitly out of MVP scope per the specification |
+
+---
+
+## Mission state
+
+**Started:** 2026-08-22. Branch `phase14-s2-security`.
+
+**Baseline measured at the start, before any change:**
+
+```
+npx tsc --noEmit            → exit 0
+npm test                    → 77 files, 1544 tests, all passed (76.6 s)
+```
+
+Local Supabase stack up (12 containers healthy); iOS simulator iPhone 17 Pro booted
+with `com.arc21.app` installed; Maestro on PATH; host load average 5.5.
+
+**Section index below is filled as evidence lands. See `.claude/RESUME.md` for the
+resume protocol if this session is interrupted.**
+
+---
+
+## Ledger
+
+### R1 — A player could be charged two buy-ins out of one wallet · **VERIFIED COMPLETE**
+
+**Severity:** blocker. Two live escrows from one wallet, on the ordinary path.
+
+**Reproduced** against the running stack, by client-reachable calls only, before
+any fix existed. `tests/server/economy-guards.integration.test.ts` failed exactly
+here:
+
+```
+× refuses a public buy-in while the player holds a live solo seat
+  AssertionError: expected 200 to be 409
+× refuses to queue a player who already holds a live seat
+  AssertionError: expected 200 to be greater than or equal to 400
+```
+
+**Root cause — three faults, not one.**
+
+1. `joinPublicTable` (`supabase/functions/create-session/index.ts`) had no
+   already-seated check. The solo path had one; the public path bought in
+   regardless. The buy-in idempotency key is derived from the GAME, so two
+   games are two keys and both are honoured.
+2. `join_matchmaking` reused an existing enrolment by `status = 'waiting'`. A
+   MATCHED player holds a `matched` row, so the lookup missed, a second
+   enrolment was inserted, and `poll_matchmaking` allocated it a different room
+   because the first had left `lobby` when it opened.
+3. `leave_matchmaking` cancelled `waiting` only — found while fixing (2), and
+   fatal to it: once a re-queue reuses a matched entry, a player who backs out
+   of a match holds a dead one for ever and keeps an unfunded lobby seat.
+
+`docs/RELEASE.md` carried this as needing a force-quit. **It does not.** Being
+MATCHED is not being seated and costs nothing, so a matched player can open a
+solo table first and then take the public seat — two escrows, no force-quit, no
+race, no service-role fixture.
+
+**Fix.**
+- `assertNoOtherLiveSeat(tx, userId, exceptGameId)` in `create-session`, called
+  from the solo path (`exceptGameId` null) and from `joinPublicTable`
+  (`exceptGameId` = the room's own session, so a reconnect stays idempotent).
+- `supabase/migrations/20260823100000_one_live_seat.sql` redefines
+  `join_matchmaking` **from the last version** (`20260818100000_rate_limits.sql`,
+  not the original) so the rate-limit charge survives, and `leave_matchmaking`
+  to release an unfunded lobby seat while never releasing a funded one.
+- Client half: `takeSeat` collapsed every refusal into "That seat could not be
+  taken." `SESSION_ALREADY_ACTIVE` now names the table holding the chips, and
+  `readRejection` moved to `src/lib/supabase/rejection.ts` rather than being
+  copied — one decoder, two callers.
+
+**Evidence after the fix.**
+
+```
+tests/server/economy-guards.integration.test.ts   3 passed
+supabase test db                                  431 assertions, Result: PASS  (was 422)
+npm test                                          79 files, 1554 tests passed   (was 1544)
+ARC21_REQUIRE_SERVER_STACK=1 vitest run tests/server   6 files, 59 tests passed
+npx tsc --noEmit                                  exit 0
+```
+
+The client-side guard was proved to discriminate: removing the
+`SESSION_ALREADY_ACTIVE` branch fails `take-seat.test.ts` and nothing else.
+
+---
+
+### R2 — The catalogue a deployed database would not have had · **VERIFIED COMPLETE**
+
+**Severity:** blocker. No session of any kind could be opened in a deployed project.
+
+**Found** while preparing the career work, by grepping for the writers of
+`public.career_nodes`:
+
+```
+grep -ln 'insert into public.cosmetics\|insert into public.rulesets\|insert into public.career_nodes' supabase/migrations/*.sql
+  → (only rate_limit_policies, in 20260818100000)
+grep -n '^insert into' supabase/seed.sql
+  → 23: rulesets   70: cosmetics   111: career_nodes
+```
+
+**Root cause.** `supabase/seed.sql` runs on `supabase db reset` and **not** on
+`supabase db push`. The ruleset, the 24 cosmetics and the career map lived only
+there. `resolveRulesetId` in `create-session` raises on an empty `rulesets`
+table, so a deployed Arc 21 could not open a solo table, a public table, a
+tournament or a daily challenge. Every local verification in `docs/AUDIT.md`
+passed because `db reset` had just run the seed — the one command that hides
+this exactly.
+
+**And a second catalogue.** The seed's eighteen career nodes were not the
+eighteen the app plays. `foundations-1` "First Hand", five hands,
+`{"type": "play_hands", "count": 5}` — a declarative grammar nothing in the
+repository has ever interpreted — against `first-deal` "First Deal", ten hands,
+60% accuracy in `shared/career/nodes.ts`, which is what every screen renders and
+what `stars.ts` grades. `career_progress` and all eight career-gated cosmetics
+were keyed to the catalogue the player could not see.
+
+**Fix.**
+- `20260823110000_catalogue_ships_in_migrations.sql` — the ruleset and the
+  cosmetics, moved from the seed with their `on conflict` clauses intact.
+- `20260823120000_career_catalogue.sql` — **generated** by
+  `npm run career:generate` from `shared/career/nodes.ts`; deletes the
+  placeholder rows (a leftover node nobody can play makes a `career_chapter`
+  cosmetic permanently unobtainable), rebuilds the prerequisite chain, repoints
+  the three chapter-final cosmetic gates, and raises on an orphaned gate.
+- `supabase/seed.sql` now contains zero rows and says why.
+
+**Evidence.**
+
+```
+grep -c 'insert into' supabase/seed.sql                        → 0
+supabase db reset && psql -c 'select count(*) …'
+  rulesets=1  cosmetics=24  career_nodes=18  rate_limit_policies=9   ← from migrations alone
+supabase test db                                               435 assertions, PASS  (was 431)
+npm test                                                       80 files, 1559 tests passed
+tsc --noEmit                                                   exit 0
+```
+
+Guarded against recurrence by `tests/career/catalogue-sql.test.ts`, which
+regenerates the migration and compares byte for byte, and asserts `seed.sql`
+holds no `insert` at all — a file check, because a row count taken after
+`db reset` cannot tell the two sources apart, which is precisely how this
+survived. `06_catalog.test.sql` adds four assertions that no cosmetic gate names
+a node or chapter that does not exist.
+
+---
+
+### R3 — Career progression granted nothing · **VERIFIED COMPLETE**
+
+**Severity:** blocker. Three MVP acceptance criteria and one Definition-of-Done line.
+
+**Verified before any fix:**
+
+```
+grep -rn 'career_progress' supabase/functions/ shared/ src/ app/   → (nothing)
+```
+
+Nothing anywhere wrote `public.career_progress`. The table existed with its
+constraints, its RLS and its `deny_client_write` trigger; the cosmetic gates read
+it; `shared/career/progress.ts` marked a completed node's reward `rewardOwed` and
+left `rewardClaimed` false "until a server grants them", and `pendingRewards()`
+had zero callers.
+
+Failing: `□ Rewards`, `□ Cosmetics earned` (8 of 24 unobtainable — 3 gated on a
+chapter final's code, 5 on a chapter), and "complete career progression".
+
+**What the specification requires**, in three separate places:
+
+```
+"Career rewards | Server"                                 (authority boundaries)
+"A Career node may be practiced offline, but any reward-bearing attempt
+ requires server authority."                              (offline design)
+"Move reward-bearing Quick Play and Career attempts to authoritative server
+ commands."                                               (build phases)
+```
+
+So a ranked attempt is a real server session, not a reported score.
+
+**Built.**
+- A seventh `game_mode`, `career`, classified NOT wallet-backed in
+  `session-economics.ts` — a node's 2,000 chips are a scoring medium, and
+  crediting them would mint 2,000 per attempt. Both exhaustiveness tests failed
+  until it was classified, which is exactly what they are for.
+- `public.career_attempts` + `private.career_drill_seeds`, and
+  `record_career_completion` / `record_career_attempt_started` /
+  `my_career_progress` (`20260823130000`).
+- `START_CAREER_NODE` and `SUBMIT_CAREER_DRILL` in `create-session`. A standard
+  node opens a single-seat session on a CSPRNG shoe with the node's wager
+  ceiling as the table maximum; a drill's scenarios are built from a 32-byte
+  secret in `private` and **regenerated to grade**, so a client cannot answer an
+  easier question than it was asked.
+- `careerBoundary` in `session-boundary.ts`: stops at the node's hand count or
+  at bankroll exhaustion (which is a COMPLETION — one star is always awarded, so
+  variance can never wall a player out), calls the same `evaluateStars` the
+  offline runner uses, and pays through `_shared/career-rewards.ts` under
+  `career_reward:${nodeId}:${userId}`.
+- Career decisions are GRADED but not counted towards the ranked accuracy board:
+  half the nodes run in "learn", which shows the play before the choice, and the
+  specification excludes exactly that. `isGradedMode` is the wider predicate;
+  `ACCURACY_ELIGIBLE_MODES` is untouched.
+- `shared/career` MOVED to `supabase/functions/_shared/career` with barrels left
+  behind — the `shared/strategy` pattern, because `shared/career/**` is not in
+  the set of files the Supabase CLI bind-mounts and no import map can add a file
+  that is not in the container. One implementation, not two.
+- Client: `career-server-store.ts`, a ranked CTA on the node screen that names
+  the reward and refuses on the SERVER's prerequisite, `app/career/drill/[slug].tsx`
+  for ranked drills, and a career map that unlocks on either record and shows
+  the better star count. Offline practice is unchanged and still grants nothing.
+
+**Evidence.** `tests/server/career.integration.test.ts`, 6 tests against the
+live stack: a node played for real through the server's shoe awards stars, pays
+its chips and XP once, never touches the stack (`career_reward` appears once and
+`table_buy_in` never), closes the seat, refuses a node whose predecessor is not
+complete, resumes rather than re-deals an attempt in flight, and grades a drill
+against server-generated scenarios while refusing a second submission (409).
+`17_leaderboards_and_cosmetics.test.sql` adds 5 assertions that the eight
+career-gated cosmetics open once the rows exist.
+
+```
+supabase test db     440 assertions, PASS   (was 435)
+npm test             82 files, 1571 tests passed
+tests/server         8 files, 71 tests passed
+npm run check:functions   all Edge Functions typecheck
+tsc --noEmit / lint  exit 0 / 0 errors
+```
+
+---
+
+### R4 — Edge Functions had never been typechecked · **VERIFIED COMPLETE**
+
+**Severity:** blocker (one defect was live on the wire).
+
+`supabase/functions` is excluded from `tsconfig.json`, so `npx tsc --noEmit` had
+never read a line of it. It cannot: the `.js` specifiers resolve only through a
+per-function `deno.json` import map, and tsc cannot be given a different map per
+directory. `deno check --config <fn>/deno.json` can, and had never been run.
+
+**Its first run, and what it found.**
+
+```
+8 × TS2345  Argument of type '"NOT_FOUND"' is not assignable to CommandRejectionCode
+1 × TS2322  Type '"tournament_entry"' is not assignable to type 'LedgerReason'
+1 × TS2741  Property 'insuranceDecision' is missing … but required in 'SeatState'
+1 × TS2740  Type '{ id: string; }' is missing … from type 'SeatRow'
+5 × TS18047 'seat' is possibly 'null'
+```
+
+**The live one, measured against the running stack:**
+
+```
+POST /create-session {"action":"JOIN_PUBLIC_TABLE","roomId":"…999"}
+→ HTTP 200 {"status":"rejected","code":"NOT_FOUND","message":"undefined (ref …)"}
+```
+
+Two failures in one. The player is shown the word "undefined"; and 200 is
+SUCCESS to `functions.invoke`, so `result.error` is null and the client reads a
+body with no `gameId` in it — the refusal never reaches the code that handles
+refusals. `NOT_FOUND` was never a declared code: the contract folds "no such
+game" into `NOT_A_PARTICIPANT` deliberately, so ids cannot be enumerated by
+comparing responses.
+
+**Fixed:** every site mapped to a declared code (`NOT_A_PARTICIPANT` for
+sessions and rooms, `INVALID_REQUEST` for a catalogue slug, which is public);
+`LedgerReason` made exhaustive against `public.ledger_reason`;
+`insuranceDecision` supplied on the appended seat; the `SeatRow`/null confusion
+removed.
+
+**After:**
+
+```
+POST /create-session {"action":"JOIN_PUBLIC_TABLE","roomId":"…999"}
+→ HTTP 403 {"status":"rejected","code":"NOT_A_PARTICIPANT",
+            "message":"You do not hold a seat at this table. (ref …)"}
+```
+
+**Held there by** `npm run check:functions` (now a CI step) for the compile
+half, and `tests/server/rejection-contract.integration.test.ts` for the wire
+half — 6 cases asserting every refusal carries a 4xx status, a declared code, a
+message with no "undefined" in it, and no SQL or stack frame.
+
+---
+
+### R5 — Some accounts could not be created at all · **VERIFIED COMPLETE**
+
+**Severity:** blocker. MVP `□ Email account`; Definition of Done "create an account".
+
+**Found** in the auth container's own log while chasing a one-in-three test
+failure that looked like flakiness:
+
+```
+{"level":"error","path":"/admin/users","status":500,
+ "error":"… new row for relation \"profiles\" violates check constraint
+          \"profiles_username_is_permitted\" (SQLSTATE 23514)"}
+```
+
+**Reproduced deterministically:**
+
+```sql
+insert into auth.users (id, …) values ('24552abc-def0-4000-8000-000000000001', …);
+ERROR:  new row for relation "profiles" violates check constraint "profiles_username_is_permitted"
+DETAIL: Failing row contains (…, p24552abcdef0, …)
+CONTEXT: PL/pgSQL function handle_new_user() line 43
+```
+
+**Root cause.** `handle_new_user` derives a handle as `'p'` plus twelve hex
+digits of the account id and never put it through the filter a **requested**
+handle goes through. `username_is_permitted` folds digits before matching —
+`0→o 1→i 3→e 4→a 5→s 7→t` — so `p24552abcdef0` folds to `p2ass2abcdef0`, splits
+on its remaining digits into `{p, ass, abcdef0}`, and is refused for a forbidden
+whole word. The CHECK rejects the row, the trigger aborts, and GoTrue answers
+the signup **HTTP 500**.
+
+Confirmed against the live function:
+
+```
+select public.username_is_permitted('p24552abcdef0');            → f
+select regexp_split_to_array(translate('p24552abcdef','013457','oieast'), '[_0-9]+');
+                                                                  → {p,ass,abcdef}
+```
+
+About **one account in nine hundred**, chosen at random by a uuid, with nothing
+the player could do about it. Only `ass` is reachable this way — every other
+word on either list needs a letter no hex digit folds to — which is why it was
+rare enough to read as flakiness.
+
+**Fix** (`20260823150000`, restated from the LAST of the function's two prior
+definitions). The derived handle now goes through the same filter, and — the
+part that matters — an unpermitted base draws a **fresh random base** rather
+than a suffix: `p24552abcdef0_1` still contains the segment `ass` once folded,
+so the old loop would have spun to fifty and raised, a 500 either way. A
+permitted-but-taken base still suffixes, keeping the handle tied to the account
+id where it can be.
+
+**Evidence.** The migration inserts the exact reproducing id, asserts the filter
+still refuses `p24552abcdef0` (so the check is not vacuous), asserts a permitted
+handle was allocated, and deletes the row. Four more assertions in
+`08_account_bootstrap.test.sql` hold it there, including that the ordinary
+collision path still produces `p1a2b3c4d5e6f_1`.
+
+```
+insert '24552abc-…' → username p035ce7eecef6, permitted = t
+supabase test db     444 assertions, PASS   (was 440)
+```
+
+---
+
+### R6 — Quick Play was unreachable, and the Recovery Grant had no UI · **VERIFIED COMPLETE**
+
+**Severity:** blocker. Two MVP acceptance criteria; the Play screen's own mode list.
+
+**Verified before any fix:**
+
+```
+grep -rn '"OPEN"' app src shared
+  → app/(tabs)/play.tsx:57   (a comment explaining the card is dead)
+  → shared/contracts/session-command.ts:52  (the literal)
+
+grep -rn "claimRecoveryGrant" app src | grep -v src/features/wallet/
+  → (nothing)
+```
+
+`create-session`'s `OPEN` has been the most heavily covered path in
+`tests/server` since the economy shipped and **no client had ever sent it**. The
+Recovery Grant had a gateway method, a server RPC, an eligibility module and
+twenty unit tests, and no screen could invoke it. The eleventh and twelfth
+instances of built-but-never-connected.
+
+**What the specification asks for on this screen**, and where each part landed:
+
+| Requirement | Where |
+|---|---|
+| "First authenticated Quick Play opens setup. Remember the selection afterward" | `useQuickPlayStore.remember`, persisted; `tests/quick-play/selection.test.ts` |
+| Three tiers, fixed buy-in / min / max | `TABLE_TIERS`, read from the engine, never retyped |
+| "High … unlock at level 10" | checked on the screen **and** beside the money in `create-session` |
+| "If the player cannot afford the selected tier, offer: lower tier / Practice / eligible Recovery Grant. Never route directly to a real-money purchase." | the affordability block. There is no purchase anywhere on the screen |
+| assistance selector PLAY / LEARN / ANALYSIS / CHALLENGE | sent once at `OPEN`, recorded on the session row |
+| "Guest Quick Play should transparently redirect to equivalent local Practice" | the signed-out branch offers Practice rather than navigating on its own |
+
+**The part that needed real design.** The same specification excludes "modes
+where answer was shown before choice" from the qualified accuracy board, and
+`solo` is on that board — so Learn and the accuracy leaderboard cannot both be
+right unless the SERVER knows which assistance a session is running. It does
+now: `game_sessions.assistance` (`20260823140000`), chosen once at OPEN and
+never revisable, because a client that could name its assistance per decision
+could opt a mistake out of its own accuracy and opt a good one in.
+
+That column decides two things:
+- whether `countsTowardsAccuracy` counts the session's decisions, and
+- whether the server ATTACHES the recommendation to the snapshot at all.
+
+The advice is computed server-side by `adviceFor`, using the same advisor that
+grades the decision, from the same authoritative state, reading only the seat's
+own cards and the dealer's UP card. A client that rebuilt advice locally would
+be a second implementation of the chart. It rides on the response, not the
+broadcast: only a one-seat table can carry it today, but "what one player asked
+to be told" is not a property of a table.
+
+**Evidence.** `tests/server/quick-play.integration.test.ts`, 6 tests against the
+live stack:
+
+- an unassisted table debits once and carries **no** advice;
+- a Learn table carries the recommendation, addressed to that seat, naming an
+  action that is actually legal, and **no** EV numbers;
+- an Analysis table prices every legal action in integer millionths, and the
+  recommendation is among them;
+- a Learn table's decision does **not** move `player_decision_periods`;
+- an unassisted table's decision **does** — so the exclusion is not blanket;
+- an assistance mode outside the four is a 400.
+
+Plus 10 unit tests on the remembered selection (a stored tier that is not a real
+tier is dropped, never repaired — repairing it would guess with somebody's
+money) and 6 on the eligibility predicate.
+
+```
+npm test                  84 files, 1593 tests passed
+supabase test db          444 assertions, PASS
+npm run check:functions   clean
+npx expo export           6 MB Hermes bundle, every import resolves
+tsc --noEmit / lint       exit 0 / 0 errors
+```
+
+---
+
+### R7 — Three screens asserting things about the player that were not true · **VERIFIED COMPLETE**
+
+**Severity:** major. Two MVP surfaces and one privacy defect.
+
+**Statistics told every signed-in player their competition record required an
+account.** `app/stats/index.tsx:94` read
+`competitionState({ hasAccount: false, online: false })` — both values written
+as **literals**. Nothing anywhere fetched a record either, so fixing the flag
+alone would have left the section loading for ever.
+
+`public.my_competition_record()` (`20260823160000`) returns five numbers about
+the caller, derived from `auth.uid()`: tournaments entered, wins, best finish,
+daily challenges played, best daily rank. The rank uses
+`leaderboard_daily_challenge`'s own ordering, tie-breaks included, so "your best
+rank" and the board a player can open cannot disagree. No identifier and nothing
+about any other player, which is the projection discipline the leaderboards keep.
+
+**Profile rendered the player's EMAIL ADDRESS as their display name**
+(`app/profile/index.tsx:91`, `displayName: session?.account.email`) — the
+largest type on the screen, in a screenshot anybody might share.
+`public.profiles` carries a server-normalised `display_name` and `username`, and
+the specification's hierarchy is "Avatar / Display name / @username". All three
+are now read through `useAccountProfileStore`, scoped to `id = <you>`.
+
+Also added, from the same spec list: **tournament wins** (null, not zero, until
+the server has answered) and a **Friends** button — pointed at `/(tabs)/social`,
+because there is no `/friends` route and the route contract forbids a dead link.
+
+**Home advertised career node one to everybody.** `CAREER_NODES[0]`, a literal,
+so a player who had finished Foundations was offered "First Deal". It names the
+next unfinished node now — merged from the local and server records, so neither
+can drag the other back — with its chapter, its star count and a Continue
+button, which are the four things the specification asks a progression card to
+carry.
+
+Home also gained the compact tiles the spec names (Daily Challenge, Tournament,
+Friends, Leaderboards), a **Quick Play primary card** for a signed-in player
+that resumes the last setup in one tap, and — the offline rule — Practice as the
+primary card when there is no account, because "Quick Play online CTA becomes
+Practice" rather than explaining itself. The "you need an account" note is now
+shown only to somebody it applies to; it was unconditional, on a screen already
+displaying the player's balance.
+
+**Evidence.** 9 new unit tests pinning the boundaries that decide whether a name
+or a number appears at all — including that no email can reach either identity
+line, and that `tournamentWins` is null rather than 0 before the server has
+answered.
+
+```
+npm test                85 files, 1604 tests passed
+supabase test db        444 assertions, PASS
+npx expo export         every import resolves
+tsc --noEmit / lint     exit 0 / 0 errors
+```
+
+---
+
+### R8 — A table could be swiped away from, and the app had no idea when it was offline · **VERIFIED COMPLETE**
+
+**Severity:** major (one economic, one MVP UX requirement).
+
+**The swipe.** Leaving a table is an economic command — `CASH_OUT` returns the
+remaining stack — and the "Leave table" control has sent it since phase 14,
+refusing to navigate on a refusal. But `app/_layout.tsx` set
+`headerShown: false` and nothing else, and **`gestureEnabled` defaults to true
+on an iOS native stack**: a swipe popped the screen without ever reaching that
+control, leaving the buy-in in escrow, the seat `active` and the wallet short —
+the exact defect the control was written to close, still reachable by a gesture.
+
+Two removals were open besides the gesture (the Android hardware back button and
+a deep link resetting the stack), so the fix is both halves:
+`TABLE_SCREEN_OPTIONS.gestureEnabled = false`, and a `beforeRemove` listener
+that cancels the removal, sends the cash-out, and replays the navigation only if
+the server agreed. `src/features/table/leave-guard.ts` holds both as plain
+values so `tests/table/leave-guard.test.ts` can assert them — a comment saying
+"do not remove this option" is a comment; a failing test is a guard.
+
+Mid-hand needs no confirmation dialog: the server refuses with `SESSION_BUSY`
+and the client shows "This hand is still live. Your chips come back as soon as
+it settles." A refusal with a reason is stronger than a dialog.
+
+**The offline signal.** There was none — no `expo-network`, no NetInfo, nothing
+— so every offline state the specification asks for ("Quick Play online CTA
+becomes Practice", "Career reward attempts disabled but Practice node offline
+available", "Social/leaderboard cards show offline state") had nothing to drive
+it.
+
+Deliberately **not** a radio-state library. Both answer "is there a network
+interface", which is the wrong question: a phone on a captive-portal wifi has
+one and cannot reach Arc 21, so the banner would say the opposite of the truth
+exactly when it matters — for a native module and a prebuild. What ships instead
+measures whether the SERVER answered, reported from `withTimeout`, which every
+remote call in the app already passes through. A refusal is an answer: a 403, a
+409 or a rate limit is the server being reachable, and only a timeout or a
+transport failure counts against it. Offline after two consecutive failures,
+back after one success.
+
+**A harness defect found on the way, and it explains earlier "flakes".**
+PostgREST answers `PGRST303 "JWT issued at future"` when a token's `iat` is
+ahead of the DATABASE CONTAINER's clock, and host/container drift under load
+makes `iat: now` a coin flip. It surfaced as a wallet reading -1, a profile
+column reading null, and a career reward that looked unpaid. All eight server
+test files now backdate by 60 seconds — and `career.integration.test.ts`'s
+`balanceOf` now THROWS instead of returning `-1`, because a helper that
+substitutes a sentinel turns a harness error into a false product defect.
+
+```
+npm test                       87 files, 1618 tests passed
+npm run test:server            9 files, 77 tests passed — green twice while
+                               `npm run test:unit` ran concurrently
+tsc --noEmit / lint            exit 0 / 0 errors
+```
+
+---
+
+### R9 — Guest conversion, and the host's power to remove a lobby member · **PARTIAL — server done, lobby UI outstanding**
+
+**Guest→account conversion · VERIFIED COMPLETE.** `buildGuestConversionPlan` and
+`describeConversion` had **no caller**: the rules were written, typed three ways
+so breaking them requires breaking all three, and covered by twenty tests — and
+no screen had ever shown them to a player. `app/(auth)/create-account.tsx` now
+renders "What carries over" ABOVE the form, so the specification's two
+prohibitions ("do NOT create server wallet winnings from guest results", "do NOT
+import guest competitive achievements") are read before an email is typed rather
+than discovered afterwards as a loss.
+
+**Host can remove a lobby member · SERVER DONE, CLIENT OUTSTANDING.**
+`room_member_status` has carried a `kicked` label since the rooms migration and
+nothing ever set it — there was no function to remove anybody, so the
+specification's rule held only because the capability was absent.
+`public.remove_room_member` (`20260823170000`) is host-only, lobby-only, refuses
+once a `game_session_id` exists (the seats hold chips by then and the server owns
+the game), and refuses to remove the host (that is `leave_room`, which migrates
+the role). Six pgTAP assertions in `14_rooms.test.sql`.
+
+**It has no client caller yet, and that is the exact pattern this mission keeps
+closing.** Do not count it as done. Still outstanding on the lobby, all three
+from the specification's own list — "room code, copy/share, host, seat list,
+ready states, invite friends, start, leave":
+
+- **copy/share** — RN's `Share.share` needs no new dependency;
+- **ready states** — `set_room_ready` and `get_room_state.member_is_ready`
+  already exist and are client-granted; only the UI is missing;
+- **host-remove** — the function above.
+
+### R10 — The private lobby: three controls with no client, and two defects underneath · **IN PROGRESS**
+
+**The specification's list for this screen** is one sentence — "Lobby shows: room
+code, copy/share, host, seat list, ready states, invite friends, start, leave" —
+plus "Host can remove a member only while in lobby" and, on the creation screen,
+"MVP fields: max players 2–5" and "Loading/reconnect must preserve room code".
+Four of those were missing and two of the four were missing in the way this
+mission keeps finding: the server half existed, tested, with no caller.
+
+**Two defects found by reading the server halves before wiring them, both
+reproduced against the running stack by client-reachable RPCs only.**
+
+**(a) A removed player walked straight back in.** `remove_room_member` shipped
+last commit with six pgTAP assertions, all passing, and removed nobody:
+`join_private_room` ends in `on conflict (room_id, user_id) do update set status
+= 'joined'`, so the removed player typed the same six characters and was seated
+again. pgTAP proved the row said `kicked`; nothing proved it STAYED kicked, which
+is the only thing a host removing somebody is asking for.
+
+**(b) A vacated seat could not be refilled — and this one predates the kick
+feature entirely.** `leave_room` keeps the member row AND its `seat_index`;
+`join_private_room` allocates "the lowest seat no JOINED member holds", the right
+rule; and the table carried `unique (room_id, seat_index)` across every row
+whatever its status. So the most ordinary sequence a private table has:
+
+```
+A joins:  200
+A leaves: 204
+B joins:  409 {"code":"23505","details":"Key (room_id, seat_index)=(…, 1) already exists.",
+               "message":"duplicate key value violates unique constraint
+                          \"room_members_room_id_seat_index_key\""}
+```
+
+A table refused a join for as long as anybody had ever left it, at a table with a
+seat visibly free. Nothing covered it: every room test until now filled a room
+and stopped.
+
+**Fix — `20260823180000_room_seats_and_removal.sql`.** The whole-table constraint
+becomes a PARTIAL unique index over `status = 'joined'`, which is the same
+predicate the allocator uses (the migration says so, and says to change both
+together). `join_private_room` — redefined from `20260818100000_rate_limits.sql`,
+the LAST definition, so the rate-limit charge and the returns-no-row refusal
+contract survive — refuses a `kicked` member, and re-seats a returning player
+with `seat_index = excluded.seat_index` rather than their stale number.
+
+The kicked refusal is byte-identical to the answer for a code that never existed,
+asserted as such: a removed player's code going quiet is the one refusal that
+would otherwise tell a code-guesser their six characters had hit a live room.
+
+**Client half — the four missing pieces.**
+
+- **ready states**: `setReady` on the gateway, `setReady` on the store, a toggle
+  and a per-seat indicator on the screen. Re-read from the server rather than
+  patched locally, so every client renders the same row.
+- **host-remove**: `removeMember` through the gateway; the button appears only
+  where `canRemoveMember` allows it. `removed: false` is not an error — it is
+  the server's single answer to every refusal it declines to explain.
+- **copy/share**: RN `Share.share`, no new dependency; the sheet's own Copy is
+  the "copy" half. The message carries the CODE, with the deep link second,
+  because a link that dead-ends for somebody without the app is worse than six
+  characters anybody can type.
+- **max players 2–5**: a seat chooser on the create card, replacing a hardcoded
+  `createRoom(5)`.
+
+**And a fifth, found while wiring: the lobby could not be returned to.**
+`findOpenRoom` + `restore()` put a player back at the table they are already at.
+Before it, a host who force-quit was STUCK — the lobby came back empty and
+`create_private_room` refuses a second live room, so the only way out was to wait
+thirty minutes for the first to expire. It is a plain select: `rooms_select_member`
+already restricts the table to the caller's own rooms, so the policy IS the
+lookup. The filter is exported as one string and the integration test sends THAT
+string, so a change to the app's query changes the test's subject. `now()` is
+evaluated by Postgres, not by the device — an active table keeps its lobby TTL
+in `expires_at` and filtering on it would strand every game that outlived its
+lobby, so only a LOBBY is expiry-checked.
+
+**Evidence.**
+
+```
+tests/server/private-rooms.integration.test.ts   16 tests — 4 failed before the
+                                                 migration, all pass after
+supabase test db                                 452 assertions, PASS  (was 450)
+tests/rooms/                                     30 tests (was 8)
+npx tsc --noEmit / npm run lint                  exit 0 / 0 errors
+```
+
+Both new gates were proved to discriminate rather than assumed to work: deleting
+the `gameSessionId` check from `canRemoveMember` fails exactly one affordance
+test, and widening `OPEN_ROOM_FILTER` to include every lobby fails exactly the
+expiry test.
+
+**Outstanding on this row:** the end-to-end run. `tests/e2e/private-lobby.yaml`
+is written — the first Maestro flow in this repository that signs in and walks a
+SERVER-configured build — and needs a debug build to run against.
+
+### R11 — the Daily Challenge intermittent, RESOLVED with its cause named
+
+`game-command.integration.test.ts > the daily challenge > deals two different
+accounts the identical shoe` had failed once in a full `npm test` on
+
+```
+expected [ 18 items ] to deeply equal [ 20 items ]
+```
+
+— a hand-COUNT mismatch, with every visible card agreeing. That reads as a
+defect in the deterministic shoe, which is the single most important claim the
+whole mode rests on. It was not a card defect, and it was not in the product.
+
+**The cause, from the runtime's own log** (`docker logs
+supabase_edge_runtime_arc21`), in this order:
+
+```
+CPU time soft limit reached: isolate: 01add706-…
+user worker failed to respond: request cannot be handled because the worker
+  has already retired
+{"message":"command handled", … "commandType":"LOCK_BET", …
+  "outcome":"accepted","stateVersion":14}
+WorkerAlreadyRetired: request cannot be handled because the worker has already
+  retired
+```
+
+Read the order. The Edge runtime retires a user worker when its isolate trips
+the CPU soft limit; a request already in flight is then answered by a worker
+that is gone — and the `command handled … accepted` line lands BETWEEN the
+retirement and the error. **The command committed. Only the reply was lost.**
+Seventeen of these had accumulated in the container's log, five adjacent to an
+accepted command, twice for `NEXT_HAND` — which is exactly the shape of an
+attempt that stops two hands short with every card it did record agreeing.
+
+**Why it presented as a card mismatch.** `playOut` discarded every command's
+outcome and carried one line, `if (next.status !== 200) break`, which treated
+ANY non-200 on `NEXT_HAND` as the ordinary way a finished session says so. It is
+not: a finished attempt answers **200** with a `SESSION_COMPLETE` snapshot from
+`closeCompetition`. So a lost reply silently truncated the run, the short array
+reached `expect(playedA.dealt).toEqual(playedB.dealt)`, and the caller's own
+`expect(state.phase).toBe("SESSION_COMPLETE")` — which would have named the
+problem — sat on the line AFTER the comparison and never ran.
+
+**The fix, in two parts.**
+
+1. `tests/server/call-function.ts`, the one Edge-Function caller for every
+   server suite, replays a 5xx or a thrown fetch with a **byte-identical body**.
+   That is what `src/features/table/online-table-gateway.ts` already does with a
+   real player's command — a reply it cannot read is `unreachable`, and it
+   retries presenting THE SAME `clientActionId`, so `findAppliedCommand` returns
+   the first committed result. The test was less robust than the app it tests.
+   `JSON.stringify` runs once, outside the loop, because a retry that mints a
+   fresh key is not a retry but a second command.
+2. `playOut` cannot return a truncated attempt. Every command must be accepted;
+   a `stale` verdict counts as a refusal even though it is HTTP 200, because one
+   seat playing sequentially cannot race itself; and the helper asserts
+   `SESSION_COMPLETE` before handing the array back, so any future truncation
+   names itself instead of arriving as a card comparison.
+
+**It cannot hide a real failure.** A 4xx is the server's verdict and is never
+retried. A 5xx that persists is returned with its body on the last attempt. A
+fetch that keeps throwing raises. And every absorption is announced on stderr —
+written with `process.stderr.write`, not `console.warn`, because Vitest 4
+defaults to `silent: "passed-only"` and discards console output from a test that
+PASSES, which is precisely the run the warning exists for. Measured with a probe
+emitting both, not assumed.
+
+**Reproduced deliberately**, per the repository's own rule about flakes: 14
+background busy loops driving the host to load 40–94, `tests/server` at full
+file parallelism. Three consecutive passes, 100/100 each, with genuine
+`WorkerAlreadyRetired` 500s absorbed and logged — the container's retirement
+counter moved 19 → 21 across them. Five further daily-challenge-only passes
+under load 41–45, all green.
+
+**Two regression tests.**
+
+- `tests/server/call-function.test.ts` (6 tests, needs no stack) drives the
+  caller against a stub that answers exactly what the runtime was observed to
+  answer. It asserts the retry returns the answer that arrives, that the replayed
+  body and `Authorization` header are byte-identical so the idempotency key
+  survives, that a 401/403/409/422/429 is never retried, that a persistent 5xx
+  comes back with its body, that a dead port raises, and that the diagnostic is
+  emitted. Against the old inline caller the first of those fails.
+- `deals … > replays the attempt's final command instead of paying a second
+  reward` asserts the server property the retry depends on, for the command that
+  actually lost its reply. The last `NEXT_HAND` of a challenge never reaches
+  `applyCommand`: `closeCompetition` writes the completion, marks the seat
+  `left`, marks the session `completed` and PAYS THE REWARD, and records its own
+  idempotency row on a different code path from every other command. Its replay
+  must survive both closures — which is why `findAppliedCommand` runs ahead of
+  the session-closed check. Same body, same response object, same wallet, one
+  entry row; and a DIFFERENT action id on the same finished session is refused,
+  so the replay is a replay and not an open door.
+
+**And the same latent flake was removed from the four suites that still had it.**
+`rejection-contract` and `notifications` carried their own inline `fetch` callers
+— including the two calls in the timeout-notification test, which asserts `200`
+after a sixteen-second sleep and is therefore the most exposed request in the
+repository. Both now use the shared caller. `password-recovery` carried a
+`FUNCTIONS` constant it never used; it is gone.
+
+```
+tests/server/call-function.test.ts      6 tests, no stack required
+npm run test:server                    11 files / 100 tests PASS
+npm test                               1,564 unit + 100 server = 1,664 PASS
+8 server passes under deliberate load  green, absorptions logged
+tsc --noEmit / lint                    exit 0 / 0 errors
+```
+
+**Clock skew, fixed properly this time.** Backdating `iat` by 60 s was not
+enough — the Docker VM clock JUMPS rather than drifts, so any constant is a
+guess about how far. The test tokens now carry **no `iat` at all**: it is an
+optional claim PostgREST validates only when present, nothing in the app reads
+it, and `exp` still bounds the token. That removes the failure mode instead of
+narrowing it.
+
+```
+npm run test:server     9 files, 77 tests passed
+npm test                87 files, 1617 of 1618 (the intermittent above)
+supabase test db        450 assertions, PASS
+tsc --noEmit / lint     exit 0 / 0 errors
+npm run check:functions clean
+```
+
+---
+
+## R12 — the friend profile showed four of nine things, and three screens said something untrue
+
+### The friend profile
+
+The specification's FRIEND PROFILE list is nine items — avatar, display name,
+username, level, presence, public stats according to privacy setting, career
+stars, tournament wins, Invite to Table — plus Remove Friend and Block. The
+screen rendered the first four and a last-seen line, and its closing paragraph
+still said friends could be invited to a private table "when private tables are
+built", which had been false for two phases.
+
+**There was no source for the rest, and that is why it stayed unfinished.**
+`my_competition_record` and `my_career_progress` both derive from `auth.uid()`
+and correctly answer only about the caller. `player_public_profile(uuid)` is the
+read that was missing; the migration for it existed and **had no client caller
+at all** — the twelfth instance of the built-but-never-connected pattern.
+
+**What decides what is shown.** Settings says the privacy choice "controls who
+can see your profile and standings", so standings — hands, accuracy, career
+stars, tournament wins — are ALL governed by `profiles.privacy`, not only the
+ones the word "stats" obviously covers. There is one visibility answer, and the
+SERVER gives it: `stats_visible` arrives already decided and the client never
+recomputes it from `privacy` and `is_friend`. A second implementation of a
+privacy rule is a rule that will eventually disagree with the first, and the
+client's copy is the one a player sees.
+
+**NULL, not zero.** Every number is NULL when the record is not visible, and
+`null` survives into `PlayerProfile`, so the screen can tell three different
+things apart: a hidden record, a record that is genuinely empty, and a read that
+did not happen. Each gets its own sentence. A `coalesce` written one line too
+early would have turned the first into the second.
+
+**A block returns no row at all** — in either direction, identical to a user id
+that never existed. Not an empty profile: a block must not be discoverable by
+the person blocked.
+
+**Presence** comes from the Realtime channel and nothing else, per the
+specification's "presence is ephemeral Realtime state where possible; persist
+only `last_seen_at` for fallback". Absence from the channel is NOT proof of
+being offline — a backgrounded app looks the same — so `offline` is reported
+with the last-seen line and a sentence saying the app cannot tell a signed-out
+player from one on a bad connection. The profile joins the channel itself only
+when nobody else holds it, which is the deep-link case (`arc21://friends/<id>`
+arrives with Social never mounted).
+
+**Invite to Table** is offered only when it could be accepted. Every branch of
+`inviteAffordance` mirrors a check inside `public.invite_friend_to_room`, except
+two that do not — inviting somebody to a table they are sitting at, and inviting
+them into a table with no free seat. The server accepts both; a player can use
+neither. When there is no table at all the button becomes the way to open one,
+rather than a dead control with an explanation.
+
+### Three screens that said something untrue
+
+- **`largeCardLabels` governed nothing.** Stored since phase 8, read by no
+  screen, with an `UnavailableNote` under it admitting so. It now scales the
+  rank and the corner glyph — and the centre glyph SHRINKS to make room, because
+  growing all three collides at the compact card size, where the default layout
+  has only ~3pt between the corner block and the centre glyph. The two constants
+  were chosen together so the enlarged layout has EXACTLY the clearance the
+  default one has, at every card size, and `tests/design/card-label-metrics.test.ts`
+  asserts that equality rather than a number somebody typed. It also asserts
+  that raising the scale alone would collide — so the trade is proved, not
+  described. The card face does not follow Dynamic Type on purpose: it is fixed
+  geometry, and text that outgrows it truncates a rank rather than reflowing.
+- **The Statistics Career filter claimed server-only for local data.** It read
+  "Career progress is recorded on the server and needs an account" and showed
+  nothing — false twice over. Career stars are written to THIS DEVICE by
+  `career-persistence.ts`, and the map, the node detail and Home have always
+  read them with no account. What needs a server is the REWARD:
+  `rewardClaimed` can only be set by one. The filter now shows the local record
+  — stars, nodes completed, attempts, best accuracy — and says what an account
+  changes only when something is actually owed, as a COUNT of nodes. "You have
+  three rewards waiting" is actionable; "sign in for rewards" is an advert.
+  A screen that says a shipped feature is absent is the same class of defect as
+  one that says an absent feature has shipped.
+- **The Play tab's availability badge was inverted.** The word came from
+  `mode.availability` and the colour from `playable` — "is there a route yet".
+  Those agreed only while the online modes were unbuilt. Every mode is reachable
+  now, so all four ONLINE cards rendered their badge in the green this app
+  reserves for "needs no server at all", on the screen whose entire job is
+  saying which modes need one. Word and colour come from the same field now.
+  The same change revived six sentences of dead copy: `reason` rendered only
+  when a mode was NOT playable, so the moment every mode became reachable, what
+  each online mode needs was shown to nobody — and a guest learned an account
+  was wanted only after tapping.
+
+**Evidence.**
+
+```
+tests/friends/player-profile.test.ts          15 tests
+tests/server/profile-privacy.integration     10 tests (was 4) — the privacy
+                                              rules proved with two real JWTs
+tests/rooms/lobby-affordance.test.ts          21 tests (was 15)
+tests/design/card-label-metrics.test.ts        8 tests
+tests/stats/career-record.test.ts              9 tests
+tests/home/play-mode-presentation.test.ts      9 tests
+npm run test:unit                             83 files / 1,608 tests PASS
+tsc --noEmit / lint                           exit 0 / 0 errors
+```
+
+The server suite is the part that matters most here, because
+`player_public_profile` returns one player's record TO ANOTHER PLAYER — the most
+disclosure-shaped read in this schema. Public, friends-only-with-a-friendship,
+friends-only-without, private, a block in both directions, a nonexistent id, and
+an unauthenticated caller are each asserted against the running database.
+
+---
+
+## R13 — nobody could play a second hand at any online table
+
+The repository's first two SERVER-CONFIGURED end-to-end flows, and the three
+defects they found in one evening. Every other Maestro flow here runs against an
+UNCONFIGURED build — `every-screen.yaml` asserts `.*no server configured.*` in
+five places — so until this row, **nothing had ever walked a screen whose
+content comes from the server**, and no flow had ever played an online table.
+
+### The flows
+
+`tests/e2e/private-lobby.yaml` signs in, opens a private table, proves the ready
+toggle changes the SERVER's count, proves the host is offered no Remove against
+themselves, force-quits and relaunches to prove the room code survives, and
+leaves. **Passes: exit 0, 40 COMPLETED steps.** It closes R10's last outstanding
+item.
+
+`tests/e2e/online-table.yaml` is the one that matters most. Quick Play is the
+only server table one account can play alone, which is the whole reason it can
+exist: it buys in, **stages a chip and presses Deal at a server table**, plays
+the hand out, answers the insurance offer, **starts a second hand**, then leaves
+and proves the seat was released. **Passes: exit 0, 41 COMPLETED steps.**
+
+`tests/e2e/sign-in.yaml` is a subflow both use. It loops until Home rather than
+following a fixed sequence, because `clearState: true` wipes the app's data
+container and does NOT clear the iOS KEYCHAIN, where the Supabase session lives
+— so a relaunch can show onboarding, restore the session underneath it and land
+on Home, and a flow that hard-waits for the auth screen fails against an app
+that did exactly the right thing. Each state is handled at the TOP level of the
+iteration, the same structural fix `career-node.yaml` needed.
+
+### 1. THE BIG ONE — `canStartNextHand` was deleted on the way to the client
+
+`shared/contracts/public-game-state.ts` never named `canStartNextHand` in
+`legalActionSetSchema`. **`z.object` strips unknown keys** — a narrower payload
+is a valid one, so there is no parse error and nothing to notice. The server
+sent `canStartNextHand: true` at every HAND_COMPLETE, the client parsed it away
+to `undefined`, and `app/table/[gameId].tsx` gates the "Next hand" button on
+exactly that field.
+
+**So no online table could ever start a second hand through the UI** — private,
+public, Quick Play, tournament or daily. The screen fell through to "Waiting for
+the next hand.", a sentence describing the thing it was itself preventing.
+
+It survived 1,600 tests because every layer was individually right. The engine
+sets the flag and `tests/engine/next-hand.test.ts` proves it. The server returns
+it — a script against the running stack confirmed `canStartNextHand: true` in
+both the command reply and the three-second poll, on the ordinary path and on
+the dealer-natural path. The store's `nextHand()` is unit-tested by calling it.
+The button is in the JSX. The only thing wrong was a schema quietly deleting the
+field in between, and **nothing in the repository compared the two shapes.**
+
+**The guard that should have existed did not.** That file's header has claimed
+since it was written that "`tests/contracts/public-state-contract.test.ts`
+asserts, at compile time and at runtime, that this schema and the engine's
+interface describe the same object. Adding a field to one without the other
+fails the suite." **That file did not exist.** It does now, and it does both:
+
+- COMPILE TIME — a contract value must be assignable to the ENGINE type. That
+  direction is load-bearing; the reverse passes with a field missing, because a
+  wider value is assignable to a narrower type, which is exactly how the drift
+  went unnoticed. Breaching it fails `tsc` with *"Property 'canStartNextHand' is
+  missing in type … but required in type 'LegalActionSet'"*.
+- RUN TIME — four real engine payloads (BETTING_OPEN, PLAYER_TURNS,
+  HAND_COMPLETE, INSURANCE_OFFER) are parsed through the schema and compared KEY
+  FOR KEY at every level, in both directions: nothing dropped and nothing
+  invented. Fixtures are built by the engine, not by hand, because a hand-built
+  fixture only ever contains the fields whoever wrote it remembered.
+
+Both halves were proved to discriminate by removing the field again: `tsc`
+fails, and two runtime tests fail naming `legalActions.s1.canStartNextHand`.
+
+### 2. Insurance was unreachable at every server table
+
+`INSURANCE` and `DECLINE_INSURANCE` are engine commands, they are in
+`COMMAND_TYPES` on the wire, `game-command` applies them, and every
+daily-challenge attempt in `tests/server` sends `DECLINE_INSURANCE`. And no
+client could send either at a server table: `act()` takes a `PlayerActionType`
+— HIT/STAND/DOUBLE/SPLIT/SURRENDER — and no other method existed.
+`InsuranceSheet` was mounted only by `app/game/practice.tsx` and
+`app/career/play/[slug].tsx`, both driving the LOCAL engine, and the online
+table screen had no insurance branch at all. Its `myTurn` check reads
+`activeSeatId`, which is null during the offer because insurance is not a turn.
+
+Nobody was ever wrongly charged — the timeout DECLINES, which is the stated
+default — but insurance could not be taken at Quick Play, public, private,
+tournament or daily tables, in a game whose rules offer it. The offer now
+renders INSTEAD of the controls rather than over them: the sheet is a Modal and
+would otherwise have overlaid "Waiting for the next hand.", which is wrong
+twice.
+
+### 3. `scripts/e2e-account.ts` could never find its own account
+
+It listed `?page=1&per_page=200` and searched the result. The local database
+holds **2,868 users** from the integration suites, the account was not in the
+first two hundred, and the script died on "no account after ensuring it exists"
+— which reads as a broken creation step rather than a broken lookup. So the
+private-lobby flow had never actually run. It asks for the one account by
+`filter=` now, and still compares the email exactly, because `filter` is a
+substring search.
+
+The same script now also CASHES OUT any table a failed run left open. A flow
+that ends early leaves a live seat, and every Quick Play, public-table and
+matchmaking screen then refuses with "You are already seated at a table, and
+your chips are there" — which the next run reads as a broken Deal button. It
+cost one run to find, which is one more than it needed to.
+
+**Evidence.**
+
+```
+tests/e2e/private-lobby.yaml            exit 0, 40 COMPLETED steps
+tests/e2e/online-table.yaml             exit 0, 41 COMPLETED steps
+tests/contracts/public-state-contract    5 tests; both halves proved to fail
+                                         when the field is removed again
+tests/table/insurance-affordance          6 tests
+tests/table/online-table-store            3 new tests for the two commands
+npm test                                 1,622 unit + 106 server = 1,728 PASS
+npm run check:functions                  clean
+tsc --noEmit / lint                      exit 0 / 0 errors
+```
+
+The wallet arithmetic was checked by eye on the running app as well as by the
+flow: 25,000 opening, 2,000 buy-in out, two 50-chip losses, 24,900 back. The
+final assertion is deliberately not a fixed number — it re-opens the setup
+screen and asserts the server does NOT say "already seated", because that is the
+one thing the client cannot fake.
+
+---
+
+## R14 — the coverage gate was failing, and the career gate could not fail
+
+`npm run test:coverage` **exited 1**, and had done since the assistance selector
+shipped. Nothing noticed because **CI never ran it**: `.github/workflows/ci.yml`
+had a lint step, two typecheck steps, a unit-test step, a doctor step and a
+bundle step, and no coverage step at all. A gate nobody runs is not a gate.
+
+### What was uncovered
+
+`supabase/functions/_shared/decision-grading.ts` measured **47.76% statements
+against an 85% bar** — lines 234-291, which is the whole of `adviceFor`. That is
+not a minor function. It decides what a **Learn or Analysis table TELLS a player
+before they choose**, and it is the SAME advisor that then grades the choice; if
+the two ever disagreed, a Learn table would recommend a play and mark it wrong.
+It had no unit test whatsoever.
+
+It has eleven now, and one of them is not about coverage at all:
+
+> **advice cannot be influenced by the hole card, because it never reads it.**
+> `adviceFor` holds the whole dealer hand — the hole card is `cards[1]`, one
+> index away — and a slip there would silently turn Learn into an oracle that
+> reads the unrevealed card. That is the most valuable thing anyone could take
+> from this product and it would look exactly like better advice. Asserted by
+> changing ONLY the hole card and requiring a byte-identical recommendation,
+> explanation and EV table. Nothing else in the repository asserted it.
+
+The first version of that test used an ace as the second hole card, the dealer
+peeked, the hand settled before anybody could act, and the assertion failed on a
+`null` that was entirely correct. Two and seven both leave the hand live.
+
+### The career gate could not fail
+
+`"shared/career/**"` measured **nothing**. The career module was MOVED to
+`supabase/functions/_shared/career/` so the Edge runtime could resolve it, and
+`shared/career/*.ts` is now five seven-line `export *` shims plus an `index.ts`
+that `coverage.exclude` skips. A re-export has no executable statements, so v8
+reports nothing and a threshold over it passes whatever the number is.
+
+Proved rather than argued: **setting that bar to 100/100/100/100 still exits 0
+with no error.** Eighteen career nodes, the star evaluation and the progression
+record were behind a gate that could not fail.
+
+CLAUDE.md already records this exact trap — "a coverage threshold that matches
+no files reads as enforcement" — for `shared/strategy`. It had happened a second
+time, to the module moved in the same commit, and nobody noticed. The gate now
+names `supabase/functions/_shared/career/**`, with the same numbers, and **the
+new gate was proved to fail when breached**: 100% statements exits 1 with
+`Coverage for statements (72.61%) does not meet … threshold (100%)`.
+
+**Evidence.**
+
+```
+npm run test:coverage                 exit 0 (was exit 1, four threshold errors)
+  decision-grading.ts                 47.76% → above its 85/80/90/90 bars
+  _shared/career/**                   72.61 / 63.51 / 79.24 / 79.12, gated
+tests/progression/decision-grading    32 tests (was 21)
+.github/workflows/ci.yml              runs `npm run test:coverage`; yaml-lint clean
+npm test                              1,632 unit + 109 server = 1,741 PASS
+```
+
+---
+
+## R15 — the database audit, and the one thing `supabase db lint` had to say
+
+```
+{"function":"public.cosmetic_is_earned",
+ "issues":[{"level":"warning extra",
+            "message":"control reached end of function without RETURN",
+            "sqlState":"2F005"}]}
+```
+
+The body is one `case v_kind` over `public.cosmetic_unlock_type`, and all seven
+of its values are handled, so the warning is not a live defect — the function
+cannot currently fall off its end.
+
+**It is worth fixing anyway, and the reason is the caller.** A `case` with no
+`else` does not return NULL when nothing matches; it RAISES `CASE_NOT_FOUND`.
+And `grant_earned_cosmetics_for` runs inside the COMMAND TRANSACTION —
+`_shared/session-boundary.ts` calls it while settling a sprint placement and
+while paying a career node. So the day somebody adds an eighth unlock type, and
+adding one is a one-line `alter type` that nothing forces them to follow up, the
+first player to finish a tournament would have their settlement rolled back by
+an exception raised inside a cosmetics check. Placements, prize chips and XP,
+undone by a decoration.
+
+`else return false` is the same answer the `achievement` branch already gives in
+its own words — "granting one would hand out an item for a condition nobody can
+meet or check". An unimplemented unlock type now grants nothing until somebody
+implements it, and settles everything else normally.
+
+The body was carried forward WHOLE from `20260817310000_cosmetic_unlocks.sql`,
+the last file to define it, because `create or replace function` silently
+reverts every later redefinition — this project has already lost a `notify_user`
+call and an `expire_stale_rooms()` call that way, one of them with nothing
+failing to say so. The ACL is restated as `20260818120000` left it (revoked from
+`public`, `anon` AND `authenticated` — it is server-only), and the migration
+calls `assert_client_authorization_surface()` as its last line.
+
+**Evidence.**
+
+```
+supabase db lint                        "No schema errors found" (was 1 warning)
+supabase db reset && supabase test db   452 assertions, PASS
+npm test                                1,632 + 109 = 1,741 PASS against the
+                                        freshly reset database
+```
+
+---
+
+## R16 — the security audit: a systematic IDOR sweep, and three tables the docs lied about
+
+### What was missing
+
+`assert_client_authorization_surface()` proves RLS is ON, that every client grant
+has a policy behind it, that nothing reaches `private`, and that no client role
+can execute a server-only function. `20_authorization_surface.test.sql` proves
+the same things again in pgTAP. **Neither of them reads a single ROW.** They
+assert the shape of the permission system, not what it returns to a second
+account holding a second real token — and a policy can be present, granted, and
+wrong.
+
+Two things found by hand this phase were exactly that kind, and both looked like
+something else: `profiles?select=xp` returns EVERY profile because it is a
+directory by design, and `game_session_seats` returns every seat at a table you
+are seated at, correctly. Neither was a vulnerability. Both were a policy
+behaving as designed with nothing in the repository saying what that design IS.
+
+### The sweep
+
+`tests/server/rls-idor.integration.test.ts` creates an OWNER and a STRANGER with
+two real JWTs, has the owner play a full Quick Play hand, open a private room,
+register a push token and be sent a friend request — then asks, per table, what
+the stranger gets back. Every client-readable table is in exactly one of five
+groups:
+
+- **OWNED** (19) — a stranger must see none of it: wallets, ledger, statistics,
+  decision periods, career attempts and progress, daily entries, loadouts, push
+  tokens, notifications, cosmetics, matchmaking, blocks, friendships,
+  tournament entries.
+- **SHARED** (6) — a stranger sees nothing; a PARTICIPANT sees it on purpose:
+  sessions, seats, events, rooms, room members.
+- **OPEN** (4) — catalogue or directory, asserted READABLE so that "it returns
+  nothing" can never be mistaken for privacy.
+- **EXPLAINED** (3) — friend requests, and the competition's public bracket.
+- **RESERVED_FOR_V1_1** (3) — below.
+
+It also asserts the owner CAN see their own rows, and that the fixture tables
+have rows to begin with. Without those two, every privacy assertion would pass
+against a database that returns nothing to anybody — the failure mode a security
+sweep is most likely to hide.
+
+### The completeness check that could not work
+
+The first version tried to prove its own coverage by reading the grants back out
+of the catalogue. It could not: PostgREST does not expose `information_schema`,
+so it fell back to comparing its own lists with themselves and passed against
+anything. **A check that matches nothing reading as enforcement — the third time
+this repository has hit that.**
+
+It lives in pgTAP now, where the catalogue is one query away:
+`20_authorization_surface.test.sql` asserts the set of client-readable tables is
+EXACTLY the set the sweep classifies. Proved to discriminate — removing one
+table from the expected list fails test 17 by name.
+
+### Three tables the documentation described as working
+
+`hand_records`, `hand_players` and `player_actions` are **completely empty** —
+zero rows across 47 sessions and 3,602 game events on a freshly reset database
+that had just run the entire suite. Nothing in the repository writes them.
+
+**That is correct.** The specification lists "hand history/replay" under
+**"V1.1 — DO NOT LET THESE DELAY MVP"**. The schema is architected for it and the
+archive is deliberately not built.
+
+**The documentation said otherwise**, in three places: the migration header said
+"Written by the server at settlement", `docs/DATABASE.md` called it a
+"Completed-hand archive", and `docs/SECURITY.md` called it "your own settlement
+history". All three now say V1.1 and unwritten. It is the same class of untruth
+as the Statistics Career filter in R12, in the other direction: a document
+describing a feature that records nothing.
+
+The sweep asserts they are EMPTY rather than skipping them. Zero rows after a
+full hand at a Quick Play table is the evidence that this is a decision — and
+the day one gains a row, that test fails and the participant-visibility
+assertions have to be written before the suite is green again.
+
+**Evidence.**
+
+```
+tests/server/rls-idor.integration.test.ts   8 tests, two real JWTs, 32 tables
+supabase test db                            453 assertions PASS (was 452);
+                                            test 17 proved to fail when the
+                                            expected set is edited
+npm test                                    1,632 unit + 116 server = 1,748 PASS
+supabase db lint                            No schema errors found
+```
+
+**Nothing was leaking.** Every OWNED table returned zero rows to the stranger,
+every SHARED table returned zero to a non-participant, and `anon` was refused
+outright. The value here is not a defect found; it is that the claim is now
+asserted per table rather than inferred from the shape of the grants.
+
+---
+
+## R17 — the game-integrity audit: nothing asserted that the chart was computed
+
+### The invariant with no test behind it
+
+CLAUDE.md's eight absolute invariants include: *"Strategy tables are generated by
+the EV solver in `scripts/generate-strategy-tables.ts`, never hand-typed."*
+**Nothing asserted it.**
+
+`cross-validation.test.ts` is the closest thing and it is not the same claim: it
+compares the COMMITTED table against a published six-deck chart and requires
+every disagreement to carry a written adjudication. That catches a hand-edit only
+if the edit disagrees with the published chart in a NEW way — **an edit that
+moved a cell ONTO one of the currently-adjudicated differences would agree with
+the reference, match a written note, and pass every test in the repository**,
+having replaced computed advice with a guess.
+
+`tests/strategy/generated-table.test.ts` closes it by re-emitting the whole file
+and comparing it BYTE FOR BYTE. Byte-for-byte rather than cell-by-cell because a
+cell comparison has to decide what a cell is, and would quietly stop covering
+whatever the emitter later adds — the metadata block, the approximations list,
+the rules summary, the fallback actions. The only thing normalised is
+`generatedAt`, the one part of the file that is supposed to differ between runs,
+and the committed file's own value is fed back in so even that is pinned rather
+than skipped.
+
+**It was proved to discriminate**: flipping `hard:16:10` — the most-argued cell
+in blackjack, and the one an editor would most plausibly "correct" — is caught,
+and the failure names the line.
+
+Two supporting changes: `emitTableSource` is exported, and `main()` now runs only
+when the script is INVOKED. A bare `main()` would have solved the whole chart and
+rewritten two files as a side effect of the test importing the module.
+
+### The result, which is the reassuring part
+
+**The committed table is byte-identical to what the solver produces today**,
+apart from the timestamp. Measured directly by regenerating it: the only diff was
+`generatedAt`. The chart in the repository is computed, and now provably so.
+
+### The rest of the game-integrity sweep
+
+```
+npm run contrast:check      exit 0. The three "FAIL" lines are the hairline
+                            borders that are UNDER 3:1 on purpose, and their
+                            Increased-Contrast substitutes are asserted to pass —
+                            so a green report cannot hide a boundary that clears
+                            the bar in neither state.
+tests/audio                 50 tests. Every cue re-synthesised and compared byte
+                            for byte with the committed file.
+tests/strategy              completeness, cross-validation, EV, lookup,
+                            monotonicity, solver — and now the generated table.
+supabase db lint            No schema errors found.
+npm test                    1,634 unit + 116 server = 1,750 PASS
+npm run test:coverage       exit 0
+```
+
+`generated-table.test.ts` is excluded from the COVERAGE run for the same reason
+`solver.test.ts` is: thirty seconds of exact recursion under instrumentation buys
+nothing, since the module it exercises lives in `scripts/` and no gate measures
+it.
+
+---
+
+## R18 — `npx expo-doctor` exited 1, and it is a CI step
+
+The release gate CI actually runs, failing. Eight packages sat one PATCH version
+behind what the installed Expo SDK expects — `expo`, `expo-router`,
+`expo-crypto`, `expo-notifications`, `expo-splash-screen`, `expo-asset`,
+`expo-constants` and `@expo/metro-runtime`. `expo-doctor` reports that as
+`1 check failed`, and `.github/workflows/ci.yml` runs it in the `test` job, so
+the first CI run on a runner would have gone red on a dependency drift rather
+than on anything anybody wrote.
+
+Fixed with `npx expo install --fix`, which is the command the doctor names.
+Patch-level within SDK 57, no majors, no minors.
+
+**Four of the eight carry NATIVE code** — `expo`, `expo-crypto`,
+`expo-notifications`, `expo-splash-screen` — so a green JavaScript suite proves
+nothing about them. `pod install` then refused outright:
+
+```
+[!] CocoaPods could not find compatible versions for pod "ExpoModulesCore":
+    It seems like you've changed the version of the dependency and it differs
+    from the version stored in `Pods/Local Podspecs`.
+```
+
+`ExpoModulesCore` and `ExpoModulesWorklets` both had to be updated, and TOGETHER
+— updating the first alone fails on the second, because they ship from the same
+package and CocoaPods resolves them as one snapshot.
+
+**Verified against the real thing rather than by the suite alone:** the debug
+build was recompiled and reinstalled, and both server-configured Maestro flows
+re-run against it.
+
+```
+npx expo-doctor@latest        21/21 checks passed (was 1 check failed)
+npx tsc --noEmit / lint       exit 0 / 0 errors
+npm test                      1,634 unit + 116 server = 1,750 PASS
+npx expo export --clear       exit 0
+pod update ExpoModulesCore ExpoModulesWorklets   then a clean rebuild
+tests/e2e/online-table.yaml   exit 0, 38 COMPLETED steps
+tests/e2e/private-lobby.yaml  exit 0, 37 COMPLETED steps
+```
+
+The step counts are lower than R13's 41 and 40 because the shared `sign-in.yaml`
+subflow exits its loop immediately when the app has already restored a session
+from the keychain — which is the case it was written for.
+
+---
+
+## R19 — the audit flow walked a configured build for the first time, and found two real defects
+
+### The gap
+
+`every-screen.yaml` asserts `.*no server configured.*` in six places. That copy
+appears only while `EXPO_PUBLIC_SUPABASE_URL` is unset, so the whole flow
+describes what a screen says in ONE configuration — the one nobody ships. **A
+build with a server had never been walked by it.** Half the screens change
+completely when a server exists: Leaderboards stops apologising and renders four
+boards, the Daily Challenge shows a real seed commitment, the Sprint screen shows
+the fee and format from `sprint_format()`, and Notifications becomes an inbox.
+
+`tests/e2e/every-screen-online.yaml` is the same audit from the other side.
+Every stop asserts something that cannot be true without a server AND that the
+unconfigured apology is ABSENT — the strongest statement a configured build can
+make about itself. **Exit 0, 44 COMPLETED steps, first run.**
+
+### `clearState: true` does not give a fresh install
+
+Measured, not assumed. On iOS it resets permissions and relaunches; it leaves
+the app's **Documents** directory alone:
+
+```
+$ xcrun simctl get_app_container <udid> com.arc21.app data
+…/Documents/SQLite/arc21.db          ← still there after clearState
+```
+
+That one file holds onboarding completion, the Practice session and career
+progress. And `clearState` does not touch the KEYCHAIN either, where the
+Supabase session lives. So `every-screen.yaml`, whose first assertion is that
+ONBOARDING is on screen, has never actually started from a fresh install — it
+passed because the simulator happened to be in the right state, and it failed
+the moment two flows that sign in had run on the same device.
+`scripts/e2e-fresh-app.ts` removes both. It does NOT `simctl uninstall`: that
+once ran for five minutes and left the app missing.
+
+### DEFECT 1 — every mode card announced one word to a screen reader
+
+`SurfaceCard` is a plain `View` with no `onPress` and a labelled `Pressable`
+with one. **On iOS a labelled accessibility element REPLACES its children in the
+tree.** So the moment the online modes all became reachable, every card on the
+Play tab became a labelled Pressable and its whole body — the purpose, the
+structure line, and the note saying an account is needed — **stopped existing
+for a screen reader**. A sighted player reads four lines per card; a VoiceOver
+user heard the title.
+
+It could not be fixed with the hint: a hint is supplementary, spoken last and
+only after a pause, suppressed when the user turns hints off, and is not part of
+an element's matchable text — which is why the audit flow could not see it
+either. The LABEL carries content; the hint describes the ACTION. Both are
+composed by `modeAccessibilityLabel` / `modeAccessibilityHint` and asserted in
+`tests/home/play-mode-presentation.test.ts`, stated as the four things that must
+never go missing again rather than as an exact string.
+
+The specification's criterion is "Screen readers can identify cards/actions". A
+card that announces its name and withholds its stakes, its seat count and the
+fact that it needs an account does not meet it.
+
+Home already had this exact fix, with a comment explaining it. Nobody carried it
+to the Play tab. `app/career/index.tsx` and `app/learn/drills.tsx` were checked
+and are FINE: their content is split across label and hint, and VoiceOver speaks
+hints by default — so nothing is lost, only untestable by Maestro.
+
+### DEFECT 2 — the profile's four actions split their own labels mid-word
+
+`Button` carries `flex: 1`, so four in one row each got a quarter of a 393pt
+screen — about 74pt before padding — and `numberOfLines={2}` split the labels:
+**"Statist / ics", "Invent / ory", "Friend / s", "Settin / gs"**. At the DEFAULT
+text size, which is worse than the Dynamic Type case CLAUDE.md already records
+for the action dock: that one only breaks at the largest setting. Present in
+every screenshot the project has ever taken of that screen.
+
+`flexWrap` would not have fixed it — a `flex: 1` child has a flex-basis of 0, so
+it never overflows its line and never wraps, it just shrinks. Two rows of two.
+
+### And the flow's own assumptions
+
+Three `extendedWaitUntil`s assumed a return would reset the tab's scroll.
+CLAUDE.md records that it sometimes does and sometimes does not; this file
+assumed the first, it held for a while, and then a run came back where it left
+and a header that was real, correct and above the fold read as a missing screen.
+They are `scrollUntilVisible` with an explicit direction now — true either way.
+
+**Evidence.**
+
+```
+tests/e2e/every-screen.yaml          exit 0, 86 COMPLETED steps
+tests/e2e/every-screen-online.yaml   exit 0, 44 COMPLETED steps
+tests/e2e/online-table.yaml          exit 0, 40 COMPLETED steps
+tests/e2e/private-lobby.yaml         exit 0, 37 COMPLETED steps
+npm test                             1,639 unit + 116 server = 1,755 PASS
+npm run test:coverage                exit 0
+tsc --noEmit / lint                  exit 0 / 0 errors
+```
+
+Four Maestro flows now, two configurations, and the two that need opposite
+configurations both say so in their own headers rather than in a note somebody
+has to have read.
+
+---
+
+## R20 — CI's readiness probe said "up" about a stack whose functions could not reach the database
+
+### The gap, found by running CI's own steps
+
+The mission's "validate CI behaviour" item meant running every step of
+`.github/workflows/ci.yml` locally, in the order the workflow runs them. The
+`checks` job passed all seven. The `database` job is where the finding is.
+
+Both `.github/workflows/ci.yml` and `tests/server/stack-guard.ts` decide the
+stack is ready when `POST /functions/v1/game-command` with no credentials
+answers **401**. That comment is careful and correct as far as it goes — "any
+HTTP answer is not enough: with the Edge runtime stopped the gateway still
+answers 503" — and it stops one step short.
+
+**A 401 does not prove the function can reach Postgres.** The auth check runs
+before anything is read, so a function that is serving perfectly and cannot
+resolve the database answers 401 exactly like a healthy one.
+
+That is not hypothetical. After the database container was recreated while the
+Edge runtime kept running, every command returned
+
+```
+HTTP 500 {"code":"INTERNAL"} … "Error: getaddrinfo ENOTFOUND supabase_db_arc21"
+```
+
+while the guard reported the stack as UP. The server suite then ran against it
+and produced a page of product-looking failures for a container-network problem.
+
+### The second probe
+
+Both places now send a real command, signed for an account that does not exist,
+naming a game that does not exist. `handle()` takes the engine-state lock BEFORE
+anything else, so it reaches Postgres on every code path:
+
+- database reachable → `NOT_A_PARTICIPANT`, a 4xx. The stack is up.
+- database unreachable → `INTERNAL`, a 500. The stack is NOT up.
+
+Nothing is moved and nothing is created — the command is refused either way.
+
+**Proved by breaking exactly that path and nothing else:**
+`docker network disconnect supabase_network_arc21 supabase_db_arc21`. The 401
+probe went on answering 401; the new probe refused, with a message naming
+`ENOTFOUND` and `docker restart supabase_edge_runtime_arc21` as the fix.
+
+Both probes are also `AbortSignal.timeout(5000)` now. Without it a gateway that
+accepts the socket and never answers hangs the retry loop for ever — which is
+what a half-started stack looks like, and a retry budget only means something if
+each attempt can end. Found by the loop hanging for ten minutes instead of the
+sixty seconds it budgets for.
+
+### What the new probe then caught, and it is not the product
+
+Immediately after it went in, the guard started refusing the local stack. It was
+right to. **Deno cannot resolve a hostname containing underscores, and the
+Supabase CLI points the Edge Functions at `supabase_db_arc21`.** Established by
+running both runtimes side by side, on the same Docker network, at the same
+moment:
+
+```
+$ docker run --rm --network supabase_network_arc21 node:22-alpine node -e "…"
+underscore name: 172.18.0.2          ← Node resolves it
+alias db      : 172.18.0.2
+
+$ docker run --rm --network supabase_network_arc21 denoland/deno:2.1.4 eval "…"
+DENO underscore -> Error: getaddrinfo ENOTFOUND supabase_db_arc21
+DENO alias      -> 172.18.0.2        ← the same address, via a name with no underscore
+```
+
+`SUPABASE_DB_URL` is injected by the CLI as
+`postgresql://postgres:postgres@supabase_db_arc21:5432/postgres`, the runtime is
+`supabase-edge-runtime-1.74.3 (compatible with Deno v2.1.4)`, and
+`postgres-client.ts` connects through npm `postgres` under Deno's Node compat —
+which is why the error arrives in Node's shape.
+
+**It is not a product defect and cannot be fixed in this repository.** A deployed
+Supabase project addresses its database by a real DNS name
+(`db.<ref>.supabase.co`), which has no underscores. Rewriting the host inside
+`databaseUrl()` to work around a local tool would be exactly the fudge this
+project already caught itself making once, when the first fix for
+`${json}::jsonb` was to make the parser tolerate strings.
+
+Ruled out along the way, each by measurement rather than by reasoning: stale
+Deno DNS caching (survives a container restart, a container REBUILD, a Docker
+Desktop restart and a `docker network rm`), the Docker network itself (Node
+resolves the same name on it), `/etc/hosts` (Deno does not consult it), the DNS
+search domain (`--dns-search` changes nothing, so the refusal is
+unconditional), `[edge_runtime.secrets]` in `config.toml` and
+`supabase/functions/.env` (the CLI overwrites `SUPABASE_DB_URL` in both cases),
+an extra network alias (a connected endpoint cannot gain one, and the URL would
+still name the container), `[db.pooler] enabled = true` (the CLI injects the same
+URL), `[edge_runtime] deno_version` (already `2`, the current major), and
+upgrading the CLI 2.114.0 → 2.115.0, which pulled twenty-seven images and left
+the runtime at the same `1.74.3 / Deno v2.1.4`.
+
+### What this leaves outstanding
+
+Everything that does not go through an Edge Function was re-run and passes:
+
+```
+npx tsc --noEmit                       PASS
+npm run lint                           PASS (0 errors)
+npm run check:functions                PASS
+npm run test:unit                      1,639 tests PASS
+supabase test db                       453 assertions PASS
+npm run test:coverage                  PASS
+supabase db lint                       No schema errors found
+```
+
+**`npm run test:server` (116 tests) could not be re-run at the end of this
+session**, and neither could the four Maestro flows, because both drive the Edge
+Functions. All of them passed earlier in this session against a working stack,
+and every change made since is either a test, a document, a probe, or the
+`cosmetic_is_earned` migration that `supabase test db` covers. The guard now
+refuses that stack instead of reporting a hundred product failures, which is the
+point of R20 — but the guard being right is not the same as the suite having
+run, and this row says so.

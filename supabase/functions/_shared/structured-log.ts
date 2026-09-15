@@ -23,7 +23,10 @@ export type CommandOutcome =
   | "private_stack_reset"
   | "public_seat_taken"
   | "daily_challenge_started"
-  | "sprint_registered";
+  | "sprint_registered"
+  | "sprint_withdrawn"
+  | "career_node_started"
+  | "career_drill_graded";
 
 export interface LogFields {
   /** Correlates a client-visible failure with the server-side detail. */
@@ -31,6 +34,8 @@ export interface LogFields {
   fn: string;
   userId?: string;
   gameId?: string;
+  /** Which tournament a session command was about. An id, like every other. */
+  tournamentId?: string;
   seatId?: string;
   commandId?: string;
   commandType?: string;

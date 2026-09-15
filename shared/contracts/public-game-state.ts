@@ -82,13 +82,30 @@ export const publicShoeSchema = z.strictObject({
  * Validated like everything else that crosses the wire: a malformed set would
  * otherwise render buttons that the server is about to refuse.
  */
-const legalActionSetSchema = z.object({
+/*
+ * STRICT, like every other schema in this directory — and it was the ONE that
+ * was not.
+ *
+ * Sixty-one schemas across `shared/contracts` use `z.strictObject`, which
+ * REJECTS a key it does not know. This one used `z.object`, which silently
+ * deletes it, and that is how `canStartNextHand` reached the client as
+ * `undefined` for a whole phase with no error anywhere (see the field's own
+ * note below). Nothing chose the exception; it was a `strict` somebody did not
+ * type, and the cost was the only way to play a second hand at a server table.
+ *
+ * The trade is deliberate and is the one the rest of this directory already
+ * made: a client older than its server FAILS LOUDLY rather than rendering a
+ * table with a control quietly missing. This app ships its Edge Functions and
+ * its bundle together, so the two are never far apart — and of the two failure
+ * modes, the loud one is the only one anybody would notice.
+ */
+const legalActionSetSchema = z.strictObject({
   actions: z.array(playerActionTypeSchema),
   chipCost: z.record(z.string(), z.number().int().nonnegative()),
   canPlaceBet: z.boolean(),
   canLockBet: z.boolean(),
   betBounds: z
-    .object({
+    .strictObject({
       min: z.number().int().nonnegative(),
       max: z.number().int().nonnegative(),
       increment: z.number().int().positive(),
@@ -98,6 +115,57 @@ const legalActionSetSchema = z.object({
   canDeclineInsurance: z.boolean(),
   insuranceStake: z.number().int().nonnegative().nullable(),
   insuranceIsEvenMoney: z.boolean(),
+  /**
+   * True at HAND_COMPLETE, and MISSING FROM THIS SCHEMA FOR A WHOLE PHASE.
+   *
+   * `z.object` strips unknown keys, so a field the engine sends and this schema
+   * does not name is deleted on the way in — silently, with no parse error,
+   * because a narrower payload is a valid one. The server sent
+   * `canStartNextHand: true`, the client received `undefined`, and
+   * `app/table/[gameId].tsx` gates the "Next hand" button on it. So **no online
+   * table could start a second hand through the UI** — private, public, Quick
+   * Play, tournament or daily. The screen fell through to "Waiting for the next
+   * hand.", which is a sentence describing the very thing it was preventing.
+   *
+   * The third defect of this exact shape in this project, after the Deal button
+   * and the insurance sheet, and the hardest of the three to see: the other two
+   * were a missing predicate and a missing branch, both visible in the screen's
+   * own source. This one is a correct branch reading a field that something
+   * else had already deleted.
+   *
+   * The module header above has always claimed
+   * `tests/contracts/public-state-contract.test.ts` asserts that this schema and
+   * the engine's interface describe the same object. THAT FILE DID NOT EXIST.
+   * It does now, it round-trips a real engine payload through this schema and
+   * compares key for key, and it fails if any field is dropped from any level.
+   */
+  canStartNextHand: z.boolean(),
+});
+
+/**
+ * What the table is allowed to TELL the player, when the session asked for help.
+ *
+ * Present only on a session whose `assistance` is `learn` or `analysis`, and
+ * only while it is that seat's turn. Computed on the SERVER from authoritative
+ * state by the same advisor that grades the decision — there is one chart in
+ * this system, and a client that rebuilt advice locally would be a second
+ * implementation of it.
+ *
+ * It leaks nothing. Every input is already visible: the player's own cards and
+ * the dealer's UP card. The hole card is never consulted, which is the same
+ * rule `computeAdvice` follows on the Practice table.
+ */
+export const publicAdviceSchema = z.strictObject({
+  seatId: z.string().min(1).max(128),
+  recommended: playerActionTypeSchema,
+  /** Chart-style, e.g. "Hard 16 against 10". */
+  explanation: z.string().min(1).max(160),
+  /**
+   * Expectation per legal action, in MILLIONTHS of one unit wagered. Integers,
+   * because no float decides anything a player is scored on — and `analysis`
+   * only. `learn` gets the recommendation and no numbers.
+   */
+  actionEvMicros: z.record(z.string(), z.int()).nullable(),
 });
 
 export const publicGameStateSchema = z.strictObject({
@@ -114,8 +182,14 @@ export const publicGameStateSchema = z.strictObject({
   deadlineAt: z.string().min(1).max(64).nullable(),
   shoe: publicShoeSchema,
   legalActions: z.record(z.string(), legalActionSetSchema),
+  /**
+   * Null on every unassisted table, which is all of them except a Quick Play
+   * session the player opened in Learn or Analysis.
+   */
+  advice: publicAdviceSchema.nullable().optional(),
 });
 
+export type ContractPublicAdvice = z.infer<typeof publicAdviceSchema>;
 export type ContractPublicHand = z.infer<typeof publicHandSchema>;
 export type ContractPublicSeat = z.infer<typeof publicSeatSchema>;
 export type ContractPublicGameState = z.infer<typeof publicGameStateSchema>;

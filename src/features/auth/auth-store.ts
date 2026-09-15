@@ -26,7 +26,7 @@
 import { create } from "zustand";
 
 import { SqliteKeyValueStore } from "../../lib/persistence/key-value-store.js";
-import { getSupabase } from "../../lib/supabase/client.js";
+import { getSupabase, type ArcSupabaseClient } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   createUnconfiguredAuthAdapter,
@@ -95,6 +95,9 @@ export interface AuthStoreState {
 // ---------------------------------------------------------------------------
 
 let adapterOverride: AuthAdapter | null = null;
+// The adapter owns the verified, single-use recovery flow across submissions.
+// Its lifetime must match the SDK client, rather than one button press.
+const adapters = new WeakMap<ArcSupabaseClient, AuthAdapter>();
 let guestStore: GuestIdentityStore | null = null;
 let unsubscribe: (() => void) | null = null;
 
@@ -124,7 +127,12 @@ export function activeAuthAdapter(): AuthAdapter {
       authFailure("NOT_CONFIGURED", availability.message),
     );
   }
-  return createSupabaseAuthAdapter(availability.client);
+  let adapter = adapters.get(availability.client);
+  if (!adapter) {
+    adapter = createSupabaseAuthAdapter(availability.client);
+    adapters.set(availability.client, adapter);
+  }
+  return adapter;
 }
 
 function activeGuestStore(): GuestIdentityStore {

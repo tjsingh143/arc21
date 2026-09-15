@@ -1,0 +1,151 @@
+# Arc 21 — PUBLIC TABLE, two clients, step 5: device A is STILL AT THE TABLE.
+#
+# B has cashed out and gone home. A must still be seated, still able to bet, and
+# must not have been thrown anywhere — the difference between a seat closing and
+# a table closing, seen from the seat that did not close.
+#
+# This is also the shape of a defect this project has already paid for twice: a
+# `beforeRemove` guard that cancelled every route away, and a lobby that
+# replaced a live table with a stale pointer. Both presented as a screen that
+# ignores you, and neither was visible from the server.
+#
+#   maestro test --device <A> tests/e2e/two-client-public-survives.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# THE SEAT IS STILL THERE AFTER THE OTHER PLAYER CASHED OUT, and it is reached
+# the way a returning player reaches it: `my_active_session()`, rendered as the
+# Play tab's resume card. A relaunch does not restore the table screen — it was
+# reached by `router.replace`, so a cold start lands on Home.
+#
+# "Still at a table" is the assertion that carries the invariant: B's seat was
+# settled and closed, and this one was NOT. Measured on the server at the same
+# moment — B `left`, `connected: false`, stack 0; A `active`, `connected: true`,
+# stack 1,950, same `game_session_id`.
+#
+# The wait is generous because a Debug build over Metro takes twenty-odd seconds
+# to read the stored session back, and shows ONBOARDING until it has.
+- extendedWaitUntil:
+    visible:
+      id: "header-chips"
+    timeout: 90000
+
+- openLink: arc21://play
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "play-resume-card"
+    timeout: 45000
+- assertVisible: "Still at a table"
+# TAPPED INSIDE A `repeat`, for the reason recorded throughout this repository:
+# a tap issued while the screen is still settling is swallowed, and the step
+# still reports COMPLETED. Measured here — `Tap on id: play-resume ...
+# COMPLETED` with the app still on the Play tab a minute later. The loop is
+# guarded on the card itself, so it stops the moment the table opens.
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "play-resume"
+    commands:
+      - tapOn:
+          optional: true
+          id: "play-resume"
+
+# STILL THE TABLE. Not an error, not an empty state, not a closed session.
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- assertVisible:
+    id: "table-my-stack"
+
+# And it is still PLAYABLE, which is the stronger claim: a table that had ended
+# under this player would answer with no legal actions and no betting bar, which
+# is exactly what "Waiting for the next hand." looks like for ever.
+#
+# Betting is a branch of the loop rather than a step before it, for the reason
+# `two-client-public-seat.yaml` records: a seat can arrive between hands and must
+# wait for the next BETTING_OPEN rather than find a chip rail already there.
+- repeat:
+    times: 20
+    commands:
+      # `optional`, because a public table moves under you. The action timer
+      # stands for an absent player after fifteen seconds, and the OTHER seat's
+      # decisions advance the hand — so an element that was visible when the
+      # branch was evaluated can be gone by the time the tap lands. Measured:
+      # `Tap on id: action-stand ... FAILED` one iteration after the same
+      # selector had been found. The branch is still the right shape; only the
+      # tap needs to tolerate having been overtaken.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "action-stand"
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-50"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "table-next-hand"
+
+# DEALT, after the other player left. The table did not end with their seat.
+- extendedWaitUntil:
+    notVisible: "No cards yet."
+    timeout: 90000
+
+# --- And A can leave too, which returns the remainder ------------------------
+- tapOn: "Leave table"
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 20000
+- tapOn:
+    text: "Leave table"
+    index: 1
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 60000

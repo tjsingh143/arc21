@@ -118,6 +118,7 @@ select bag_has(
      join pg_type t on t.oid = e.enumtypid where t.typname = 'ledger_reason' $$,
   $$ values ('initial_grant'), ('table_buy_in'), ('table_cash_out'),
             ('career_reward'), ('tournament_entry'), ('tournament_prize'),
+            ('tournament_refund'),
             ('daily_challenge_reward'), ('recovery_grant'), ('correction') $$,
   'every ledger reason the server writes still exists as an enum label'
 );

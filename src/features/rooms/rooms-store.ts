@@ -41,8 +41,21 @@ export interface RoomsStoreState {
   joinRoom: () => Promise<void>;
   /** `roomId` is passed only when entering a room the store does not yet hold. */
   refresh: (roomId?: string) => Promise<void>;
+  /**
+   * Put the player back at the table they are already at, if any.
+   *
+   * Called when the lobby mounts. "Loading/reconnect must preserve room code"
+   * is the specification's line for this screen, and until this existed a host
+   * who force-quit the app was stuck: the lobby came back empty and
+   * `create_private_room` refused with "you already have a table open".
+   */
+  restore: () => Promise<void>;
   /** Deal the first hand. Only the host may; the server enforces it. */
   startTable: () => Promise<void>;
+  /** This player's own ready flag. Informs the host; never gates the deal. */
+  setReady: (ready: boolean) => Promise<void>;
+  /** Host only, lobby only. The server checks both again. */
+  removeMember: (userId: string) => Promise<void>;
   leave: () => Promise<void>;
 }
 
@@ -125,15 +138,117 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
 
     const read = await activeRoomsGateway().read(id);
     if (!read.ok) {
-      // A refusal here means the room is gone — expired, or everyone left.
+      // A refusal here means the room is gone — expired, everyone left, or this
+      // player is no longer a member of it.
       if (read.reason === "refused") {
-        set({ status: { kind: "idle" }, notice: read.message });
+        /*
+         * `dealt` IS CLEARED HERE, and it has to be. The lobby's navigation
+         * effect is keyed on it and fires whenever it is set — so a player who
+         * left through the TABLE screen (which sends CASH_OUT and never touches
+         * this store) came back to the lobby, found `dealt` still holding the
+         * game they had just left, and was replaced straight onto it. Seen on a
+         * device: an endless bounce between the lobby and a table answering
+         * `SESSION_CLOSED`.
+         */
+        set({ status: { kind: "idle" }, dealt: null, notice: read.message });
         return;
       }
       set({ status: statusForFailure(read) });
       return;
     }
     set({ status: { kind: "seated", state: read.state } });
+
+    /*
+     * The host is not the only person who has to reach the table.
+     *
+     * `startTable` sets `dealt` for whoever pressed Deal, and the lobby's
+     * navigation effect is keyed on it — so before this, a guest polled every
+     * three seconds, watched `gameSessionId` appear, and sat in the lobby
+     * while the host played. Proved across two simulators in phase 14 s4: the
+     * host reached the table, the second player never did, and a private table
+     * is exactly the feature that needs two.
+     *
+     * Resolved here rather than in the lobby so every seated client converges
+     * on the same state whatever route it took in.
+     */
+    const gameSessionId = read.state.room.gameSessionId;
+
+    /*
+     * `dealt` MUST NAME THE TABLE THIS ROOM IS ACTUALLY RUNNING.
+     *
+     * It is a module-level value that survives navigation, and the lobby's
+     * navigation effect acts on it the moment it is set — so a pointer left
+     * over from a previous room is a pointer that sends the player to the wrong
+     * table. Reachable without leaving the lobby at all: leave a table, join a
+     * new room by code, and `joinRoom` calls straight into this function. The
+     * new room has not dealt, the old `dealt` was kept because it was merely
+     * non-null, and the effect replaced the player onto the table they had just
+     * left. Agreeing on the id costs nothing and makes the value self-checking.
+     */
+    const held = get().dealt;
+    if (held !== null) {
+      if (held.gameId === gameSessionId) return;
+      set({ dealt: null });
+    }
+    if (gameSessionId === null) return;
+
+    const seat = await activeRoomsGateway().findSeat(gameSessionId);
+    // A missing seat is not an error worth surfacing: the next poll retries,
+    // and the only thing it costs is three seconds.
+    if (seat.ok && seat.seatId !== null) {
+      set({ dealt: { gameId: gameSessionId, seatId: seat.seatId } });
+    }
+  },
+
+  restore: async () => {
+    /*
+     * THE SERVER IS ASKED EVERY TIME, and the guard that used to stand here is
+     * the defect this closes.
+     *
+     * It read `if (get().status.kind === "seated") return;` — "never over a room
+     * already in hand: the poll is more current than this". But this runs on
+     * MOUNT, and on mount a `seated` reading is by definition one carried over
+     * from a previous mount, because `dealt` navigating away is what unmounted
+     * the lobby in the first place. There is no poll yet for it to be older
+     * than. The single case the guard skipped is the only case that matters.
+     *
+     * What that cost, photographed on a device: a player who left through the
+     * TABLE screen — `CASH_OUT`, which never touches this store — came back to
+     * a store still holding `seated` and still holding `dealt`. The lookup below
+     * never ran, so the `room === null` branch that clears `dealt` was
+     * unreachable, and the lobby's navigation effect replaced them straight onto
+     * the table they had just left, where every command answers
+     * `SESSION_CLOSED`. The only control there is "Leave table", which cashes
+     * out an already-settled seat and returns to the lobby, which bounces them
+     * back: a loop with no way out but killing the app. `arc21://table/lobby`
+     * reported COMPLETED and changed nothing.
+     *
+     * Both halves of the fix were ALREADY HERE and both were dead behind that
+     * return — this function's `room === null` branch, and `findSeat`'s
+     * `status <> 'left'` filter. A guard that protects a resource has to ask
+     * whether the resource is still there; this one asked only whether it once
+     * had been.
+     */
+    const found = await activeRoomsGateway().findOpenRoom();
+    // Silent on failure, in both directions. This runs on mount, unasked, and a
+    // player who has no table open must see the ordinary create/join screen —
+    // not an error about a lookup they did not make.
+    if (!found.ok) return;
+    if (found.room === null) {
+      /*
+       * NO OPEN ROOM MEANS NO DEALT TABLE AND NO SEATED LOBBY EITHER.
+       *
+       * `rooms_select_member` admits only rooms the caller is a `joined` member
+       * of, so an empty answer is the server saying this player is in none.
+       * Clearing `dealt` alone would leave the previous room's lobby on screen —
+       * its code, its members, its Deal button — for a room whose membership
+       * ended when the seat settled.
+       */
+      set({ dealt: null });
+      if (get().status.kind === "seated") set({ status: { kind: "idle" } });
+      return;
+    }
+    await get().refresh(found.room.id);
   },
 
   startTable: async () => {
@@ -152,6 +267,46 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     set({ dealt: { gameId: started.gameId, seatId: started.seatId } });
   },
 
+  setReady: async (ready) => {
+    const current = get().status;
+    if (current.kind !== "seated") return;
+
+    const result = await activeRoomsGateway().setReady(current.state.room.id, ready);
+    if (!result.ok) {
+      // Being told you are not at the table is the removal arriving; drop to
+      // the entry screen rather than leaving a lobby on screen that is not
+      // yours any more.
+      if (result.reason === "refused") {
+        set({ status: { kind: "idle" }, dealt: null, notice: result.message });
+        return;
+      }
+      set({ notice: result.message });
+      return;
+    }
+    // Re-read rather than patch: every other client sees the server's row, and
+    // a local flag that disagreed with it would be the one thing on this screen
+    // that was not the server's answer.
+    await get().refresh(current.state.room.id);
+  },
+
+  removeMember: async (userId) => {
+    const current = get().status;
+    if (current.kind !== "seated") return;
+
+    set({ notice: null });
+    const result = await activeRoomsGateway().removeMember(current.state.room.id, userId);
+    if (!result.ok) {
+      set({ notice: result.message });
+      return;
+    }
+    if (!result.removed) {
+      // The server refuses without explaining, so the client says the one thing
+      // that is true of every refusal it can reach from this screen.
+      set({ notice: "That player could not be removed. A table that has started belongs to the server." });
+    }
+    await get().refresh(current.state.room.id);
+  },
+
   leave: async () => {
     const current = get().status;
     if (current.kind !== "seated") return;
@@ -162,16 +317,3 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     set({ status: { kind: "idle" }, dealt: null, codeInput: "", notice: null });
   },
 }));
-
-/**
- * Can this table be dealt?
- *
- * Read from a snapshot rather than by calling into the store, because calling a
- * getter during render freezes the value under the React Compiler — a mistake
- * this project has already shipped once.
- */
-export function canStartTable(state: RoomState, userId: string | null): boolean {
-  if (state.room.status !== "lobby") return false;
-  if (state.members.length < 2) return false;
-  return state.members.some((member) => member.isHost && member.userId === userId);
-}

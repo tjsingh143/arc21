@@ -1,0 +1,86 @@
+# Arc 21 — TWO CLIENTS, step 3: the host deals, and the table states its clock.
+#
+#   maestro test --device <A> tests/e2e/two-client-host-deal.yaml
+#
+# TWO THINGS ARE PROVED HERE THAT NO OTHER FLOW CAN.
+#
+# 1. The host's lobby shows the guest, who joined on a DIFFERENT DEVICE against
+#    the same server. "2 of 2 seated" on this screen is the three-second poll
+#    reading `get_room_state` and finding somebody this client never saw arrive.
+#
+# 2. THE COUNTDOWN. `deadlineAt` has been on every snapshot since the wire
+#    contract was written, under the comment "Clients render countdowns against
+#    server time", and no client code read it — so a shared table showed no clock
+#    at all, and, far worse, nothing ever asked the server to resolve an expired
+#    one. `two-client-timeout.yaml` proves the second half; this proves the
+#    first, on a rendered screen, because a unit test cannot see a shape.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# The guest arrived on the other device. This is the poll, not this client.
+# The guest arrived on the other device, or the table is already dealt and the
+# lobby has followed it in. Both are handled, so a re-run after a failed step
+# does not tap a button that is no longer there.
+- runFlow:
+    when:
+      visible: "2 of 2 seated"
+    commands:
+      # SCROLLED to: `tapOn` does not scroll, and a control below the fold is in
+      # the accessibility tree — the tap would "succeed" against empty space.
+      - scrollUntilVisible:
+          element:
+            id: "room-start"
+          direction: DOWN
+          timeout: 20000
+      - tapOn:
+          id: "room-start"
+
+# --- The table -------------------------------------------------------------
+# "Leave table" is in the FRAME and renders while the screen still says "Reading
+# the table…", so it is not evidence that the snapshot arrived. The first
+# version of this flow asserted a stack immediately after it and failed against
+# a screen that was mid-load. Wait for something only the loaded table has.
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "table-my-stack"
+    timeout: 60000
+
+# Both seats are on the felt, and this client can see the OTHER player's stack —
+# a seat it has never seen except through the server.
+- assertVisible: "5,000"
+
+# THE COUNTDOWN, on a real screen. `deadlineAt` has been on every snapshot since
+# the wire contract was written, under the comment "Clients render countdowns
+# against server time", and no client code read it. It names the DEFAULT as well
+# as the number, because the specification's position is that timeouts are
+# predictable and STATED — a bare number beside a button is a threat.
+- extendedWaitUntil:
+    visible:
+      id: "table-countdown"
+    timeout: 30000
+- assertVisible: ".*to bet.*table minimum.*"

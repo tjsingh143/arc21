@@ -35,10 +35,14 @@ import { getSupabase } from "../../lib/supabase/client.js";
 import {
   createSupabaseTableGateway,
   createUnconfiguredTableGateway,
+  seqRangeOf,
   type TableEvents,
   type TableFailure,
   type TableGateway,
 } from "./online-table-gateway.js";
+import { shouldCompleteLeave } from "./leave-guard.js";
+import { shouldRequestTimeoutResolution } from "./table-deadline.js";
+import { useWalletStore } from "../wallet/wallet-store.js";
 
 /**
  * One shared empty array, not a fresh `[]` per set.
@@ -91,7 +95,55 @@ export interface OnlineTableStoreState {
   readonly pending: boolean;
   /** Chips staged locally before LOCK_BET. Not a wager until the server says so. */
   readonly stagedBet: number;
+  /**
+   * The last wager the SERVER accepted from this seat, for the Repeat control.
+   *
+   * THE DEFECT THIS CLOSES. `BettingBar` has always drawn a Repeat button and
+   * `app/table/[gameId].tsx` passed it `lastBet={0}` with an `onRepeat` of
+   * `() => undefined` — so at every server table the control rendered
+   * permanently disabled. Practice passes both for real and works; the online
+   * modes are exactly the ones where a player bets the same amount hand after
+   * hand.
+   *
+   * Recorded only when `LOCK_BET` came back ok, which is the whole point: a
+   * bet the server refused is not a bet to repeat.
+   */
+  readonly lastBet: number;
   readonly notice: string | null;
+  /**
+   * The highest event sequence this client has applied, or 0 before any.
+   *
+   * The specification's Realtime rule, which nothing implemented: ignore
+   * `seq <= lastAppliedSeq`, apply `seq == lastAppliedSeq + 1`, and fetch an
+   * authoritative snapshot on a gap. `version` alone cannot do it — a command's
+   * own reply and the broadcast that follows it carry the SAME version, so
+   * deduping on version let every action play its cards and its outcome twice.
+   */
+  readonly lastAppliedSeq: number;
+  /**
+   * The version this client last asked the server to time out, and when.
+   *
+   * The version alone would deadlock: an ask that goes unanswered leaves the
+   * version where it was, so "already asked at 28" would block every later
+   * attempt at 28 and freeze the table for this client with the deadline
+   * permanently expired. Seen on a two-simulator run. The pair bounds the RATE
+   * instead — see `TIMEOUT_RETRY_MS`.
+   */
+  readonly timeoutAskedForVersion: number | null;
+  readonly timeoutAskedAt: number | null;
+  /**
+   * This player has asked to leave and the server said the hand was still live.
+   *
+   * A refused cash-out used to be the end of it: the notice said the chips came
+   * back when the hand settled, and nothing made that happen. Somebody who taps
+   * leave and puts the phone down stayed seated at a live public table, stood
+   * in by the action timer hand after hand, with their buy-in in escrow. The
+   * flag is the INTENT, held until `shouldCompleteLeave` says the table has
+   * reached a phase the server will accept — and cleared the moment the player
+   * stakes something, because betting is how somebody says they have changed
+   * their mind.
+   */
+  readonly leavingWhenSafe: boolean;
   /**
    * What the server said happened, most recently.
    *
@@ -105,8 +157,38 @@ export interface OnlineTableStoreState {
   refresh: () => Promise<void>;
   addChip: (amount: number) => void;
   clearBet: () => void;
+  /**
+   * Stage the previous accepted wager again.
+   *
+   * Staged, never sent: the specification is explicit that a previous bet may
+   * be SUGGESTED next hand and must not be silently committed. It goes through
+   * the same clamp `addChip` uses, so a stack that shrank since — or a table
+   * whose maximum moved, which a tournament's boundary can do between hands —
+   * cannot stage an impossible amount.
+   */
+  repeatBet: () => void;
   lockBet: () => Promise<void>;
   act: (action: PlayerActionType) => Promise<void>;
+  /**
+   * Answer the insurance offer.
+   *
+   * ADDED AFTER THIS WAS UNREACHABLE FOR A WHOLE PHASE. `INSURANCE` and
+   * `DECLINE_INSURANCE` are engine commands, they are in
+   * `COMMAND_TYPES`, the server applies them, and `tests/server` sends
+   * `DECLINE_INSURANCE` on every hand of every daily-challenge attempt — but
+   * `act()` takes a `PlayerActionType`, which is HIT/STAND/DOUBLE/SPLIT/
+   * SURRENDER and nothing else, and no other method existed. So at EVERY
+   * server table — Quick Play, public, private, tournament, daily — the
+   * insurance offer could not be answered at all. The player saw "Waiting for
+   * the next hand." until the deadline expired and the server applied its
+   * default.
+   *
+   * Nothing caught it because the InsuranceSheet was mounted by
+   * `app/game/practice.tsx` and `app/career/play/[slug].tsx`, both of which
+   * drive the LOCAL engine, and neither goes anywhere near this store.
+   */
+  takeInsurance: () => Promise<void>;
+  declineInsurance: () => Promise<void>;
   /**
    * Ask the server to start the next round.
    *
@@ -115,7 +197,61 @@ export interface OnlineTableStoreState {
    * predicted locally — the round has not begun until the server says so.
    */
   nextHand: () => Promise<void>;
-  leaveTable: () => void;
+  /**
+   * Ask the server to apply its own timeout defaults to an expired deadline.
+   *
+   * ARC 21 HAS NO LONG-LIVED GAME PROCESS. A deadline is a stored
+   * `deadline_at`, and the specification's mechanism for reaching it is that
+   * "when a deadline is visually reached, any connected client may request
+   * RESOLVE_TIMEOUT" — which the server honours only if its OWN clock has
+   * passed it. Nothing in this app ever sent one: the single call site was
+   * `TableGateway.snapshot()`, pinned to `expectedVersion: 0` so that it can
+   * never apply, which makes it a read. So an absent player froze a shared
+   * table for everybody, indefinitely, with the fifteen-second timer that
+   * exists to prevent exactly that already long expired.
+   *
+   * Nothing is decided here. `DEADLINE_NOT_REACHED` is swallowed rather than
+   * shown, because a device whose clock ran a little ahead has not done
+   * anything a player needs telling about — and `stale` is the ordinary answer
+   * when another client got there first, which is the specification's
+   * "duplicates are harmless".
+   */
+  resolveTimeout: () => Promise<void>;
+  /**
+   * Close the seat, take the stack back, and drop the table.
+   *
+   * Returns false when the server refused — mid-hand, most often — so the
+   * screen can keep the player at the table instead of walking them away from
+   * chips that are still in escrow.
+   *
+   * This USED to be a synchronous state reset, and the screen's back button was
+   * a plain `BackBar`. Between them, leaving a public table returned nothing:
+   * the buy-in stayed in escrow, the seat stayed `active`, and the wallet was
+   * short by the buy-in with no way in the app to get it back. The Public Table
+   * screen promises "whatever is left comes back when you leave" — this is the
+   * call that makes that sentence true.
+   */
+  leaveTable: () => Promise<boolean>;
+  /** Abandons a leave the player asked for and has since thought better of. */
+  stayAtTable: () => void;
+  /**
+   * Take a free reset back to the private table's fixed stack.
+   *
+   * THE OTHER HALF OF A MECHANISM THAT ONLY EVER HAD ONE. The server has
+   * accepted `RESET_PRIVATE_STACK` since private tables were built and no
+   * client had ever sent it, so the specification's *"if a private player
+   * reaches zero session chips, permit a free reset to 5,000 between hands"*
+   * was a rule with no way to invoke it: a player who busted sat out every
+   * remaining hand of the table.
+   *
+   * Nothing is decided here. The amount, the mode check, the between-hands
+   * check and the actually-broke check are all the server's; this sends the
+   * game id and adopts the snapshot that comes back. See `mayResetPrivateStack`
+   * for what an honest client offers it against.
+   */
+  resetStack: () => Promise<void>;
+  /** Drops the table locally without cashing out. For a seat already closed. */
+  forgetTable: () => void;
 }
 
 /**
@@ -126,6 +262,9 @@ export interface OnlineTableStoreState {
  * for the table and once for the handle to the thing that delivered it.
  */
 let unsubscribe: (() => void) | null = null;
+// Requests can outlive a cash-out, route change, or a second entry to the same
+// game. A game id alone cannot distinguish those separate screen lifetimes.
+let tableGeneration = 0;
 
 let gatewayOverride: TableGateway | null = null;
 
@@ -167,6 +306,62 @@ function afterFailure(failure: TableFailure): {
     : { connection: LIVE, notice: failure.message };
 }
 
+/**
+ * The two codes that mean THIS CLIENT NO LONGER HOLDS A SEAT HERE.
+ *
+ * `SESSION_CLOSED` for a seat that has been settled or a table that has ended;
+ * `NOT_A_PARTICIPANT` for a game this account is not in. Either way there is
+ * nothing at this table for this player any more.
+ */
+const CLOSED_CODES: ReadonlySet<string> = new Set(["SESSION_CLOSED", "NOT_A_PARTICIPANT"]);
+
+/**
+ * What a closed seat reads as.
+ *
+ * Deliberately says the chips are settled, because the case this is reached
+ * from is a cash-out whose REPLY was lost: the seat closed, the stack came back,
+ * and the client never heard. Telling the player only "this table has closed"
+ * would leave them wondering where their chips went.
+ */
+export const SEAT_CLOSED_MESSAGE =
+  "You are no longer at this table. Your seat is settled and anything it held has been returned.";
+
+/**
+ * Drops a table this client has no seat at, and reports whether it did.
+ *
+ * THE DEFECT, seen on a two-simulator run and photographed. A cash-out
+ * committed on the server and its reply was lost — the ordinary `unreachable`
+ * case, provoked here by a saturated local runtime. Every command afterwards
+ * was correctly refused `SESSION_CLOSED`, and the store rendered that as an
+ * ORDINARY NOTICE: the screen sat on a dead table showing other people's cards,
+ * a live countdown for a hand this player was not in, "Waiting for the next
+ * hand.", and, in the corner, "This table has closed. (ref bf302626-…)". The
+ * seat's own stack read 0.
+ *
+ * A refusal that says the seat is gone is not a notice to show beside the felt;
+ * it is the end of this screen's subject. `rooms-store` already draws exactly
+ * this line for a lobby ("drop to the entry screen rather than leaving a lobby
+ * on screen that is not yours any more") — this is the same rule one layer up.
+ */
+function dropIfSeatIsClosed(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  failure: TableFailure,
+): boolean {
+  if (failure.reason !== "refused" || failure.code === undefined) return false;
+  if (!CLOSED_CODES.has(failure.code)) return false;
+
+  // The channel belongs to a table this client is not at. Left subscribed it
+  // would keep pushing a stranger's hands at a screen that has moved on.
+  get().forgetTable();
+  set({ status: { kind: "unavailable", message: SEAT_CLOSED_MESSAGE } });
+  // Ranked completion and a lost cash-out reply can both close the seat before
+  // leaveTable runs. Reconcile the reward/refund here too, or retained headers
+  // keep showing the balance from before settlement.
+  void useWalletStore.getState().refresh();
+  return true;
+}
+
 function statusForFailure(failure: TableFailure): OnlineTableStatus {
   switch (failure.reason) {
     case "not-configured":
@@ -178,27 +373,76 @@ function statusForFailure(failure: TableFailure): OnlineTableStatus {
   }
 }
 
+/** HTTP replies and Realtime share one monotonically increasing server state. */
+function snapshotUpdate(
+  get: () => OnlineTableStoreState,
+  state: PublicGameState,
+  events?: TableEvents,
+): Partial<OnlineTableStoreState> {
+  const current = get().status;
+  if (current.kind !== "at-table" || current.state.gameId !== state.gameId ||
+      state.version < current.state.version) return {};
+  const update: Partial<OnlineTableStoreState> = {
+    status: { kind: "at-table", state, seatId: current.seatId },
+  };
+  if (events === undefined) return update;
+  const seq = seqRangeOf(events);
+  // A broadcast may beat the HTTP reply for the very same command. Keep the
+  // event array's identity in that case, so feedback does not play twice.
+  if (seq && seq.last <= get().lastAppliedSeq) return update;
+  return {
+    ...update,
+    lastAppliedSeq: seq?.last ?? get().lastAppliedSeq,
+    lastEvents: state.version === current.state.version && seq ? EMPTY_EVENTS : events,
+  };
+}
+
 export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => ({
   status: { kind: "idle" },
   connection: LIVE,
   pending: false,
   stagedBet: 0,
+  lastBet: 0,
   notice: null,
+  lastAppliedSeq: 0,
+  timeoutAskedForVersion: null,
+  timeoutAskedAt: null,
+  leavingWhenSafe: false,
   lastEvents: EMPTY_EVENTS,
 
   enter: async (gameId, seatId) => {
+    get().forgetTable();
+    const generation = tableGeneration;
     // A fresh entry starts live even if a previous table left this reconnecting —
     // there is no hand to reconnect to yet.
     set({ status: { kind: "loading" }, connection: LIVE, notice: null });
     const read = await activeTableGateway().snapshot(gameId);
+    if (generation !== tableGeneration) return;
     if (!read.ok) {
+      // A table this player has already left. Said in the app's own words, not
+      // the server's — "This table has closed. (ref f77e1b11-…)" is a developer
+      // message with a request reference in it, and a player who has just been
+      // paid out does not need to read either half.
+      if (dropIfSeatIsClosed(get, set, read)) return;
       set({ status: statusForFailure(read) });
       return;
     }
     set({
       status: { kind: "at-table", state: read.state, seatId },
       stagedBet: 0,
+      // A different table has different limits and a different stack, and this
+      // client has no history at THIS one yet. Repeat stays unavailable until
+      // the server accepts a bet here.
+      lastBet: 0,
       notice: null,
+      // A fresh table has no sequence history and no outstanding ask. The
+      // snapshot read carries no events, so this is 0 rather than a seq.
+      lastAppliedSeq: seqRangeOf(read.events)?.last ?? 0,
+      timeoutAskedForVersion: null,
+      timeoutAskedAt: null,
+      // A different table. An intent to leave the last one is not one to leave
+      // this one.
+      leavingWhenSafe: false,
       lastEvents: read.events,
     });
 
@@ -210,36 +454,34 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
      */
     unsubscribe?.();
     unsubscribe = activeTableGateway().subscribe(gameId, (pushed, events) => {
-      const current = get().status;
-      if (current.kind !== "at-table" || current.state.gameId !== pushed.gameId) return;
-      // An out-of-order message is dropped rather than rewinding the table.
-      if (pushed.version < current.state.version) return;
-      set({
-        status: { kind: "at-table", state: pushed, seatId: current.seatId },
-        // A pushed batch describes somebody else's action as well as your own,
-        // which is exactly what should be heard at a shared table.
-        lastEvents: events,
-      });
+      if (generation !== tableGeneration) return;
+      applyPushedState(get, set, pushed, events);
     });
   },
 
   refresh: async () => {
     const current = get().status;
     if (current.kind !== "at-table") return;
+    const generation = tableGeneration;
 
     // The poll is already a retry loop running every three seconds — stacking
     // the gateway's own backoff inside it would leave several polls in flight
     // at once against a server that is already struggling. See TableCallOptions.
     const read = await activeTableGateway().snapshot(current.state.gameId, { retry: false });
+    if (generation !== tableGeneration) return;
     if (!read.ok) {
+      // ...unless the seat itself is gone, which is not a transient.
+      if (dropIfSeatIsClosed(get, set, read)) return;
       // A failed poll is not a reason to tear the table down — the last known
       // snapshot stays on screen and the next poll tries again.
       const { connection, notice } = afterFailure(read);
       set({ connection, notice });
       return;
     }
+    const latest = get().status;
+    if (latest.kind !== "at-table" || read.state.version < latest.state.version) return;
     set({
-      status: { kind: "at-table", state: read.state, seatId: current.seatId },
+      ...snapshotUpdate(get, read.state, EMPTY_EVENTS),
       // A poll that lands is how a reconnecting client discovers it is live
       // again — there is no other signal, since the poll itself is silent
       // on success.
@@ -256,6 +498,26 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
        */
       lastEvents: EMPTY_EVENTS,
     });
+
+    /*
+     * A leave the server refused mid-hand, completed now that it cannot be.
+     *
+     * The poll is the right driver: it is the only thing that keeps running
+     * while a player watches out a hand they are no longer part of. The phase
+     * test is the ENGINE's — `canCloseSeat`, the same function `cashOut`
+     * refuses with — so this cannot ask, three seconds at a time, for something
+     * that is about to be refused. `void` because a poll must not wait on it.
+     */
+    if (
+      shouldCompleteLeave({
+        leavingWhenSafe: get().leavingWhenSafe,
+        pending: get().pending,
+        table: read.state,
+        seatId: current.seatId,
+      })
+    ) {
+      void get().leaveTable();
+    }
   },
 
   addChip: (amount) => {
@@ -270,13 +532,37 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     // checks both again; this only stops the UI staging an impossible bet.
     const next = Math.min(get().stagedBet + amount, legal.betBounds.max, seat.stack);
     set({ stagedBet: next, notice: null });
+    get().stayAtTable();
   },
 
   clearBet: () => set({ stagedBet: 0, notice: null }),
 
+  /*
+   * Betting is how a player says they have changed their mind.
+   *
+   * Without this, somebody who tapped leave mid-hand, was told to wait and then
+   * decided to play the next one would be cashed out from under their own
+   * staged wager the moment betting opened. A held intent that outlives the
+   * intention is worse than no intent at all.
+   */
+  stayAtTable: () => {
+    if (get().leavingWhenSafe) set({ leavingWhenSafe: false, notice: null });
+  },
+
+  repeatBet: () => {
+    const previous = get().lastBet;
+    if (previous <= 0) return;
+    // Clear first, then stage through `addChip`, so the clamp against this
+    // seat's stack and the table maximum is applied exactly once and in one
+    // place. Copying the clamp here would be a second implementation of it.
+    set({ stagedBet: 0 });
+    get().addChip(previous);
+  },
+
   lockBet: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
 
     const staged = get().stagedBet;
     const legal = current.state.legalActions[current.seatId];
@@ -290,7 +576,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
     // Fires the moment an attempt inside EITHER command comes back silent, so
     // the banner appears from the first failure rather than after the whole
     // backoff for both commands has run out.
-    const onRetry = () => set({ connection: RECONNECTING });
+    const onRetry = () => {
+      if (generation === tableGeneration) set({ connection: RECONNECTING });
+    };
 
     // Two commands, in order: the bet must be recorded before it is locked.
     const placed = await activeTableGateway().command(
@@ -298,7 +586,9 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { type: "PLACE_BET", expectedVersion: current.state.version, payload: { amount: staged } },
       { onRetry },
     );
+    if (generation !== tableGeneration) return;
     if (!placed.ok) {
+      if (dropIfSeatIsClosed(get, set, placed)) return;
       const { connection, notice } = afterFailure(placed);
       set({ pending: false, connection, notice });
       return;
@@ -309,64 +599,60 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       { type: "LOCK_BET", expectedVersion: placed.state.version, payload: {} },
       { onRetry },
     );
+    if (generation !== tableGeneration) return;
     if (!locked.ok) {
+      if (dropIfSeatIsClosed(get, set, locked)) return;
       const { connection, notice } = afterFailure(locked);
       set({
         pending: false,
         stagedBet: 0,
         connection,
-        status: { kind: "at-table", state: placed.state, seatId: current.seatId },
+        ...snapshotUpdate(get, placed.state, placed.events),
         notice,
-        lastEvents: placed.events,
       });
       return;
     }
     set({
       pending: false,
       stagedBet: 0,
+      // The amount the server ACCEPTED, not the amount that was staged: a
+      // refused or clamped bet is not the one to offer again.
+      lastBet: staged,
       connection: LIVE,
-      status: { kind: "at-table", state: locked.state, seatId: current.seatId },
+      ...snapshotUpdate(get, locked.state, locked.events),
       notice: null,
-      lastEvents: locked.events,
     });
   },
 
   act: async (action) => {
-    const current = get().status;
-    if (current.kind !== "at-table" || get().pending) return;
+    await sendSimpleCommand(get, set, action);
+  },
 
-    set({ pending: true, notice: null });
-    const result = await activeTableGateway().command(
-      current.state.gameId,
-      { type: action, expectedVersion: current.state.version, payload: {} },
-      { onRetry: () => set({ connection: RECONNECTING }) },
-    );
+  takeInsurance: async () => {
+    await sendSimpleCommand(get, set, "INSURANCE");
+  },
 
-    if (!result.ok) {
-      const { connection, notice } = afterFailure(result);
-      set({ pending: false, connection, notice });
-      return;
-    }
-    set({
-      pending: false,
-      connection: LIVE,
-      status: { kind: "at-table", state: result.state, seatId: current.seatId },
-      lastEvents: result.events,
-    });
+  declineInsurance: async () => {
+    await sendSimpleCommand(get, set, "DECLINE_INSURANCE");
   },
 
   nextHand: async () => {
     const current = get().status;
     if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
 
     set({ pending: true, notice: null });
     const result = await activeTableGateway().command(
       current.state.gameId,
       { type: "NEXT_HAND", expectedVersion: current.state.version, payload: {} },
-      { onRetry: () => set({ connection: RECONNECTING }) },
+      { onRetry: () => {
+        if (generation === tableGeneration) set({ connection: RECONNECTING });
+      } },
     );
+    if (generation !== tableGeneration) return;
 
     if (!result.ok) {
+      if (dropIfSeatIsClosed(get, set, result)) return;
       const { connection, notice } = afterFailure(result);
       set({ pending: false, connection, notice });
       return;
@@ -375,24 +661,278 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
       pending: false,
       stagedBet: 0,
       connection: LIVE,
-      status: { kind: "at-table", state: result.state, seatId: current.seatId },
-      lastEvents: result.events,
+      ...snapshotUpdate(get, result.state, result.events),
     });
   },
 
-  leaveTable: () => {
+  resolveTimeout: async () => {
+    const current = get().status;
+    if (current.kind !== "at-table") return;
+    const generation = tableGeneration;
+    if (
+      !shouldRequestTimeoutResolution({
+        deadlineAt: current.state.deadlineAt,
+        version: current.state.version,
+        now: new Date(),
+        pending: get().pending,
+        connected: get().connection.kind === "live",
+        alreadyAskedForVersion: get().timeoutAskedForVersion,
+        lastAskedAt: get().timeoutAskedAt,
+      })
+    ) {
+      return;
+    }
+
+    // Recorded BEFORE the call, not after: the await is what a second render
+    // tick would race, and an ask that is in flight has already been made.
+    set({ timeoutAskedForVersion: current.state.version, timeoutAskedAt: Date.now() });
+
+    const result = await activeTableGateway().command(
+      current.state.gameId,
+      { type: "RESOLVE_TIMEOUT", expectedVersion: current.state.version, payload: {} },
+      // No backoff. If this one is lost the deadline is still expired, the
+      // version has not moved, and the next tick asks again.
+      { retry: false },
+    );
+    if (generation !== tableGeneration) return;
+
+    if (!result.ok) {
+      /*
+       * Silent, in both of the two ways this fails.
+       *
+       * DEADLINE_NOT_REACHED means this device's clock ran a little ahead of the
+       * server's — nothing a player did and nothing they can act on. Silence
+       * means the poll will find out what happened. Neither is a refusal of
+       * anything the player asked for, and a notice here would also buzz the
+       * rejection haptic for a request nobody made.
+       */
+      if (dropIfSeatIsClosed(get, set, result)) return;
+      if (result.reason === "unreachable") set({ connection: RECONNECTING });
+      return;
+    }
+    set({
+      connection: LIVE,
+      ...snapshotUpdate(get, result.state, result.events),
+    });
+  },
+
+  leaveTable: async () => {
+    const current = get().status;
+    // Nothing to close: never sat down, or already closed.
+    if (current.kind !== "at-table") {
+      get().forgetTable();
+      return true;
+    }
+    const generation = tableGeneration;
+
+    set({ pending: true, notice: null });
+    const outcome = await activeTableGateway().cashOut(current.state.gameId);
+    if (generation !== tableGeneration) return false;
+    set({ pending: false });
+
+    if (!outcome.ok) {
+      /*
+       * Stay at the table. Walking away from a refused cash-out is exactly the
+       * bug this replaced: the chips are still in escrow and the player has no
+       * other route back to them.
+       *
+       * SESSION_BUSY is the one refusal that is a "not yet" rather than a "no",
+       * so the ask is HELD and completed at the first safe boundary. Without
+       * that the notice below was a promise the app did not keep: a player who
+       * tapped leave mid-hand and stopped watching stayed seated, was stood in
+       * by the action timer every hand, and their buy-in stayed in escrow.
+       */
+      const holding = outcome.reason === "refused" && outcome.code === "SESSION_BUSY";
+      set({ notice: outcome.message, leavingWhenSafe: holding });
+      return false;
+    }
+
+    /*
+     * The server just told us the balance after the credit. Refreshing rather
+     * than trusting a locally computed number keeps the client out of the
+     * arithmetic, and refreshing AT ALL is what stops the header showing the
+     * pre-cash-out figure until the next launch.
+     */
+    void useWalletStore.getState().refresh();
+
+    get().forgetTable();
+    return true;
+  },
+
+  resetStack: async () => {
+    const current = get().status;
+    if (current.kind !== "at-table" || get().pending) return;
+    const generation = tableGeneration;
+
+    set({ pending: true, notice: null });
+    const outcome = await activeTableGateway().resetPrivateStack(current.state.gameId);
+    if (generation !== tableGeneration) return;
+
+    if (!outcome.ok) {
+      // A seat that closed under this player is the one failure worth leaving
+      // the table for; everything else is a notice beside a table they are
+      // still at, exactly as it is for a command.
+      if (dropIfSeatIsClosed(get, set, outcome)) return;
+      const { connection, notice } = afterFailure(outcome);
+      set({ pending: false, connection, notice });
+      return;
+    }
+
+    /*
+     * The snapshot replaces what was here, like every other server answer.
+     *
+     * `lastEvents` is NOT touched and `lastAppliedSeq` is left alone: a reset
+     * emits no engine event, so there is nothing to hear and no sequence to
+     * advance. Clearing the last batch would be wrong in the other direction —
+     * the identity is what `useTableFeedback` keys on, and a fresh empty array
+     * reads as a new batch.
+     */
+    set({
+      pending: false,
+      connection: LIVE,
+      ...snapshotUpdate(get, outcome.state),
+      // A different stack is a different set of affordable bets, and the wager
+      // this seat last had accepted was made against chips it no longer has.
+      stagedBet: 0,
+      lastBet: 0,
+      notice: null,
+    });
+  },
+
+  forgetTable: () => {
+    tableGeneration++;
     unsubscribe?.();
     unsubscribe = null;
     set({
       status: { kind: "idle" },
       connection: LIVE,
       stagedBet: 0,
+      lastBet: 0,
       notice: null,
       pending: false,
+      lastAppliedSeq: 0,
+      timeoutAskedForVersion: null,
+      timeoutAskedAt: null,
+      leavingWhenSafe: false,
       lastEvents: EMPTY_EVENTS,
     });
   },
 }));
+
+/**
+ * A pushed snapshot, applied under the specification's sequence rules.
+ *
+ * The three cases are the specification's own, verbatim:
+ *
+ *   seq <= lastAppliedSeq        ignore the duplicate
+ *   seq == lastAppliedSeq + 1    apply
+ *   seq >  lastAppliedSeq + 1    fetch the authoritative snapshot
+ *
+ * The first is the one that was doing damage. The store deduped on `version`,
+ * and a command's own reply and the broadcast the server fans out after
+ * committing it carry the SAME version — so every action at a server table
+ * applied its events twice, and `useTableFeedback` keys on array identity,
+ * which a second `set` changes. Every deal played its cards twice and every
+ * settled hand fired its outcome haptic and sting twice.
+ *
+ * The third is softened by one deliberate difference. Arc 21's broadcast is a
+ * FULL public state rather than a delta, so a gap loses events but never state:
+ * dropping the payload and waiting for the fetch would blank nothing but would
+ * delay a table the client already holds correctly. So the state is adopted, the
+ * incomplete event batch is NOT played, and an authoritative snapshot is fetched
+ * anyway — which is what makes the recovery real rather than assumed.
+ *
+ * A batch with no events at all (a competition closing) has no sequence to
+ * compare and falls back to the version, which is the only ordering it has.
+ */
+function applyPushedState(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  pushed: PublicGameState,
+  events: TableEvents,
+): void {
+  const current = get().status;
+  if (current.kind !== "at-table" || current.state.gameId !== pushed.gameId) return;
+  // Polling may already have adopted a newer state without any event sequence.
+  // An unseen event number does not make an older snapshot current again.
+  if (pushed.version <= current.state.version) return;
+
+  const seq = seqRangeOf(events);
+  const lastApplied = get().lastAppliedSeq;
+
+  if (seq === null) {
+    // No event sequence; the version check above establishes freshness.
+    set({ status: { kind: "at-table", state: pushed, seatId: current.seatId } });
+    return;
+  }
+
+  // Already applied — this client's own command reply, or a redelivery.
+  if (seq.last <= lastApplied) return;
+
+  if (seq.first === lastApplied + 1 || lastApplied === 0) {
+    set({
+      status: { kind: "at-table", state: pushed, seatId: current.seatId },
+      lastAppliedSeq: seq.last,
+      // A pushed batch describes somebody else's action as well as your own,
+      // which is exactly what should be heard at a shared table.
+      lastEvents: events,
+    });
+    return;
+  }
+
+  // A gap. Adopt the state — it is authoritative and never older than what is
+  // held — but say nothing about a story with a hole in it, and go and ask.
+  set({
+    status: { kind: "at-table", state: pushed, seatId: current.seatId },
+    lastAppliedSeq: seq.last,
+    lastEvents: EMPTY_EVENTS,
+  });
+  void get().refresh();
+}
+
+/**
+ * One command with an empty payload, sent and applied.
+ *
+ * `act`, `takeInsurance` and `declineInsurance` are the same six lines with a
+ * different string, and they were about to become three copies of them. The
+ * shape is deliberately narrow — no payload — because the two that DO carry one
+ * (`PLACE_BET` and `LOCK_BET`) also differ in what they clear afterwards, and
+ * folding them in here would hide that.
+ *
+ * Nothing is predicted locally. The snapshot in the reply is the whole of the
+ * new state, so a refusal leaves the table exactly where the server has it.
+ */
+async function sendSimpleCommand(
+  get: () => OnlineTableStoreState,
+  set: (partial: Partial<OnlineTableStoreState>) => void,
+  type: "INSURANCE" | "DECLINE_INSURANCE" | PlayerActionType,
+): Promise<void> {
+  const current = get().status;
+  if (current.kind !== "at-table" || get().pending) return;
+  const generation = tableGeneration;
+
+  set({ pending: true, notice: null });
+  const result = await activeTableGateway().command(
+    current.state.gameId,
+    { type, expectedVersion: current.state.version, payload: {} },
+    { onRetry: () => {
+      if (generation === tableGeneration) set({ connection: RECONNECTING });
+    } },
+  );
+  if (generation !== tableGeneration) return;
+
+  if (!result.ok) {
+    if (dropIfSeatIsClosed(get, set, result)) return;
+    const { connection, notice } = afterFailure(result);
+    set({ pending: false, connection, notice });
+    return;
+  }
+  set({
+    pending: false,
+    connection: LIVE,
+    ...snapshotUpdate(get, result.state, result.events),
+  });
+}
 
 /** The seat this player occupies, or null while the table is not loaded. */
 export function ownSeat(status: OnlineTableStatus) {

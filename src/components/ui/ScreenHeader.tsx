@@ -3,27 +3,75 @@
  *
  * The avatar is how Profile is reached, which is why it appears on every tab
  * rather than in a fifth tab slot.
+ *
+ * THE BALANCE IS READ HERE, not passed in. It used to be a `balance` prop —
+ * and all eight call sites passed `null` or omitted it, so the "Chips" branch
+ * was unreachable and every signed-in player was labelled GUEST on every tab
+ * while `src/features/wallet` (store, gateway, three test files) sat wired to
+ * nothing at all. Found in phase 14 s4 by signing in on the simulator and
+ * watching the header not change. A prop that every caller must remember to
+ * pass is a prop every caller eventually forgets; reading the store is the
+ * only version that cannot silently regress.
+ *
+ * The four not-a-number states are deliberately distinct and none of them
+ * renders a zero — see `wallet-store.ts`, which makes the same point at
+ * length. A rendered `0` is a claim about someone's chips.
  */
 
-import { Pressable, StyleSheet, View } from "react-native";
+import { useEffect } from "react";
+import { Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 import { router } from "expo-router";
 import Svg, { Circle, Path } from "react-native-svg";
 
+import { useAuthStore } from "../../features/auth/auth-store";
+import { useWalletStore } from "../../features/wallet";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
+import { rowStacksAtFontScale } from "../../design/type-metrics";
 import { formatChips } from "../../design/typography";
 import { AppText } from "./AppText";
 
 export interface ScreenHeaderProps {
   title: string;
   subtitle?: string;
-  /** Global wallet balance. Null for a guest, who has no server wallet. */
-  balance?: number | null;
 }
 
-export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderProps) {
+export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
+  /*
+   * Above this text scale the header stacks instead of sitting in one row: the
+   * fixed-width balance and avatar otherwise squeeze the title block to a few
+   * characters and "Blackjack, without the noise." wraps mid-word beside the
+   * GUEST badge. The threshold is shared with the assistance selector, which
+   * reflows at the same point — see `rowStacksAtFontScale`.
+   */
+  const { fontScale } = useWindowDimensions();
+  const stacked = rowStacksAtFontScale(fontScale);
+
+  /*
+   * Subscribed, then derived — never read through a store getter during
+   * render, which the React Compiler memoises against a stable function
+   * reference and freezes. That bug shipped here once and disabled the Deal
+   * button permanently.
+   */
+  const signedIn = useAuthStore((state) => state.mode === "account" && state.session !== null);
+  const walletStatus = useWalletStore((state) => state.status);
+  const refreshWallet = useWalletStore((state) => state.refresh);
+  const clearWallet = useWalletStore((state) => state.clear);
+
+  /*
+   * Keyed on the session, not on mount: the header is on every tab, so a
+   * per-mount fetch would re-read the wallet on each tab switch. Signing out
+   * clears it, so a number never outlives the session that earned it.
+   */
+  useEffect(() => {
+    if (signedIn) void refreshWallet();
+    else clearWallet();
+  }, [signedIn, refreshWallet, clearWallet]);
+
+  const chips = walletStatus.kind === "ready" ? walletStatus.wallet.balance : null;
+
   return (
-    <View style={styles.header}>
-      <View style={styles.titleBlock}>
+    <View style={[styles.header, stacked ? styles.headerStacked : null]}>
+      <View style={[styles.titleBlock, stacked ? styles.titleBlockStacked : null]}>
         <AppText variant="pageTitle">{title}</AppText>
         {subtitle ? (
           <AppText variant="caption" color="textSecondary">
@@ -32,18 +80,20 @@ export function ScreenHeader({ title, subtitle, balance = null }: ScreenHeaderPr
         ) : null}
       </View>
 
-      <View style={styles.right}>
+      <View style={[styles.right, stacked ? styles.rightStacked : null]}>
         {/*
           A guest has no server wallet, so we say "Guest" rather than showing a
-          zero that would read as an empty balance.
+          zero that would read as an empty balance. A signed-in player whose
+          balance has not arrived yet gets the label alone for the same
+          reason — the number appears when it is real, and never before.
         */}
         <View style={styles.balance}>
           <AppText variant="overline" color="textSecondary">
-            {balance === null ? "Guest" : "Chips"}
+            {signedIn ? "Chips" : "Guest"}
           </AppText>
-          {balance !== null ? (
-            <AppText variant="bodyStrong" numeric>
-              {formatChips(balance)}
+          {chips !== null ? (
+            <AppText variant="bodyStrong" numeric testID="header-chips">
+              {formatChips(chips)}
             </AppText>
           ) : null}
         </View>
@@ -83,14 +133,30 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
     gap: spacing.md,
   },
+  headerStacked: {
+    flexDirection: "column",
+    alignItems: "flex-start",
+  },
   titleBlock: {
     flex: 1,
     gap: 2,
+  },
+  // `flex: 1` would grow the title block vertically once the header is a
+  // column, pushing the balance and avatar to the bottom of a tall box.
+  titleBlockStacked: {
+    flex: 0,
+    alignSelf: "stretch",
   },
   right: {
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
+  },
+  // Stacked, the row is no longer competing for width, so it takes the full
+  // line and keeps the avatar reachable at the leading edge.
+  rightStacked: {
+    alignSelf: "stretch",
+    justifyContent: "flex-start",
   },
   balance: {
     alignItems: "flex-end",

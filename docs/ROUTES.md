@@ -17,6 +17,7 @@ declares no screen list, so no shared file needs editing to add one.
 | `/(tabs)/play` | `app/(tabs)/play.tsx` | Game-mode selector. |
 | `/(tabs)/learn` | `app/(tabs)/learn.tsx` | Learning hub linking to the routes below. |
 | `/(tabs)/social` | `app/(tabs)/social.tsx` | Friends, blocked players, private tables, leaderboards. |
+| `+not-found` | `app/+not-found.tsx` | Any `arc21://` URL naming a screen that does not exist. Not a route a control ever points at — it is where expo-router sends what it cannot match, and without it the fallback is expo-router's own light-themed `Unmatched` page whose one control links to the same unmatched path. `tests/e2e/dead-ends.yaml` drives a bad deep link into it and back out. |
 
 Four bottom destinations only: **HOME, PLAY, LEARN, SOCIAL**. Profile opens from
 the avatar in the top-right header, never a fifth tab.
@@ -41,7 +42,7 @@ the avatar in the top-right header, never a fifth tab.
 | Path | File | Purpose |
 |------|------|---------|
 | `/tournament` | `app/tournament/index.tsx` | Sprint Tournament: the format and entry fee before anything is spent, then registration, standings and the final result. |
-| `/daily` | `app/daily/index.tsx` | Daily Challenge: today's format, the published seed commitment, and the one ranked attempt. |
+| `/daily` | `app/daily/index.tsx` | Daily Challenge: today's format, the published seed commitment, the one ranked attempt, and the fairness card for the most recently CLOSED challenge — whose seed the device hashes itself to check the commitment. |
 
 Both are reached from the Play tab. The tournament screen reads its format from
 `sprint_format()` rather than restating it in copy — that function is granted to
@@ -65,7 +66,7 @@ opens `/table/[gameId]` like any other.
 
 | Path | File | Purpose |
 |------|------|---------|
-| `/leaderboards` | `app/leaderboards/index.tsx` | Weekly XP, Tournament Wins, Strategy Accuracy and Daily Challenge. Reached from Social. |
+| `/leaderboards` | `app/leaderboards/index.tsx` | Weekly XP, Tournament Wins, Strategy Accuracy and Daily Challenge, 25 rows at a time with "Load more". Reached from Social. |
 | `/profile/inventory` | `app/profile/inventory.tsx` | Avatars, card backs and table themes: owned, locked with their requirement, and equip. Reached from Profile. |
 
 Global bankroll is deliberately not a board. There is no `/shop` route and there

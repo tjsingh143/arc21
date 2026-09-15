@@ -20,7 +20,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(34);
+select plan(44);
 
 -- ---------------------------------------------------------------------------
 -- Structure
@@ -29,10 +29,19 @@ select plan(34);
 select has_table('public', 'player_decision_periods', 'decisions are bucketed by week');
 select has_function('public', 'record_decisions',
   array['uuid', 'integer', 'integer', 'timestamptz'], 'grading is recorded by a server function');
-select has_function('public', 'leaderboard_weekly_xp', array['integer'], 'weekly XP board exists');
-select has_function('public', 'leaderboard_tournament_wins', array['integer'], 'tournament board exists');
-select has_function('public', 'leaderboard_strategy_accuracy', array['integer'], 'accuracy board exists');
-select has_function('public', 'leaderboard_daily_challenge', array['date', 'integer'], 'daily board exists');
+-- Every board takes an OFFSET as well as a limit, and the one-argument forms are
+-- gone rather than left beside them: two functions differing only in a defaulted
+-- parameter make `leaderboard_weekly_xp(100)` ambiguous, and Postgres answers
+-- "function is not unique" rather than choosing.
+select has_function('public', 'leaderboard_weekly_xp', array['integer', 'integer'], 'weekly XP board pages');
+select has_function('public', 'leaderboard_tournament_wins', array['integer', 'integer'], 'tournament board pages');
+select has_function('public', 'leaderboard_strategy_accuracy', array['integer', 'integer'], 'accuracy board pages');
+select has_function('public', 'leaderboard_daily_challenge', array['date', 'integer', 'integer'], 'daily board pages');
+
+select hasnt_function('public', 'leaderboard_weekly_xp', array['integer'],
+  'and the un-paged weekly board no longer exists to be ambiguous with it');
+select hasnt_function('public', 'leaderboard_daily_challenge', array['date', 'integer'],
+  'and neither does the un-paged daily board');
 
 -- The projection, asserted at the type rather than per query. A board cannot leak
 -- a user id however it is written, because the shape it returns has no column for
@@ -153,6 +162,40 @@ select is(
   'and excludes a player who has not reached the hundred-decision bar'
 );
 
+-- ---------------------------------------------------------------------------
+-- Paging
+-- ---------------------------------------------------------------------------
+--
+-- Asserted against the WHOLE board rather than an absolute page: other accounts
+-- qualify for this board too, so a test naming "the second row" would report
+-- whoever else happened to have played this week. What paging promises is that
+-- the pages concatenate back into the board, in order, with nothing repeated and
+-- nothing missed — and that holds however many players there are.
+
+select is(
+  (select array_agg(row(rank, display_name, value)::text order by ordinality)
+   from (
+     select * from public.leaderboard_strategy_accuracy(2, 0) with ordinality
+     union all
+     select * from public.leaderboard_strategy_accuracy(2, 2) with ordinality
+   ) pages),
+  (select array_agg(row(rank, display_name, value)::text order by ordinality)
+   from public.leaderboard_strategy_accuracy(4, 0) with ordinality),
+  'two pages of two are the first four rows, in the same order'
+);
+
+select is(
+  (select count(*)::int from public.leaderboard_strategy_accuracy(2, 0)),
+  2,
+  'a page is the size it was asked for'
+);
+
+select is(
+  (select count(*)::int from public.leaderboard_strategy_accuracy(100, 1000000)),
+  0,
+  'and an offset past the end of the board is an empty page, not an error'
+);
+
 select is(
   (select qualified from public.my_strategy_accuracy_progress()),
   true,
@@ -221,6 +264,72 @@ select is(
                            'wallets', 'wallet_ledger', 'tournaments', 'daily_challenges')),
   0,
   'no gameplay or economy table references a cosmetic, so none can affect play'
+);
+
+-- ---------------------------------------------------------------------------
+-- The eight career-gated cosmetics
+-- ---------------------------------------------------------------------------
+-- Three chapter finals by node code and five by chapter. All eight were
+-- unobtainable: they gate on `career_progress`, and nothing anywhere wrote a
+-- row into it. `tests/server/career.integration.test.ts` proves the writer
+-- against the live stack; this proves the gate opens once rows exist, without
+-- playing sixty hands to get there.
+
+reset role;
+
+insert into auth.users (id, email, aud, role) values
+  ('0e000000-0000-4000-8000-00000000000c', 'cos-career@arc21.test', 'authenticated', 'authenticated');
+
+select is(
+  (select count(*)::int
+   from public.cosmetics c
+   where c.unlock_type in ('career_node', 'career_chapter')
+     and public.cosmetic_is_earned('0e000000-0000-4000-8000-00000000000c', c.id)),
+  0,
+  'a new player has earned none of the career cosmetics'
+);
+
+-- Just the chapter final, completed. Its own gate opens; the chapter's does not.
+insert into public.career_progress (user_id, career_node_id, status, stars, first_completed_at)
+select '0e000000-0000-4000-8000-00000000000c', id, 'completed', 1, now()
+from public.career_nodes where code = 'foundation-final';
+
+select ok(
+  public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics where unlock_config ->> 'careerNodeCode' = 'foundation-final')),
+  'completing a chapter final earns the card back it gates'
+);
+
+select ok(
+  not public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics
+     where unlock_type = 'career_chapter' and unlock_config ->> 'chapter' = 'FOUNDATIONS'
+     limit 1)),
+  'but one node is not the chapter — five other nodes are still incomplete'
+);
+
+-- The whole chapter.
+insert into public.career_progress (user_id, career_node_id, status, stars, first_completed_at)
+select '0e000000-0000-4000-8000-00000000000c', id, 'completed', 1, now()
+from public.career_nodes where chapter = 'FOUNDATIONS'
+on conflict (user_id, career_node_id) do update set status = 'completed';
+
+select ok(
+  public.cosmetic_is_earned(
+    '0e000000-0000-4000-8000-00000000000c',
+    (select id from public.cosmetics
+     where unlock_type = 'career_chapter' and unlock_config ->> 'chapter' = 'FOUNDATIONS'
+     limit 1)),
+  'completing every node in the chapter earns the chapter reward'
+);
+
+-- And the grant actually hands them over, rather than merely reporting them
+-- earned. Two different questions, and the second is the one a player sees.
+select ok(
+  public.grant_earned_cosmetics_for('0e000000-0000-4000-8000-00000000000c') > 0,
+  'the grant hands over what the career unlocked'
 );
 
 select * from finish();

@@ -13,7 +13,7 @@
  * refused, or joined.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
@@ -36,18 +36,20 @@ export default function RoomInvite() {
   const setCodeInput = useRoomsStore((state) => state.setCodeInput);
   const joinRoom = useRoomsStore((state) => state.joinRoom);
 
-  const [attempted, setAttempted] = useState(false);
+  // A once-only latch, never rendered. As state it re-ran this effect with its
+  // own write and cost a render for a value nothing displays.
+  const attempted = useRef(false);
 
   const wellFormed = looksLikeRoomCode(code);
 
   useEffect(() => {
     // A guest has no account to seat, and joining is not the moment to force
     // one: the screen says what is needed and offers the route.
-    if (!session || !wellFormed || attempted) return;
-    setAttempted(true);
+    if (!session || !wellFormed || attempted.current) return;
+    attempted.current = true;
     setCodeInput(code);
     void joinRoom();
-  }, [session, wellFormed, attempted, code, setCodeInput, joinRoom]);
+  }, [session, wellFormed, code, setCodeInput, joinRoom]);
 
   // Joined: hand over to the lobby, which is where a seated player belongs.
   useEffect(() => {

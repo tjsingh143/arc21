@@ -35,10 +35,12 @@ import {
   publicGameStateSchema,
   type ContractEngineEvent,
   type ContractPublicGameState,
+  type PublicGameEvent,
 } from "../../../shared/contracts/index.js";
 import type { PublicGameState } from "../../../shared/blackjack/index.js";
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
 import { newClientActionId } from "../../lib/supabase/ids.js";
+import { readRejection } from "../../lib/supabase/rejection.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { retryWhile, type BackoffPolicy } from "../../lib/supabase/with-retry.js";
 
@@ -69,8 +71,38 @@ export interface TableFailure {
  * Carried alongside the state rather than derived from it. Feedback — a card
  * sound, a win haptic — must describe what the server said happened, and a diff
  * between two snapshots cannot tell a second card of a deal from a redraw.
+ *
+ * THE ORDERING ENVELOPE TRAVELS WITH THEM. This used to be
+ * `readonly ContractEngineEvent[]`, unwrapped here with the comment "the
+ * sequence numbers are the store's concern" — and the store never received one,
+ * because this is where they were thrown away. `publicGameEventSchema` has
+ * carried `seq` since the contract was written, and both it and
+ * `_shared/realtime-broadcast.ts` describe a client that "tracks lastAppliedSeq
+ * and refetches on a gap"; nothing did. The visible cost was a duplicate
+ * broadcast replaying the settlement: the store deduped on `version`, which is
+ * EQUAL for a command's own reply and the broadcast that follows it, so every
+ * action at a server table fired its cards and its outcome twice.
  */
-export type TableEvents = readonly ContractEngineEvent[];
+export type TableEvents = readonly PublicGameEvent[];
+
+/** The events of one batch, unwrapped for anything that only cares what happened. */
+export function engineEventsOf(events: TableEvents): readonly ContractEngineEvent[] {
+  return events.map((published) => published.event);
+}
+
+/**
+ * The sequence range a batch covers, or `null` when it carried no events.
+ *
+ * `null` is a real answer and not a missing one: a snapshot read carries no
+ * events by construction, and `closeCompetition` broadcasts an empty batch. A
+ * caller with no sequence to compare falls back to the state version.
+ */
+export function seqRangeOf(events: TableEvents): { first: number; last: number } | null {
+  const first = events[0];
+  const last = events[events.length - 1];
+  if (!first || !last) return null;
+  return { first: first.seq, last: last.seq };
+}
 
 export type TableSnapshotOutcome =
   | { readonly ok: true; readonly state: PublicGameState; readonly events: TableEvents }
@@ -99,9 +131,56 @@ export interface TableCallOptions {
   readonly onRetry?: () => void;
 }
 
+/**
+ * What came back from a cash-out.
+ *
+ * `walletBalance` is the server's number after the credit, not one this client
+ * computed — the whole point of the escrow is that the client never arithmetics
+ * its way to a balance.
+ */
+export type TableCashOutOutcome =
+  | { readonly ok: true; readonly walletBalance: number | null }
+  | TableFailure;
+
+/**
+ * What came back from a private table's free reset.
+ *
+ * The snapshot is the server's, exactly as it is for a command: the stack in it
+ * is the ruleset's figure applied server-side, never one this client named.
+ */
+export type TableStackResetOutcome =
+  | { readonly ok: true; readonly state: PublicGameState }
+  | TableFailure;
+
 export interface TableGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   snapshot(gameId: string, options?: TableCallOptions): Promise<TableSnapshotOutcome>;
+  /**
+   * Put a broke seat back on a private table's fixed stack.
+   *
+   * The specification's rule for a private table: "if a private player reaches
+   * zero session chips, permit a free reset to 5,000 between hands; private
+   * mode is unranked." `RESET_PRIVATE_STACK` has been implemented, contracted
+   * and logged on the server since the private-table work landed, and **nothing
+   * in this app had ever sent it** — so a player who busted at a table with
+   * their friends sat out every remaining hand of it, permanently, with the
+   * remedy sitting unreachable behind the wire.
+   *
+   * Named ONLY by its game. The amount is the ruleset's and the three guards —
+   * private table, between hands, actually broke — are all the server's. A
+   * client that could name a stack at an unranked table could name one anywhere.
+   */
+  resetPrivateStack(gameId: string): Promise<TableStackResetOutcome>;
+  /**
+   * Close this seat and return the remaining stack to the wallet.
+   *
+   * `CASH_OUT` has existed and been tested on the server since phase 5, and
+   * nothing in this app has ever sent it — so a player who left a table left
+   * their stack behind, permanently, while the screen promised "whatever is
+   * left comes back when you leave". The server refuses mid-hand (SESSION_BUSY)
+   * and is idempotent per `gameId:seatId`, so a retry cannot credit twice.
+   */
+  cashOut(gameId: string): Promise<TableCashOutOutcome>;
   command(
     gameId: string,
     command: TableCommand,
@@ -140,6 +219,8 @@ export function createUnconfiguredTableGateway(message: string): TableGateway {
     kind: "unconfigured",
     snapshot: refuse,
     command: refuse,
+    cashOut: refuse,
+    resetPrivateStack: refuse,
     subscribe: () => () => undefined,
   };
 }
@@ -173,59 +254,11 @@ function readState(
   // what proves the bytes matched it.
   return {
     state: parsed.data.publicState as ContractPublicGameState as PublicGameState,
-    // Unwrapped from their ordering envelope: feedback cares what happened, and
-    // the sequence numbers are the store's concern.
-    events: (parsed.data.events ?? []).map((published) => published.event),
+    // Kept IN their ordering envelope. The store dedupes on `seq`; unwrapping
+    // here is what left it with only `version` to compare, and a command's own
+    // reply and the broadcast that follows it share a version.
+    events: parsed.data.events ?? [],
   };
-}
-
-/**
- * The rejection envelope, as `toRejectedResponse` builds it on the server.
- *
- * A rejection arrives with the contract's own HTTP status — 409, 422, 429 —
- * so `functions.invoke` reports it as an error and hands back the `Response`
- * rather than the body. Parsing it here is what distinguishes "the server
- * answered and said no" from "nothing answered", which is the distinction the
- * whole retry decision rests on.
- */
-const rejectionSchema = z.object({
-  status: z.literal("rejected"),
-  code: z.string().min(1).max(64),
-  message: z.string().min(1).max(500),
-});
-
-/** A Response, structurally — `FunctionsFetchError` carries something else. */
-function responseLike(value: unknown): { json: () => Promise<unknown> } | null {
-  if (typeof value !== "object" || value === null) return null;
-  const candidate = value as { json?: unknown };
-  return typeof candidate.json === "function"
-    ? (value as { json: () => Promise<unknown> })
-    : null;
-}
-
-/**
- * The server's verdict, or null when nothing recognisable came back.
- *
- * Null is the important return: a 503 from the API gateway with the Edge
- * runtime down, an HTML error page from a captive portal, or a body that fails
- * the schema all mean the same thing — this client did not learn what happened
- * to its command, and must not pretend otherwise.
- */
-async function readRejection(
-  error: unknown,
-): Promise<{ code: string; message: string } | null> {
-  const context = responseLike((error as { context?: unknown } | null)?.context);
-  if (context === null) return null;
-
-  let body: unknown;
-  try {
-    body = await context.json();
-  } catch {
-    return null;
-  }
-
-  const parsed = rejectionSchema.safeParse(body);
-  return parsed.success ? { code: parsed.data.code, message: parsed.data.message } : null;
 }
 
 export function createSupabaseTableGateway(
@@ -322,8 +355,120 @@ export function createSupabaseTableGateway(
     return value;
   }
 
+  /**
+   * Close the seat and take the remaining stack back to the wallet.
+   *
+   * A DIFFERENT function from the one every other call here uses:
+   * `create-session` owns the economic boundary, `game-command` owns play. The
+   * idempotency key the server derives is `gameId:seatId`, NOT this request id,
+   * so a retried cash-out cannot buy a second credit — which is why retrying is
+   * safe and why leaving without one is not.
+   */
+  async function requestCashOut(gameId: string): Promise<TableCashOutOutcome> {
+    const denied = await requireSession();
+    if (denied) return denied;
+
+    const result = await bounded(
+      client.functions.invoke("create-session", {
+        body: {
+          action: "CASH_OUT",
+          gameId,
+          clientRequestId: globalThis.crypto.randomUUID(),
+          clientSentAt: new Date().toISOString(),
+        },
+      }),
+    );
+    if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+
+    if (result.error) {
+      const rejection = await readRejection(result.error);
+      if (rejection) {
+        return {
+          ok: false,
+          reason: "refused",
+          message:
+            rejection.code === "SESSION_BUSY"
+              ? "This hand is still live. Your chips come back as soon as it settles."
+              : rejection.message,
+          code: rejection.code,
+        };
+      }
+      return { ok: false, reason: "unreachable", message: UNREACHABLE };
+    }
+
+    const body = result.data as { walletBalance?: unknown } | null;
+    return {
+      ok: true,
+      walletBalance: typeof body?.walletBalance === "number" ? body.walletBalance : null,
+    };
+  }
+
+  /**
+   * The free reset, at `create-session` rather than `game-command`.
+   *
+   * The same boundary as the cash-out and for the same reason: `create-session`
+   * owns what a seat is worth, `game-command` owns play. Retried on silence like
+   * every other one-shot the player is waiting on — a reset that arrives twice
+   * sets the same stack to the same figure, and the server refuses the second
+   * outright once the first has left the seat able to cover the minimum.
+   */
+  async function requestStackReset(gameId: string): Promise<TableStackResetOutcome> {
+    const denied = await requireSession();
+    if (denied) return denied;
+
+    /*
+     * Minted ONCE, outside the retry loop, for the same reason `send` does it:
+     * every attempt at one intent presents the same key. The server derives no
+     * idempotency record from it today — it does not need one, because a
+     * SECOND reset finds a stack that can cover the minimum and is refused on
+     * that guard — but a request id that changed per attempt would be a lie
+     * about what the attempts are, and the guard is not the place to rely on.
+     */
+    const clientRequestId = globalThis.crypto.randomUUID();
+
+    const attemptOnce = async (): Promise<TableStackResetOutcome> => {
+      const result = await bounded(
+        client.functions.invoke("create-session", {
+          body: {
+            action: "RESET_PRIVATE_STACK",
+            gameId,
+            clientRequestId,
+            clientSentAt: new Date().toISOString(),
+          },
+        }),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+
+      if (result.error) {
+        const rejection = await readRejection(result.error);
+        if (rejection === null) {
+          return { ok: false, reason: "unreachable", message: UNREACHABLE };
+        }
+        return {
+          ok: false,
+          reason: "refused",
+          message: rejection.message,
+          code: rejection.code,
+        };
+      }
+
+      const read = readState(result.data);
+      if (!read) return { ok: false, reason: "unreachable", message: UNREADABLE };
+      return { ok: true, state: read.state };
+    };
+
+    const { value } = await retryWhile(
+      attemptOnce,
+      (outcome) => !outcome.ok && outcome.reason === "unreachable",
+      { ...(policy ? { policy } : {}) },
+    );
+    return value;
+  }
+
   return {
     kind: "supabase",
+    cashOut: requestCashOut,
+    resetPrivateStack: requestStackReset,
 
     /**
      * Read the table without changing it.
@@ -376,13 +521,20 @@ export function createSupabaseTableGateway(
       onState: (state: PublicGameState, events: TableEvents) => void,
     ): () => void {
       const channel = client
-        .channel(`game:${gameId}`)
+        /*
+         * PRIVATE. A public topic delivered this table's state to anyone
+         * holding the anon key and accepted a forged `state` from any account
+         * — both measured against the running stack. Declaring it private makes
+         * Realtime check `realtime.messages`, where the policy requires a live
+         * seat at THIS game to read and grants no client the right to write.
+         */
+        .channel(`game:${gameId}`, { config: { private: true } })
         .on("broadcast", { event: "state" }, (message: { payload?: unknown }) => {
           const parsed = broadcastSchema.safeParse(message.payload);
           if (!parsed.success) return;
           onState(
             parsed.data.publicState as ContractPublicGameState as PublicGameState,
-            (parsed.data.events ?? []).map((published) => published.event),
+            parsed.data.events ?? [],
           );
         })
         .subscribe();

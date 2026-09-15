@@ -21,14 +21,27 @@ import { SurfaceCard } from "../../../src/components/ui/Card";
 import { ActionDock } from "../../../src/components/table/ActionDock";
 import { BettingBar } from "../../../src/components/table/BettingBar";
 import { HandCards } from "../../../src/components/table/HandCards";
+import { HandSelector } from "../../../src/components/table/HandSelector";
+import { OutcomeBadge } from "../../../src/components/table/OutcomeBadge";
 import { InsuranceSheet } from "../../../src/components/table/InsuranceSheet";
 import { StrategyPanel } from "../../../src/components/table/StrategyPanel";
 import { PlayingCard } from "../../../src/components/cards/PlayingCard";
 import { TableSurface } from "../../../src/features/cosmetics/art";
-import { colors, layout, radius, spacing } from "../../../src/design/tokens";
+import { useTableTextVariant } from "../../../src/design/accessibility";
+import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../../src/design/tokens";
+import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../../src/design/type-metrics";
 import { formatChips } from "../../../src/design/typography";
+import { announce } from "../../../src/lib/accessibility/announce";
+import { rankName } from "../../../shared/blackjack/cards.js";
+import { isVisibleCard } from "../../../shared/blackjack/types.js";
 import { getLegalActions } from "../../../shared/blackjack/legal-actions.js";
 import { careerNodeBySlug, careerNodeWorkload } from "../../../shared/career/nodes.js";
+import { describeDealerUpCardForAnnouncement } from "../../../src/features/table/outcome-announcement.js";
+import {
+  describeSplitHands,
+  focusedSplitHandId,
+  splitHandFromEngineHand,
+} from "../../../src/features/table/split-hands";
 import { actionLabel, computeAdvice, NO_ADVICE } from "../../../src/features/practice/advice";
 import { NO_LEGAL_ACTIONS, PRACTICE_SEAT_ID } from "../../../src/features/practice/practice-store";
 import {
@@ -75,6 +88,20 @@ function StandardSession() {
   const session = useCareerSessionStore();
   const game = session.game;
   const node = session.node;
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the up-card's own id, not the card object or
+  // `game` as a whole, so a re-render that leaves the same up-card in place
+  // does not re-announce it.
+  const dealerUpCard = game?.dealer.cards[0];
+  const dealerUpCardId = dealerUpCard && isVisibleCard(dealerUpCard) ? dealerUpCard.id : null;
+  const dealerUpCardAnnouncement =
+    dealerUpCard && isVisibleCard(dealerUpCard)
+      ? describeDealerUpCardForAnnouncement(rankName(dealerUpCard.rank))
+      : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
 
   if (!game || !node) {
     return (
@@ -88,6 +115,19 @@ function StandardSession() {
 
   const seat = game.seats.find((candidate) => candidate.seatId === CAREER_SEAT_ID);
   if (!seat) return null;
+
+  /*
+   * The split presentation. Career runs the LOCAL engine, so its hands are
+   * `PlayerHand`s and are mapped into the shared shape rather than the module
+   * growing a second code path for them.
+   */
+  const activeHandId =
+    seat.hands[game.activeHandIndex ?? seat.currentHandIndex]?.id ?? null;
+  const splitInputs = seat.hands.map((hand) =>
+    splitHandFromEngineHand(hand, game.rules.splitAceTwentyOneIsBlackjack),
+  );
+  const splitHands = describeSplitHands({ hands: splitInputs, activeHandId });
+  const focusedHandId = focusedSplitHandId({ hands: seat.hands, activeHandId });
 
   const legal = getLegalActions(game, CAREER_SEAT_ID);
   const advice = computeAdvice(game, seat, legal.actions);
@@ -113,7 +153,7 @@ function StandardSession() {
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealer}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer
           </AppText>
           {dealerCards.length > 0 ? (
@@ -133,16 +173,45 @@ function StandardSession() {
               Place a bet to be dealt in.
             </AppText>
           ) : (
-            seat.hands.map((hand, index) =>
-              index === (game.activeHandIndex ?? seat.currentHandIndex) || seat.hands.length === 1 ? (
-                <HandCards
-                  key={hand.id}
-                  cards={[...hand.cards]}
-                  size="hero"
-                  detail={`Bet ${formatChips(hand.wager)}`}
-                />
-              ) : null,
-            )
+            <>
+              {/*
+                THE CHIP ROW A SPLIT NEEDS.
+
+                This screen rendered the active hand and nothing else, so after
+                a split the other hands — their totals, their wagers, whether
+                they had busted — were simply not on screen. The player was
+                acting on hand 2 of 3 with no way to know that was what they
+                were doing. Practice has had this row since it shipped; the
+                logic now lives in `split-hands.ts` so all three tables share
+                one implementation rather than three.
+              */}
+              <HandSelector hands={splitHands} testID="career-hand-selector" />
+
+              {seat.hands.map((hand) =>
+                hand.id === focusedHandId ? (
+                  <View key={hand.id} style={styles.hand}>
+                    <HandCards
+                      cards={[...hand.cards]}
+                      size="hero"
+                      detail={`Bet ${formatChips(hand.wager)}`}
+                      focused={seat.hands.length > 1}
+                    />
+                    {/*
+                      THE RESULT OF THE HAND, WHICH WAS NEVER SHOWN HERE.
+
+                      Practice and the online table both render this badge; the
+                      career table settled a hand and moved straight to "Next
+                      hand", so the one screen in the product whose whole
+                      purpose is teaching correct play never told the player
+                      how the hand had turned out.
+                    */}
+                    {hand.outcome ? (
+                      <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
+                    ) : null}
+                  </View>
+                ) : null,
+              )}
+            </>
           )}
         </View>
       </ScrollView>
@@ -156,11 +225,12 @@ function StandardSession() {
           <BettingBar
             legal={legal}
             stagedBet={session.stagedBet}
-            lastBet={0}
+            // Wired, not a literal 0 with an empty callback — see the store.
+            lastBet={session.lastBet}
             availableStack={seat.stack}
             onAddChip={session.addChip}
             onClear={session.clearBet}
-            onRepeat={() => {}}
+            onRepeat={session.repeatBet}
             onLock={session.lockBet}
           />
         ) : isComplete ? (
@@ -195,6 +265,18 @@ function DrillSession() {
   const session = useCareerSessionStore();
   const node = session.node;
   const scenario = session.scenarios[session.scenarioIndex];
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the scenario's own card id so moving to the
+  // next scenario re-announces it, while grading feedback on the SAME
+  // scenario does not.
+  const dealerUpCardId = scenario?.dealerUpcard.id ?? null;
+  const dealerUpCardAnnouncement = scenario
+    ? describeDealerUpCardForAnnouncement(rankName(scenario.dealerUpcard.rank))
+    : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
 
   if (!node || !scenario) {
     return (
@@ -221,7 +303,7 @@ function DrillSession() {
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealer}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer shows
           </AppText>
           <PlayingCard card={scenario.dealerUpcard} size="medium" />
@@ -230,7 +312,7 @@ function DrillSession() {
         <View style={styles.divider} />
 
         <View style={styles.player}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Your hand
           </AppText>
           <View style={styles.drillHand}>
@@ -381,19 +463,35 @@ function SessionHeader({
         accessibilityLabel="Leave this session"
         style={styles.headerButton}
       >
-        <AppText color="textSecondary">Close</AppText>
+        {/* Fixed-geometry header chrome — see the Practice table's own note. */}
+        <AppText color="textSecondary" maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}>
+          Close
+        </AppText>
       </Pressable>
       <View style={styles.headerCentre}>
-        <AppText variant="overline" color="textSecondary">
+        <AppText
+          variant="overline"
+          color="textSecondary"
+          maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+        >
           {title}
         </AppText>
-        <AppText variant="caption" color="textDisabled" numeric>
+        <AppText
+          variant="caption"
+          color="textDisabled"
+          numeric
+          maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+        >
           {progress}
         </AppText>
       </View>
       <View style={styles.headerButton}>
         {badge ? (
-          <AppText variant="caption" color="info">
+          <AppText
+            variant="caption"
+            color="info"
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             {badge}
           </AppText>
         ) : null}
@@ -412,8 +510,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.sm,
   },
-  headerButton: { minWidth: 64, minHeight: 44, justifyContent: "center" },
-  headerCentre: { alignItems: "center", gap: 2 },
+  headerButton: { minWidth: 64, minHeight: MIN_TOUCH_TARGET, justifyContent: "center" },
+  // `flex: 1` bounds the title block to the row. Without it the node title and
+  // progress line grew past the screen edge at the largest Dynamic Type size
+  // and overlapped the Close control — same fix as the Practice header.
+  headerCentre: { flex: 1, alignItems: "center", gap: 2 },
   felt: {
     flexGrow: 1,
     paddingHorizontal: layout.screenPadding,
@@ -424,6 +525,7 @@ const styles = StyleSheet.create({
   },
   dealer: { alignItems: "center", gap: spacing.sm, paddingTop: spacing.lg, minHeight: 130 },
   divider: { height: 1, backgroundColor: colors.border },
+  hand: { alignItems: "center", gap: spacing.sm },
   player: { alignItems: "center", gap: spacing.md, flexGrow: 1, justifyContent: "center" },
   drillHand: { flexDirection: "row", gap: spacing.sm },
   dock: {

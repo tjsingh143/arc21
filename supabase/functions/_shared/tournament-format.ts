@@ -45,6 +45,17 @@ export const SPRINT = {
   /** XP by placement, paid alongside the prize. */
   prizeXp: [200, 120, 80, 40],
   maxTieBreakHands: 5,
+  /**
+   * How long a tournament may sit `registering` before the server cancels it and
+   * refunds every entry.
+   *
+   * The specification's lobby idle timeout, applied to the one other place a
+   * player can be left holding a paid seat that never happens. Without it a
+   * registrant whose three companions never arrived keeps a spent 500 chips and
+   * is refused every other online mode for the life of the database — which was
+   * the measured behaviour before this existed.
+   */
+  registrationWindowMinutes: 30,
   betMillis: 7_000,
   actionMillis: 15_000,
   /** Short: a tournament table should not sit idle between hands. */

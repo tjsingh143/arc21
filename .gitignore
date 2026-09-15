@@ -40,3 +40,6 @@ supabase/.temp/
 
 expo-env.d.ts
 # @end expo-cli
+# Spec extraction scratch — regenerated from the PDF, never committed
+.spec-extracted.txt
+.spec-partB.txt

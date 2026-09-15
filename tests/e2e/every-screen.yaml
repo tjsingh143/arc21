@@ -8,7 +8,26 @@
 # Each stop asserts a string that only appears if that screen genuinely rendered
 # its own content — not a title that a loading state would also show.
 #
+# THIS FLOW NEEDS A GENUINELY FRESH INSTALL, and `clearState: true` does not
+# give it one. Measured: `launchApp: clearState: true` on iOS leaves the app's
+# **Documents** directory in place, so `Documents/SQLite/arc21.db` — onboarding
+# completion, the Practice session, career progress — survives it, and so does
+# the KEYCHAIN, where the Supabase session lives. This file's very first
+# assertion is that ONBOARDING is on screen, so it has never actually started
+# from a fresh install: it passed because the simulator happened to be in the
+# right state, and it failed the moment two flows that sign in had run on the
+# same device. `scripts/e2e-fresh-app.ts` removes both.
+#
+# It also needs `.env.local` MOVED ASIDE: it asserts `.*no server configured.*`
+# in six places, and that copy appears only while `EXPO_PUBLIC_SUPABASE_URL` is
+# unset. Metro inlines `EXPO_PUBLIC_*` at bundle time, so the dev server has to
+# be restarted after moving it — the file being absent is not enough on its own.
+# `every-screen-online.yaml` is the same audit from the other side, on a build
+# that HAS a server.
+#
 # Run with:
+#   mv .env.local /tmp/            # then restart Metro
+#   npx tsx scripts/e2e-fresh-app.ts
 #   export JAVA_HOME=/opt/homebrew/opt/openjdk
 #   maestro test tests/e2e/every-screen.yaml
 
@@ -17,11 +36,6 @@ appId: com.arc21.app
 - launchApp:
     clearState: true
 
-- runFlow:
-    when:
-      visible: "Open"
-    commands:
-      - tapOn: "Cancel"
 
 # --- Onboarding ------------------------------------------------------------
 - extendedWaitUntil:
@@ -57,7 +71,19 @@ appId: com.arc21.app
 - assertVisible: ".*Blackjack, without the noise.*"
 
 # --- Play tab --------------------------------------------------------------
-- tapOn: "Play"
+# A tab tap can be SWALLOWED while the previous screen is still settling, and
+# `extendedWaitUntil` cannot recover one: it waits for a destination the finger
+# never asked for. This flow failed here with "Sprint Tournament is not visible"
+# while the failure screenshot showed the app still sitting on Home with the
+# Home tab highlighted — the tap COMPLETED and did nothing. Retrying the tap
+# until the destination appears is the same remedy the onboarding tap already
+# uses above. The assertion below is unchanged; only the tap is now durable.
+- repeat:
+    while:
+      notVisible: ".*Sprint Tournament.*"
+    times: 4
+    commands:
+      - tapOn: "Play"
 - extendedWaitUntil:
     visible: ".*Sprint Tournament.*"
     timeout: 15000
@@ -71,10 +97,17 @@ appId: com.arc21.app
 # against an unchanged Play tab. A title present in the tree is not a title the
 # finger can reach.
 - scrollUntilVisible:
-    element: "Sprint Tournament"
+    # REGEX, not the bare title. Each mode card is now ONE accessibility
+    # element whose label carries the title, the purpose, the structure and the
+    # note about needing an account — because a labelled Pressable replaces its
+    # children on iOS, and until this phase a screen reader heard only the
+    # title. Exact-text selectors on these cards stopped matching the moment
+    # that was fixed, and correctly so: there is no bare "Sprint Tournament"
+    # node any more.
+    element: ".*Sprint Tournament.*"
     direction: DOWN
     timeout: 15000
-- tapOn: "Sprint Tournament"
+- tapOn: ".*Sprint Tournament.*"
 - extendedWaitUntil:
     visible: ".*Four players, equal stacks, one elimination.*"
     timeout: 20000
@@ -92,18 +125,25 @@ appId: com.arc21.app
 # Asserted against something ONLY the Play tab renders. ".*Sprint Tournament.*"
 # would match the card here AND the heading on the screen we just left, so a
 # failed back-navigation would still pass — the mistake this flow already made
-# once with private tables. Returning resets the tab's scroll to the top, so the
-# header subtitle is the right thing to look for.
-- extendedWaitUntil:
-    visible: ".*Same rules everywhere.*"
+# once with private tables.
+#
+# SCROLLED UP TO, not merely asserted. Returning from a pushed screen SOMETIMES
+# resets the tab's scroll and sometimes restores it; CLAUDE.md records both, and
+# this file used to assume the first. It held for a while and then a run came
+# back at the position it left, and the header — which is real, correct and
+# above the fold — read as a missing screen. Scrolling to the anchor is true in
+# either case.
+- scrollUntilVisible:
+    element: ".*Same rules everywhere.*"
+    direction: UP
     timeout: 15000
 
 # --- Daily Challenge -------------------------------------------------------
 - scrollUntilVisible:
-    element: "Daily Challenge"
+    element: ".*Daily Challenge.*"
     direction: DOWN
     timeout: 15000
-- tapOn: "Daily Challenge"
+- tapOn: ".*Daily Challenge.*"
 - extendedWaitUntil:
     visible: ".*Everyone plays the same shoe.*"
     timeout: 20000
@@ -112,16 +152,22 @@ appId: com.arc21.app
 - assertVisible: ".*no server configured.*"
 - tapOn:
     id: "back-bar"
-# The footer here, not the header: reaching the Daily Challenge card scrolled the
-# list to its foot, and returning preserves that position — whereas the shorter
-# scroll to Sprint Tournament above came back at the top. Both anchors are text
-# only the Play tab renders; each is the one actually on screen at that point.
-- extendedWaitUntil:
-    visible: ".*same fixed rules in every mode.*"
+# The footer, and scrolled DOWN to it for the same reason the header above is
+# scrolled UP to: whether a return preserves the scroll position is not
+# something this flow may assume in either direction. Both anchors are text only
+# the Play tab renders.
+- scrollUntilVisible:
+    element: ".*same fixed rules in every mode.*"
+    direction: DOWN
     timeout: 15000
 
 # --- Social tab ------------------------------------------------------------
-- tapOn: "Social"
+- repeat:
+    while:
+      notVisible: ".*Private table.*"
+    times: 4
+    commands:
+      - tapOn: "Social"
 - extendedWaitUntil:
     visible: ".*Private table.*"
     timeout: 15000
@@ -148,7 +194,12 @@ appId: com.arc21.app
 # Reached from Social. Signed out and with no server configured, the screen must
 # state that plainly — it must never render a board of zeros, which would read as
 # real standings.
-- tapOn: "Social"
+- repeat:
+    while:
+      notVisible: ".*Friends need a server.*"
+    times: 4
+    commands:
+      - tapOn: "Social"
 - extendedWaitUntil:
     visible: ".*Friends need a server.*"
     timeout: 15000
@@ -168,11 +219,20 @@ appId: com.arc21.app
 - assertVisible: ".*no server configured.*"
 - tapOn:
     id: "back-bar"
-# The footer, not the header: reaching the Leaderboards card scrolled Social to
-# its foot and returning keeps that position. Unique to Social either way.
-- extendedWaitUntil:
-    visible: ".*never move chips between accounts.*"
-    timeout: 15000
+# The footer, not the header — and SCROLLED TO rather than waited for.
+#
+# This line used to be an `extendedWaitUntil` under a comment asserting that
+# "returning keeps that position", and it failed twice in a row in phase 9 on a
+# Social tab that had come back at the TOP: the footer was in the tree and not on
+# screen. CLAUDE.md already records the rule this broke — "returning from a
+# pushed screen sometimes restores the previous scroll position and sometimes
+# returns to the top, so assert on text that is actually on screen at that
+# point". A scroll copes with either answer; a wait only copes with one, and
+# passes for a year before it does not.
+- scrollUntilVisible:
+    element: ".*never move chips between accounts.*"
+    direction: DOWN
+    timeout: 20000
 
 # --- Notifications ---------------------------------------------------------
 # Reached from Social, and entered from where the Leaderboards block left off:
@@ -204,7 +264,12 @@ appId: com.arc21.app
     timeout: 15000
 
 # --- Learn tab -------------------------------------------------------------
-- tapOn: "Learn"
+- repeat:
+    while:
+      notVisible: ".*Strategy Guide.*"
+    times: 4
+    commands:
+      - tapOn: "Learn"
 - extendedWaitUntil:
     visible: ".*Strategy Guide.*"
     timeout: 15000
@@ -244,7 +309,13 @@ appId: com.arc21.app
 # tab stopped offering Drills it reported SKIPPED and the run still passed — so
 # the audit flow silently stopped visiting one of the screens it exists to
 # check. A screen this flow is responsible for gets an unconditional assertion.
-- tapOn: "Learn"
+- repeat:
+    while:
+      notVisible:
+        id: "learn-drills"
+    times: 4
+    commands:
+      - tapOn: "Learn"
 - extendedWaitUntil:
     visible:
       id: "learn-drills"
@@ -260,8 +331,11 @@ appId: com.arc21.app
 # --- Profile (via the header avatar) ---------------------------------------
 - tapOn:
     id: "open-profile"
-- extendedWaitUntil:
-    visible: ".*Guest.*"
+# Scrolled UP to, for the same reason as the Play header: whether a screen opens
+# at the top or restores a position is not something this flow may assume.
+- scrollUntilVisible:
+    element: ".*Guest.*"
+    direction: UP
     timeout: 15000
 
 # --- Inventory -------------------------------------------------------------
@@ -281,8 +355,9 @@ appId: com.arc21.app
 - assertNotVisible: ".*Buy.*"
 - tapOn:
     id: "back-bar"
-- extendedWaitUntil:
-    visible: ".*Guest.*"
+- scrollUntilVisible:
+    element: ".*Guest.*"
+    direction: UP
     timeout: 15000
 
 # --- Stats -----------------------------------------------------------------
@@ -296,6 +371,14 @@ appId: com.arc21.app
     id: "back-bar"
 
 # --- Settings --------------------------------------------------------------
+# SCROLLED to. `tapOn` does not scroll, and the profile's four actions are two
+# rows of two now rather than four across — four `flex: 1` buttons on a 393pt
+# screen split their own labels mid-word ("Statist / ics") at the DEFAULT text
+# size. Settings sits on the second row, which can be below the fold.
+- scrollUntilVisible:
+    element: "Settings"
+    direction: DOWN
+    timeout: 15000
 - tapOn: "Settings"
 - extendedWaitUntil:
     visible: ".*Gameplay.*"
@@ -317,3 +400,11 @@ appId: com.arc21.app
     timeout: 15000
 # The claims a player is entitled to, and which must stay true of the code.
 - assertVisible: ".*3:2.*"
+# The specification's Fair Play list names "online cards are selected on the
+# server" alongside the device-randomness claim, and until phase 9 every fact on
+# this page described Practice. It is here rather than in the online flow because
+# it is a statement about the CODE, true whether or not a server is configured.
+- scrollUntilVisible:
+    element: "Online cards are chosen on the server"
+    direction: DOWN
+    timeout: 20000

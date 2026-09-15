@@ -1,0 +1,64 @@
+# Complete a Career/Daily server session already opened by its actual CTA.
+# Fair deals can finish at the peek, so branch on the controls that exist.
+# The calling flow must verify the exact result/hand count after returning.
+# A hundred is legal in both formats; Daily's minimum is higher than Career's.
+appId: com.arc21.app
+---
+- extendedWaitUntil:
+    visible:
+      id: table-my-stack
+    timeout: 30000
+- repeat:
+    times: 100
+    while:
+      notVisible:
+        text: "This table has finished.|You are no longer at this table.*"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: chip-100
+          commands:
+            - repeat:
+                times: 3
+                while:
+                  visible:
+                    id: bet-staged
+                    text: "0"
+                commands:
+                  - tapOn:
+                      id: chip-100
+            - assertVisible:
+                id: bet-staged
+                text: "100"
+            - tapOn:
+                id: bet-deal
+      - runFlow:
+          when:
+            visible:
+              id: insurance-decline
+          commands:
+            - tapOn:
+                id: insurance-decline
+      - runFlow:
+          when:
+            visible:
+              id: action-stand
+          commands:
+            - tapOn:
+                id: action-stand
+      - runFlow:
+          when:
+            visible:
+              id: table-next-hand
+          commands:
+            - tapOn:
+                id: table-next-hand
+- assertVisible:
+    text: "This table has finished.|You are no longer at this table.*"
+- takeScreenshot: completed-ranked-session
+- tapOn: Leave table
+- extendedWaitUntil:
+    notVisible:
+      text: "This table has finished.|You are no longer at this table.*"
+    timeout: 30000

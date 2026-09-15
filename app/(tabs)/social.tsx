@@ -27,7 +27,7 @@
  */
 
 import { useCallback, useEffect, useMemo } from "react";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import {
   describePresence,
   usePresenceStore,
@@ -95,7 +95,6 @@ export default function SocialScreen() {
   const { settings, update: updateSettings } = useSettings();
 
   const authSession = useAuthStore((state) => state.session);
-  const authMode = useAuthStore((state) => state.mode);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const hydrateAuth = useAuthStore((state) => state.hydrate);
 
@@ -116,16 +115,15 @@ export default function SocialScreen() {
     if (!authHydrated) void hydrateAuth();
   }, [authHydrated, hydrateAuth]);
 
-  // Re-read on every change of session. Signing in on another screen has to
-  // populate this one, and signing out has to empty it — a friends list left
-  // over from a previous account is somebody else's data on screen.
-  useEffect(() => {
-    if (authHydrated) void refresh();
-  }, [authHydrated, authMode, refresh]);
-
-  useEffect(() => {
-    if (authHydrated) void loadNotifications();
-  }, [authHydrated, authMode, loadNotifications]);
+  // Tabs stay mounted while the other player accepts or removes a friendship.
+  // Re-read when returning, including the inbox badge. Search results contain
+  // relationship state too, so discard that stale search on return/account change.
+  useFocusEffect(useCallback(() => {
+    if (!authHydrated) return;
+    clearSearch();
+    void refresh();
+    void loadNotifications();
+  }, [authHydrated, authSession?.account.userId, clearSearch, refresh, loadNotifications]));
 
   /*
    * Accepting a friend request is one of the moments the specification names for
@@ -167,7 +165,7 @@ export default function SocialScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <ScreenHeader title="Social" subtitle="Play with people you know." balance={null} />
+        <ScreenHeader title="Social" subtitle="Play with people you know." />
 
         {actionError !== null ? (
           <View style={styles.banner} accessibilityRole="alert" accessibilityLiveRegion="polite">

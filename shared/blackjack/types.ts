@@ -99,6 +99,29 @@ export type GamePhase =
   | "BETWEEN_HANDS"
   | "SESSION_COMPLETE";
 
+/**
+ * Every value of `GamePhase`, as data, exhaustive at compile time.
+ *
+ * `gamePhaseSchema` in `shared/contracts` mirrors this list, and a phase the
+ * engine can enter that the wire schema does not name is a payload the client
+ * cannot parse — so `tests/engine/status-taxonomy.test.ts` compares them.
+ */
+export const ALL_GAME_PHASES = [
+  "SESSION_READY",
+  "BETTING_OPEN",
+  "BETTING_LOCKED",
+  "INITIAL_DEAL",
+  "INSURANCE_OFFER",
+  "DEALER_PEEK",
+  "PLAYER_TURNS",
+  "DEALER_REVEAL",
+  "DEALER_TURN",
+  "SETTLEMENT",
+  "HAND_COMPLETE",
+  "BETWEEN_HANDS",
+  "SESSION_COMPLETE",
+] as const satisfies readonly GamePhase[];
+
 export type PlayerHandStatus =
   | "ACTIVE"
   | "STOOD"
@@ -107,7 +130,38 @@ export type PlayerHandStatus =
   | "DOUBLED_COMPLETE"
   | "BLACKJACK"
   | "TWENTY_ONE"
+  /**
+   * Reserved. The engine never sets it, and no code path reads it.
+   *
+   * It survives because the union is MIRRORED by two other definitions that
+   * cannot be narrowed as cheaply as this one — `playerHandStatusSchema` in
+   * `shared/contracts` and the Postgres enum `public.player_hand_status`, from
+   * which a value cannot be dropped at all. `tests/engine/status-taxonomy.test.ts`
+   * asserts all three agree AND that a full session never produces this value,
+   * so it stays a documented reservation rather than becoming a status somebody
+   * assumes is meaningful.
+   */
   | "RESOLVED";
+
+/**
+ * Every value of `PlayerHandStatus`, as data.
+ *
+ * The `satisfies` clause makes this exhaustive at compile time: adding a member
+ * to the union without adding it here fails `tsc`. Three other definitions
+ * mirror this list (the two below, the wire enum and the Postgres enum) and a
+ * test compares them, because a status the engine can set and the schema cannot
+ * carry is a payload that fails to parse in production.
+ */
+export const ALL_PLAYER_HAND_STATUSES = [
+  "ACTIVE",
+  "STOOD",
+  "BUSTED",
+  "SURRENDERED",
+  "DOUBLED_COMPLETE",
+  "BLACKJACK",
+  "TWENTY_ONE",
+  "RESOLVED",
+] as const satisfies readonly PlayerHandStatus[];
 
 /** Terminal statuses that still compete against the dealer's final total. */
 export const LIVE_TERMINAL_STATUSES: readonly PlayerHandStatus[] = [
@@ -117,11 +171,22 @@ export const LIVE_TERMINAL_STATUSES: readonly PlayerHandStatus[] = [
   "TWENTY_ONE",
 ];
 
-/** Statuses that have already lost or been withdrawn before the dealer draws. */
+/**
+ * Statuses that have already lost or been withdrawn before the dealer draws.
+ *
+ * `playDealer` reads THIS rather than repeating the two names inline, which is
+ * what it used to do. A hand in one of these states cannot be beaten or pushed,
+ * so it is also the list that decides whether the dealer draws at all.
+ */
 export const DEAD_TERMINAL_STATUSES: readonly PlayerHandStatus[] = [
   "BUSTED",
   "SURRENDERED",
 ];
+
+/** True for a hand that has finished acting, whatever the reason. */
+export function isTerminalHandStatus(status: PlayerHandStatus): boolean {
+  return status !== "ACTIVE";
+}
 
 export interface PlayerHand {
   id: string;
@@ -143,6 +208,16 @@ export type HandOutcomeKind =
   | "BUST"
   | "SURRENDER";
 
+/** Every value of `HandOutcomeKind`, as data, exhaustive at compile time. */
+export const ALL_HAND_OUTCOME_KINDS = [
+  "WIN",
+  "LOSS",
+  "PUSH",
+  "BLACKJACK",
+  "BUST",
+  "SURRENDER",
+] as const satisfies readonly HandOutcomeKind[];
+
 export interface HandOutcome {
   kind: HandOutcomeKind;
   /** Chips returned to the seat stack (stake + profit). Never negative. */
@@ -150,6 +225,17 @@ export interface HandOutcome {
   /** Net chip change for this hand: `credit - wager`. */
   net: number;
 }
+
+/** Where a seat stands on this round's insurance offer. */
+export type InsuranceDecision = "PENDING" | "TAKEN" | "DECLINED" | "NOT_OFFERED";
+
+/** Every value of `InsuranceDecision`, as data, exhaustive at compile time. */
+export const ALL_INSURANCE_DECISIONS = [
+  "PENDING",
+  "TAKEN",
+  "DECLINED",
+  "NOT_OFFERED",
+] as const satisfies readonly InsuranceDecision[];
 
 export interface SeatState {
   seatId: string;
@@ -162,7 +248,7 @@ export interface SeatState {
   originalBet: number;
   insuranceBet: number;
   /** Set once the seat has answered the insurance offer this round. */
-  insuranceDecision: "PENDING" | "TAKEN" | "DECLINED" | "NOT_OFFERED";
+  insuranceDecision: InsuranceDecision;
   hands: PlayerHand[];
   currentHandIndex: number;
   connected: boolean;
@@ -222,6 +308,15 @@ export type PlayerActionType =
   | "DOUBLE"
   | "SPLIT"
   | "SURRENDER";
+
+/** Every value of `PlayerActionType`, as data, exhaustive at compile time. */
+export const ALL_PLAYER_ACTION_TYPES = [
+  "HIT",
+  "STAND",
+  "DOUBLE",
+  "SPLIT",
+  "SURRENDER",
+] as const satisfies readonly PlayerActionType[];
 
 export type EngineCommandType =
   | "PLACE_BET"

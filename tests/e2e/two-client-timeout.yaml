@@ -1,0 +1,49 @@
+# Arc 21 — TWO CLIENTS, step 5: nobody bets, and the table moves anyway.
+#
+#   maestro test --device <A> tests/e2e/two-client-timeout.yaml
+#
+# THE DEFECT THIS FLOW EXISTS FOR, measured against the running stack before the
+# fix: Arc 21 runs no long-lived game process, so a deadline is a stored
+# `deadline_at` and a CONNECTED CLIENT ASKING is the only thing that can move it.
+# Nothing asked. The app's single `RESOLVE_TIMEOUT` call site was
+# `TableGateway.snapshot()`, pinned to `expectedVersion: 0` so that it can never
+# apply — a read wearing a command's clothes. Sixteen seconds past a private
+# table's betting deadline the client's own poll answered `stale` with the phase
+# unchanged, while the same command at the current version advanced it in one
+# round trip. So one absent player froze a table for everybody, indefinitely,
+# with the fifteen-second timer that exists to prevent exactly that expired.
+#
+# NOTHING IS TAPPED between the countdown and the assertion. The betting bar
+# going away, and cards appearing where "No cards yet." was, is the server
+# having applied its own default because this client asked it to.
+
+appId: com.arc21.app
+---
+# Already at the table from `two-client-host-deal.yaml`. Not relaunched, because
+# the point is that this screen, sitting untouched, resolves the deadline.
+- assertVisible: "Leave table"
+- assertVisible:
+    id: "table-countdown"
+
+# THE ASSERTION IS THE STAKE, not the absence of the betting bar.
+#
+# The first version waited for `chip-50` to disappear, which is true only during
+# the part of the cycle when a hand is in play — and a table left entirely to its
+# timers cycles: bet 15s, two turns of 15s, a 12s settlement, and the chips are
+# back. Waiting on a transient is how a flow fails against a screen that is
+# doing exactly the right thing.
+#
+# "Bet 20" is the TABLE MINIMUM the server staked for a seat that did not bet.
+# It is the engine's `TIMEOUT_RESOLVED` default, rendered, and it cannot appear
+# unless a client asked the server to resolve the deadline — which no client in
+# this app could do before this phase.
+#
+# A REGEX, because Maestro matches text EXACTLY otherwise and the wager is
+# rendered as its own node reading " · Bet 20" — separator, leading space and
+# all. `HandCards` puts the detail in a sibling `AppText`; asserting the bare
+# words matched nothing against a screen that plainly showed them.
+- extendedWaitUntil:
+    visible: ".*Bet 20.*"
+    timeout: 120000
+- assertVisible:
+    id: "table-countdown"

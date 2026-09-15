@@ -48,6 +48,24 @@ export async function broadcastSnapshot(
           {
             topic: gameTopic(publicState.gameId),
             event: "state",
+            /*
+             * PRIVATE, and it must match the channel the client opens.
+             *
+             * The topic used to be public in both directions, which was
+             * measured: a client holding nothing but the ANON key subscribed to
+             * `game:<uuid>` and received the fan-out in full, and a second
+             * client broadcast a forged `state` onto that topic which the first
+             * client's handler accepted. Declaring it private on both ends makes
+             * Realtime consult the policies in
+             * `20260831120000_realtime_channel_authorization.sql`, where reading
+             * needs a live seat at THIS game and no client may write at all.
+             *
+             * The send is unaffected by those policies — this request carries the
+             * service role, which is not subject to RLS. The flag governs
+             * DELIVERY, and a message sent without it to a private topic is
+             * accepted with a 202 and delivered to nobody.
+             */
+            private: true,
             payload: { publicState, events },
           },
         ],

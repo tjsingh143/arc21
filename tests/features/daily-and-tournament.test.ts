@@ -15,9 +15,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeAttempt,
+  describeVerdict,
   describeVerification,
   toAttempt,
   toChallenge,
+  toVerification,
 } from "../../src/features/daily/index.js";
 import {
   describeProgress,
@@ -39,6 +41,64 @@ const CHALLENGE = {
   reward_xp: 150,
   closes_at: "2026-08-18T00:00:00.000Z",
 };
+
+/**
+ * The audit row — a CLOSED challenge whose seed has been published.
+ *
+ * The whole point of a commitment is that somebody can check it, and for the
+ * life of this feature nobody could: the column existed, the trigger guarded it,
+ * the projection carried it and the screen rendered it, and nothing in the
+ * product ever wrote it. These parse the row that now exists, and the wording
+ * for each verdict — including the one that matters.
+ */
+describe("verifying a published seed", () => {
+  const VERIFICATION = {
+    challenge_date: "2026-08-16",
+    seed_commitment: "b".repeat(64),
+    revealed_seed: "arc21:daily:2026-08-16:" + "c".repeat(64),
+    seed_revealed_at: "2026-08-17T00:00:01.000Z",
+  };
+
+  it("parses a published row", () => {
+    const parsed = toVerification(VERIFICATION);
+    expect(parsed?.date).toBe("2026-08-16");
+    expect(parsed?.revealedSeed).toBe(VERIFICATION.revealed_seed);
+  });
+
+  it("accepts either a bare row or a single-row array", () => {
+    expect(toVerification([VERIFICATION])?.date).toBe("2026-08-16");
+  });
+
+  it("refuses a row with no seed, which is not something to verify", () => {
+    expect(toVerification({ ...VERIFICATION, revealed_seed: "" })).toBeNull();
+    expect(toVerification({ ...VERIFICATION, revealed_seed: null })).toBeNull();
+  });
+
+  it("refuses a commitment that is not a SHA-256 hex digest", () => {
+    expect(toVerification({ ...VERIFICATION, seed_commitment: "nope" })).toBeNull();
+  });
+
+  it("returns nothing for an empty answer, rather than an empty verdict", () => {
+    expect(toVerification([])).toBeNull();
+    expect(toVerification(null)).toBeNull();
+  });
+
+  it("says plainly when the hash does NOT match", () => {
+    // Softening this would be worse than not checking at all: a mismatch would
+    // mean the shoe was not the one committed to before play.
+    expect(describeVerdict("does-not-match")).toMatch(/does NOT hash/);
+  });
+
+  it("does not claim a check it has not finished", () => {
+    expect(describeVerdict("checking")).not.toMatch(/Checked on this device/);
+    expect(describeVerdict("unavailable")).toMatch(/nothing has been checked/);
+  });
+
+  it("says WHERE the check happened when it passes", () => {
+    // "The server says it matches" would be asking to be believed twice.
+    expect(describeVerdict("matches")).toMatch(/on this device/);
+  });
+});
 
 describe("reading today's challenge", () => {
   it("parses a live row", () => {

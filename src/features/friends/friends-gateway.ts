@@ -35,6 +35,7 @@ import {
   type RelationshipState,
   type SearchResult,
 } from "./friends.js";
+import { toPlayerProfile, type PlayerProfile } from "./player-profile.js";
 
 export type FriendsFailureReason =
   /** No Supabase configuration in this build. Offline play is unaffected. */
@@ -103,6 +104,19 @@ export type RelationshipOutcome =
     }
   | FriendsFailure;
 
+export type PlayerProfileOutcome =
+  | {
+      readonly ok: true;
+      /**
+       * `null` is an ANSWER, not a failure: the RPC returns no row for a block
+       * in either direction, for a user id that never existed, and for a
+       * profile that is gone. Those three must be indistinguishable to the
+       * caller, or a block becomes discoverable by the person blocked.
+       */
+      readonly profile: PlayerProfile | null;
+    }
+  | FriendsFailure;
+
 export interface FriendsGateway {
   readonly kind: "supabase" | "unconfigured" | "fake";
   /** Friends and pending requests together — the two halves of one screen. */
@@ -135,6 +149,16 @@ export interface FriendsGateway {
    * everything that the block did.
    */
   unblockPlayer(playerId: string): Promise<RelationshipOutcome>;
+  /**
+   * One other player's profile, as this caller may see it.
+   *
+   * Deliberately a separate read from `load()`. The friends list carries the
+   * four fields a row needs and nothing more; asking `list_friends` to carry a
+   * record for everybody would make the Social tab pay for nine numbers per
+   * friend that it never renders, and would hand the client a record it has no
+   * screen for. This is read when the profile is opened, for that one player.
+   */
+  profile(playerId: string): Promise<PlayerProfileOutcome>;
 }
 
 export function createUnconfiguredFriendsGateway(message: string): FriendsGateway {
@@ -155,6 +179,7 @@ export function createUnconfiguredFriendsGateway(message: string): FriendsGatewa
     removeFriend: refuse,
     blockPlayer: refuse,
     unblockPlayer: refuse,
+    profile: refuse,
   };
 }
 
@@ -169,6 +194,12 @@ export function createUnconfiguredFriendsGateway(message: string): FriendsGatewa
 
 /** Postgres `insufficient_privilege` — every RPC raises it with no session. */
 const NO_SESSION_CODE = "42501";
+
+/**
+ * `enforce_rate_limit`'s refusal. `PTnnn` is the SQLSTATE PostgREST maps to HTTP
+ * nnn, so this arrives as a 429 with the server's own sentence in `message`.
+ */
+const RATE_LIMITED_CODE = "PT429";
 
 export function createSupabaseFriendsGateway(
   client: ArcSupabaseClient,
@@ -270,6 +301,16 @@ export function createSupabaseFriendsGateway(
         if (result.error.code === NO_SESSION_CODE) {
           return { ok: false, reason: "signed-out", message: SIGNED_OUT };
         }
+        /*
+         * The search is rate-limited, and a limit that says nothing is
+         * indistinguishable from a broken server. The refusal carries the
+         * server's own sentence — which names the ceiling and when it clears —
+         * exactly as `rooms-gateway.ts` does for a room join. It is the only
+         * refusal `search_players` raises that a player can act on.
+         */
+        if (result.error.code === RATE_LIMITED_CODE) {
+          return { ok: false, reason: "refused", message: result.error.message };
+        }
         return { ok: false, reason: "refused", message: SEARCH_REFUSED };
       }
 
@@ -292,6 +333,26 @@ export function createSupabaseFriendsGateway(
 
       const { blocked, dropped } = toBlockedPlayers(asRows(result.data));
       return { ok: true, blocked, dropped };
+    },
+
+    async profile(playerId: string): Promise<PlayerProfileOutcome> {
+      const noSession = await requireSession();
+      if (noSession !== null) return noSession;
+
+      const result = await bounded(
+        client.rpc("player_public_profile", { p_user_id: playerId }),
+      );
+      if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      if (result.error) {
+        if (result.error.code === NO_SESSION_CODE) {
+          return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+        }
+        return { ok: false, reason: "refused", message: PROFILE_REFUSED };
+      }
+
+      // No row is the server's answer to a block, a stranger and a deleted
+      // account alike. It is `ok`, with nothing in it.
+      return { ok: true, profile: toPlayerProfile(result.data) };
     },
 
     sendRequest: (playerId) => mutate(() => client.rpc("send_friend_request", { p_to: playerId })),
@@ -323,3 +384,8 @@ const SEARCH_REFUSED = "That search could not be run. Nothing has been changed."
  * told the block is already gone.
  */
 const BLOCKED_REFUSED = "Your blocked list could not be read. Nobody has been unblocked.";
+/*
+ * Never "they have no record". A refused read and an empty record are different
+ * claims, and this app draws that line everywhere else.
+ */
+const PROFILE_REFUSED = "Their profile could not be read. Nothing about them is shown.";

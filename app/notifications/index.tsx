@@ -109,7 +109,7 @@ export default function Notifications() {
               />
             ) : null}
 
-            <View style={styles.list}>
+            <View style={styles.list} testID="notifications-list">
               {rows.map((row) => (
                 <SurfaceCard
                   key={row.id}

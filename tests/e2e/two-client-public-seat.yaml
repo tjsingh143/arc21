@@ -1,0 +1,135 @@
+# Arc 21 — PUBLIC TABLE, two clients, step 3: device A takes the seat it was
+# offered, and SEES THE OTHER PLAYER.
+#
+# A has been sitting on the matchmaking screen since step 1. It polls, so the
+# room B's arrival created has already turned A's wait card into a "Seat found"
+# card without anybody touching the device.
+#
+# THE ASSERTION THIS FILE EXISTS FOR is `${OTHER}` — the other account's handle,
+# rendered on A's table screen. It can only be there if both accounts were
+# matched into the SAME `game_session`, if `toPublicState()` included the other
+# seat, and if the snapshot reached a client that has never seen B's screen.
+# `handle_new_user` derives a random handle, so it is read from the database and
+# passed in rather than hard-coded:
+#
+#   maestro test --device <A> \
+#     -e OTHER=$(npx tsx scripts/two-client-public.ts \
+#                  --email e2e-guest@arc21.test --what display-name) \
+#     tests/e2e/two-client-public-seat.yaml
+
+appId: com.arc21.app
+---
+# Activate without restarting: XCTest startup can leave SpringBoard foreground
+# while this process and its matched reservation remain intact.
+- launchApp:
+    stopApp: false
+    clearState: false
+
+# NO process restart, deliberately.
+#
+# A relaunch re-enters the matchmaking screen and re-enqueues, which RELEASES
+# the allocation A is holding: measured, both `room_members` rows went to `left`
+# and the room closed with nobody ever having taken a seat. The queue entry also
+# expires five minutes after it is created while it is still waiting, and an
+# expiry releases the seat the same way — so steps 1 to 3 are chained back to
+# back rather than run at leisure.
+#
+# The app is already in the foreground on this device, sitting where step 1 left
+# it. That is the whole point: the screen A was left on has MOVED ON by itself,
+# and relaunching would throw away the evidence along with the seat.
+- extendedWaitUntil:
+    visible:
+      id: "matchmaking-take-seat"
+    timeout: 90000
+
+# "1 already seated" — B's seat, counted by the server, rendered on A's screen.
+# THE FIRST CROSS-CLIENT EVIDENCE IN THE SCENARIO: A has never seen B's device,
+# and this sentence can only be here if `poll_matchmaking` allocated A into the
+# room B's poll created rather than opening a second one. The lone-player path
+# says "You are first at this table" instead, which is the only reading
+# `public-matchmaking.yaml` has ever been able to reach.
+- assertVisible: ".*already seated.*"
+
+- tapOn:
+    id: "matchmaking-take-seat"
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- assertVisible:
+    id: "table-my-stack"
+
+# BOTH SEATS, on one screen. The other player's card carries their handle and
+# their stack, from the server's snapshot.
+- extendedWaitUntil:
+    visible: "${OTHER}"
+    timeout: 45000
+
+# --- A hand, played at a table somebody else is also sitting at -------------
+#
+# A JOINED MID-HAND, so there is nothing to bet on yet. `joinPublicTable` seats a
+# mid-shoe arrival and deals them in at the next BETTING_OPEN — measured here:
+# A's screen showed the dealer's upcard, B's live hand, and "No cards yet." under
+# YOU. The first version of this flow asserted the betting bar immediately after
+# taking the seat and failed on exactly that, which is the product being right.
+#
+# So betting is one branch of the state loop rather than a step before it. Every
+# state is checked at the TOP level of the iteration — the fix `career-node.yaml`
+# needed, and doubly necessary here because a public table also passes through
+# states that belong to the OTHER seat and must simply be waited out.
+- repeat:
+    times: 20
+    commands:
+      # `optional`, because a public table moves under you. The action timer
+      # stands for an absent player after fifteen seconds, and the OTHER seat's
+      # decisions advance the hand — so an element that was visible when the
+      # branch was evaluated can be gone by the time the tap lands. Measured:
+      # `Tap on id: action-stand ... FAILED` one iteration after the same
+      # selector had been found. The branch is still the right shape; only the
+      # tap needs to tolerate having been overtaken.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "action-stand"
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-50"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "table-next-hand"
+
+# A WAS DEALT IN. "No cards yet." is what the seat says while it waits for the
+# next betting window, so its absence is the proof that A's own wager was taken
+# and the server dealt to this seat — at a table another account is sitting at.
+- extendedWaitUntil:
+    notVisible: "No cards yet."
+    timeout: 90000
+
+# Still at the table, still beside the same player.
+- assertVisible: "Leave table"
+- assertVisible: "${OTHER}"

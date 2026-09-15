@@ -24,6 +24,7 @@ import type {
   GamePhase,
   HandOutcome,
   MaybeHiddenCard,
+  PlayerActionType,
   PlayerHandStatus,
 } from "./types.js";
 
@@ -97,6 +98,27 @@ export interface PublicGameState {
    * the dealer's upcard, all of which are already public.
    */
   legalActions: Record<string, LegalActionSet>;
+
+  /**
+   * Advice, when the session asked for it. **The engine never fills this.**
+   *
+   * `toPublicState` leaves it undefined, always. It is a transport slot the
+   * SERVER attaches after sanitisation, on a Quick Play session whose recorded
+   * assistance is `learn` or `analysis`, using the same advisor that grades the
+   * decision. The engine has no opinion about strategy and must not acquire
+   * one — `shared/strategy` is a separate module for that reason, and nothing
+   * here imports it.
+   *
+   * It leaks nothing. Every input is already public: the seat's own cards and
+   * the dealer's UP card. The hole card is never consulted.
+   */
+  advice?: {
+    seatId: string;
+    recommended: PlayerActionType;
+    explanation: string;
+    /** Millionths of one unit wagered, per action. `analysis` only; else null. */
+    actionEvMicros: Record<string, number> | null;
+  } | null;
 }
 
 export function toPublicState(state: BlackjackGameState): PublicGameState {

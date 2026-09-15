@@ -21,7 +21,12 @@
  */
 
 import { applyCommand } from "../../../shared/blackjack/index.js";
-import { countsTowardsAccuracy, gradeDecision } from "../_shared/decision-grading.ts";
+import {
+  adviceFor,
+  countsTowardsAccuracy,
+  gradeDecision,
+  isGradedMode,
+} from "../_shared/decision-grading.ts";
 import {
   gameCommandRequestSchema,
   type AcceptedResponse,
@@ -29,7 +34,7 @@ import {
   type GameCommandResponse,
   type PublicGameEvent,
 } from "../../../shared/contracts/index.js";
-import type { PublicGameState } from "../../../shared/blackjack/index.js";
+import type { PublicGameState, RandomSource } from "../../../shared/blackjack/index.js";
 import {
   accountForSettlement,
   isEmptyAccounting,
@@ -42,28 +47,36 @@ import {
   newRequestId,
   preflightResponse,
   readJsonBody,
+  withUnreadBodyDrained,
 } from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
 import { checkRateLimit, consumeRateLimit, OUTSIDE_GAME_ACTION } from "../_shared/rate-limit.ts";
 import { withTransaction, type Tx } from "../_shared/postgres-client.ts";
 import {
   appendEvents,
+  closeRoomForSession,
   findAppliedCommand,
   findSeat,
   loadSession,
   lockEngineState,
+  lockRoomForSession,
   persistEngineState,
   recordAppliedCommand,
+  releaseRoomSeat,
   syncSeatRow,
   recordDecisions,
+  recordCareerAttemptDecisions,
   recordDailyAttemptDecisions,
+  findDailyShoeSeed,
   recordHandSettlement,
   syncSessionRow,
   totalChipsAtTable,
 } from "../_shared/session-repository.ts";
 import { settleTableClosure } from "../_shared/close-table.ts";
 import { chipsCameFromWallet } from "../_shared/session-economics.ts";
-import { resolveHandBoundary } from "../_shared/session-boundary.ts";
+import { commandStartsNextHand, resolveHandBoundary } from "../_shared/session-boundary.ts";
+import { careerNodeBySlug } from "../_shared/career/index.ts";
+import { dailyShoeSource } from "../_shared/daily-challenge.ts";
 import { notifyTurnPlayedByTimeout } from "../_shared/notify.ts";
 
 import {
@@ -86,7 +99,9 @@ interface HandledCommand {
   chipDelta?: number;
 }
 
-Deno.serve(async (request: Request): Promise<Response> => {
+// A refusal returned before the body is read can be lost by the runtime;
+// see `withUnreadBodyDrained`.
+Deno.serve(withUnreadBodyDrained(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") return preflightResponse();
 
   const startedAt = Date.now();
@@ -153,7 +168,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     return jsonResponse(toRejectedResponse(rejection, log.requestId), rejection.httpStatus);
   }
-});
+}));
 
 /**
  * Escrow is "chips this table owes back to a wallet", not "chips on the felt".
@@ -165,6 +180,62 @@ Deno.serve(async (request: Request): Promise<Response> => {
  */
 function escrowFor(mode: string, state: Parameters<typeof totalChipsAtTable>[0]): number {
   return chipsCameFromWallet(mode) ? totalChipsAtTable(state) : 0;
+}
+
+/**
+ * Which random source deals this command's cards.
+ *
+ * Randomness reaches the engine at exactly two points — `createShoe` when the
+ * session opens, and `reshuffle` inside `openBetting` when the cut card has been
+ * passed — so this decides only what a RESHUFFLE is shuffled with. Every other
+ * command builds a source that is never consulted.
+ *
+ * THE DEFECT: `serverRandom()` was passed unconditionally, including for the
+ * Daily Challenge, whose whole claim is that every ranked entrant faces the
+ * identical sequence. An attempt that crossed the cut card would have been dealt
+ * a CSPRNG shoe from that point and silently stopped matching everybody else's.
+ * The mode is read from the session row, never from the request — the same rule
+ * `settleTableClosure` follows, and for the same reason: a caller that could
+ * name the answer could name the wrong one.
+ */
+async function shoeSourceFor(
+  tx: Tx,
+  session: { mode: string },
+  gameId: string,
+  state: { shoe: { shuffleNumber: number } },
+): Promise<RandomSource> {
+  if (session.mode !== "daily_challenge") return serverRandom();
+
+  const seed = await findDailyShoeSeed(tx, gameId);
+  // A daily session whose challenge has gone is not something to improvise a
+  // shoe for: dealing from the CSPRNG here is the very defect this closes.
+  if (!seed) throw new CommandError("INTERNAL", "daily challenge session has no seed");
+
+  // The shuffle this command could produce, not the one already on the table.
+  return dailyShoeSource(seed, state.shoe.shuffleNumber + 1);
+}
+
+/**
+ * Whether this career session's decisions count as UNAIDED.
+ *
+ * The node's assistance mode decides it: "learn" and "analysis" put the
+ * recommended play on screen, so a correct choice made while reading it
+ * measures nothing about recall. "play" and "challenge" do not, so their
+ * decisions are unaided. The offline runner draws the identical line from the
+ * identical field — one rule, read from the catalogue in both places.
+ *
+ * Unknown node, or no live attempt: NOT unaided. The conservative direction, so
+ * a lookup failure can never inflate an accuracy figure a star is awarded on.
+ */
+async function careerDecisionIsUnaided(tx: Tx, gameId: string): Promise<boolean> {
+  const rows = await tx<{ code: string }[]>`
+    select n.code
+    from public.career_attempts a
+    join public.career_nodes n on n.id = a.career_node_id
+    where a.game_session_id = ${gameId}::uuid and a.status = 'in_progress'
+  `;
+  const node = rows[0] ? careerNodeBySlug(rows[0].code) : null;
+  return node?.assistance === "play" || node?.assistance === "challenge";
 }
 
 /**
@@ -199,6 +270,9 @@ async function closeCompetition(
     // A closed economy owes no wallet anything, however large the stacks got.
     escrowChips: 0,
   });
+  // A tournament and the daily challenge have no room, so this updates nothing
+  // for them; a mode that grows one is retired without anybody remembering to.
+  await closeRoomForSession(tx, params.gameId);
 
   const seatState = closed.seats.find((candidate) => candidate.seatId === params.seatId);
   if (seatState) {
@@ -273,6 +347,19 @@ async function handle(
   command: GameCommandRequest,
   log: LogFields,
 ): Promise<HandledCommand> {
+  /*
+   * --- The room lock, for the one command that will need it ----------------
+   *
+   * `LEAVE` ends with `release_room_seat`, which takes the room row `for
+   * update` — and `JOIN_PUBLIC_TABLE` takes that row FIRST and the engine state
+   * second. Taking them in the other order here is the lock inversion that
+   * produced `deadlock detected` between a leave and a join at the same public
+   * table, so the order is made the same rather than the collision made rarer.
+   * Only for LEAVE: every other command touches no room at all, and a lock
+   * taken for nothing would serialise ordinary play against the lobby.
+   */
+  if (command.type === "LEAVE") await lockRoomForSession(tx, command.gameId);
+
   // --- The write lock ------------------------------------------------------
   // Taken before anything else is read, exactly as apply_wallet_delta takes the
   // wallet lock before consulting its idempotency key: under READ COMMITTED two
@@ -316,7 +403,16 @@ async function handle(
   // resynchronise and decide for itself whether to retry.
   if (command.expectedVersion !== state.version) {
     return {
-      response: { status: "stale", publicState: sanitise(state) },
+      response: {
+        status: "stale",
+        // Advice travels with the snapshot a resynchronising client reads, or
+        // a Learn table would lose its recommendation on every refresh — and
+        // the table screen refreshes on a timer.
+        publicState: {
+          ...sanitise(state),
+          advice: adviceFor({ state, seatId: seat.id, assistance: session.assistance }),
+        },
+      },
       outcome: "stale",
       stateVersion: state.version,
     };
@@ -339,7 +435,13 @@ async function handle(
   const now = serverNow();
   let boundaryNote: string | undefined;
 
-  if (command.type === "NEXT_HAND") {
+  /*
+   * NOT `command.type === "NEXT_HAND"`. A settled hand also advances when its
+   * rest window lapses and a connected client asks the server to resolve the
+   * deadline — and for a whole phase that path dealt the next hand with no
+   * boundary at all. See `commandStartsNextHand`.
+   */
+  if (commandStartsNextHand(state, command.type, now)) {
     const boundary = await resolveHandBoundary(tx, {
       gameId: command.gameId,
       mode: session.mode,
@@ -378,7 +480,7 @@ async function handle(
    * excluded because correct tournament play deviates from the chart, and private
    * tables are excluded because the product calls them unranked.
    */
-  const grade = countsTowardsAccuracy(session.mode)
+  const grade = isGradedMode(session.mode)
     ? gradeDecision({
         mode: session.mode,
         state,
@@ -390,7 +492,7 @@ async function handle(
   // --- Apply ---------------------------------------------------------------
   const engineCommand = toEngineCommand(command, seat.id, now);
   const { state: nextState, events } = applyCommand(state, engineCommand, {
-    random: serverRandom(),
+    random: await shoeSourceFor(tx, session, command.gameId, state),
     now,
   });
 
@@ -431,12 +533,32 @@ async function handle(
   if (grade?.counted) {
     // Same transaction as the action itself. Recording accuracy afterwards, or on
     // a schedule, would create a second place for the count to be wrong.
-    await recordDecisions(tx, {
-      userId,
-      total: 1,
-      optimal: grade.optimal ? 1 : 0,
-      at: now,
-    });
+    //
+    // GRADED is not the same as COUNTED TOWARDS THE LEADERBOARD. A career node
+    // has to be graded — its second and third stars are accuracy thresholds —
+    // but half of them run in "learn", which puts the recommended play on
+    // screen before the choice, and the specification excludes exactly that
+    // from the ranked board. So career decisions are graded here and are not
+    // sent to `record_decisions`.
+    if (countsTowardsAccuracy(session.mode, session.assistance)) {
+      await recordDecisions(tx, {
+        userId,
+        total: 1,
+        optimal: grade.optimal ? 1 : 0,
+        at: now,
+      });
+    }
+
+    if (session.mode === "career") {
+      await recordCareerAttemptDecisions(tx, {
+        gameId: command.gameId,
+        total: 1,
+        optimal: grade.optimal ? 1 : 0,
+        // A property of the NODE, never of anything the client sent.
+        unaided: await careerDecisionIsUnaided(tx, command.gameId),
+        evLostMicros: grade.evLostMicros,
+      });
+    }
 
     // The daily board's tie-breaks are accuracy and then EV lost, and neither can
     // come from the week bucket above — that one mixes in every solo and
@@ -453,10 +575,16 @@ async function handle(
   }
   if (grade && !grade.counted && grade.skipped) log.decisionSkipped = grade.skipped;
 
-  const accounting = accountForSettlement(events, seat.id);
-  if (!isEmptyAccounting(accounting)) {
+  // One command can settle every hand at a shared table. Each authenticated
+  // seat owns its own events, regardless of who stood or resolved the timeout.
+  // The engine lock and command replay gate cover this entire transaction.
+  const persistedSeats = [...nextState.seats].sort((a, b) => a.seatId.localeCompare(b.seatId));
+  for (const settledSeat of persistedSeats) {
+    if (!settledSeat.userId) continue;
+    const accounting = accountForSettlement(events, settledSeat.seatId);
+    if (isEmptyAccounting(accounting)) continue;
     await recordHandSettlement(tx, {
-      userId,
+      userId: settledSeat.userId,
       stats: accounting.stats,
       xp: accounting.xp,
       // The UTC calendar day, taken from the SERVER clock. A client-supplied
@@ -474,7 +602,19 @@ async function handle(
     endedAt: sessionEnded ? now : null,
     escrowChips: escrowFor(session.mode, nextState),
   });
-  await syncSeatRow(tx, seat.id, seatState, closing ? { status: "left", leftAt: now } : {});
+  // The TABLE ending — not this seat leaving — is what retires the room, so a
+  // five-seat table keeps its code while four people are still playing.
+  if (sessionEnded) await closeRoomForSession(tx, command.gameId);
+  // Deal, settlement and timeout commands also change other players' stacks or
+  // connection state. Keep their public projections in the same transaction.
+  for (const projectedSeat of persistedSeats) {
+    await syncSeatRow(tx, projectedSeat.seatId, projectedSeat,
+      closing && projectedSeat.seatId === seat.id ? { status: "left", leftAt: now } : {});
+  }
+  // A LEAVE that closed the seat ends the room membership too, migrating the
+  // host role if this player held it. Shared with the CASH_OUT route, down to
+  // the SQL function, so the two cannot disagree about who inherits a room.
+  if (closing) await releaseRoomSeat(tx, command.gameId, userId);
 
   await notifyTimedOutSeats(tx, command.gameId, events);
 
@@ -486,7 +626,26 @@ async function handle(
   const publicState = sanitise(nextState);
   assertSafeToPublish(published, nextState);
 
-  const response: AcceptedResponse = { status: "accepted", publicState, events: published };
+  /*
+   * Advice goes to the CALLER, not to the broadcast.
+   *
+   * Only a one-seat Quick Play table can carry a non-`play` assistance, so the
+   * two payloads are identical in practice today — but a broadcast is addressed
+   * to every subscriber of the channel, and "what one player asked to be told"
+   * is not a property of the table. Keeping it out of the broadcast means a
+   * future multi-seat mode cannot start showing one player's help to another by
+   * accident.
+   */
+  const advice = adviceFor({
+    state: nextState,
+    seatId: seat.id,
+    assistance: session.assistance,
+  });
+  const response: AcceptedResponse = {
+    status: "accepted",
+    publicState: advice ? { ...publicState, advice } : publicState,
+    events: published,
+  };
 
   await recordAppliedCommand(tx, {
     gameId: command.gameId,

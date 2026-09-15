@@ -8,6 +8,7 @@ import {
   isSplitEligible,
   isTenValue,
   parseCardShorthand,
+  rankName,
   rankValue,
 } from "../../shared/blackjack/cards.js";
 import {
@@ -59,6 +60,12 @@ describe("card helpers", () => {
     expect(cardAccessibilityLabel(ace!)).toBe("Ace of Spades");
     expect(cardAccessibilityLabel(ten!)).toBe("Ten of Hearts");
     expect(cardShorthand(ace!)).toBe("AS");
+  });
+
+  it("names a rank alone for spoken announcements, e.g. 'Dealer shows six'", () => {
+    expect(rankName("6")).toBe("Six");
+    expect(rankName("A")).toBe("Ace");
+    expect(rankName("10")).toBe("Ten");
   });
 
   it("parses shorthand and rejects nonsense", () => {

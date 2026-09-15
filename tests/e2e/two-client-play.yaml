@@ -1,0 +1,115 @@
+# Arc 21 — TWO CLIENTS, step 6: a wager placed and a hand played, from a device.
+#
+#   maestro test --device <A> tests/e2e/two-client-play.yaml
+#   maestro test --device <B> tests/e2e/two-client-play.yaml
+#
+# `online-table.yaml` proves a bet can be placed at a SOLO server table, which is
+# the only one account can reach alone. This proves it at a SHARED one — a table
+# whose other seat belongs to a different account on a different simulator, whose
+# turn this client must wait for, and whose cards this client never chose.
+#
+# Every state is handled at the TOP level of the iteration. `career-node.yaml`
+# deadlocked for a year of runs because its only progress branch was nested
+# inside the betting state, so an iteration arriving at a settled hand skipped
+# the whole body — and so did every one after it. A shared table makes that
+# worse, not better: this client can arrive at any point in someone else's turn.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+- extendedWaitUntil:
+    visible:
+      id: "table-countdown"
+    timeout: 90000
+
+- repeat:
+    # An iteration can take less than two seconds while the OTHER seat acts.
+    # Allow several full table cycles: 14 iterations once exhausted their
+    # budget before the next betting window after a deadline overtook a tap.
+    times: 60
+    while:
+      notVisible:
+        text: ".*Bet 100.*"
+        rightOf:
+          id: "table-hand-value"
+    commands:
+      # Insurance. Unreachable at every server table for a whole phase — the
+      # screen had no branch for it and fell through to "Waiting for the next
+      # hand." until the deadline expired and the server declined.
+      # `optional: true` on every tap in this loop. A `when` and the tap it
+      # guards are TWO reads of the screen, and at a SHARED table the gap
+      # between them is a place the server can act: the guest's betting window
+      # is whatever is left of one clock the host has already used part of, so
+      # a deadline that expires between `chip-100` and `bet-deal` stakes the
+      # table minimum and deals. Measured on a Release build —
+      # `Element not found: bet-deal`, with the failure screenshot showing
+      # PLAYER_TURNS, `Bet 20`, 13 seconds to act. That is the product working
+      # exactly as its own countdown says it will. The loop simply bets again
+      # on the next hand; what proves the wager is the assertion below, never
+      # the tap.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      # A hundred, so the assertion above distinguishes THIS client's deliberate
+      # wager from the twenty the server stakes for an absent seat.
+      - runFlow:
+          when:
+            visible:
+              id: "chip-100"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-100"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "action-stand"
+
+# THE WAGER THIS CLIENT CHOSE, on the felt. Twenty is what the server stakes for
+# a seat that says nothing; a hundred can only be here because a person pressed
+# Deal at a shared table and the server accepted it.
+# HandCards renders the wager beside the value, in a separate accessible text
+# node. Scope it to this player's value; combining id and text on the value
+# itself can never match and caused repeated wagers after successful deals.
+- assertVisible:
+    text: ".*Bet 100.*"
+    rightOf:
+      id: "table-hand-value"
+- assertVisible:
+    id: "table-countdown"

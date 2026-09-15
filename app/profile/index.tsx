@@ -19,7 +19,7 @@
  * from practice decisions, hands played, and career stars earned locally.
  */
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -41,11 +41,24 @@ import { describeSample, formatPercent, sampleCaveat } from "../../src/features/
 import { useLevelStore } from "../../src/features/stats/level-store";
 import { useLoadoutStore } from "../../src/features/cosmetics";
 import { CosmeticAvatar } from "../../src/features/cosmetics/art";
-import { useAuthStore } from "../../src/features/auth";
+import { useAccountProfileStore, useAuthStore } from "../../src/features/auth";
+import type { AccountProfile } from "../../src/features/auth/account-profile-store";
+import { AuthField } from "../../src/features/auth/auth-ui";
+import { USERNAME_MAX_LENGTH } from "../../src/features/auth/credentials";
+import {
+  changedFields,
+  DISPLAY_NAME_MAX_LENGTH,
+  hasChanges,
+  RENAME_LIMIT_NOTE,
+  validateDisplayName,
+  validateUsername,
+} from "../../src/features/auth/profile-rename";
+import { useCompetitionStore } from "../../src/features/stats/competition-store";
 import { usePracticeStore } from "../../src/features/practice/practice-store";
 import { useCareerProgress } from "../../src/features/career/use-career-progress";
 import { TOTAL_CAREER_STARS } from "../../shared/career/nodes.js";
 import { totalStars } from "../../shared/career/progress.js";
+import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function ProfileScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -61,6 +74,10 @@ export default function ProfileScreen() {
   const { progress, ready } = useCareerProgress();
 
   const session = useAuthStore((state) => state.session);
+  const accountProfile = useAccountProfileStore((state) => state.profile);
+  const loadAccountProfile = useAccountProfileStore((state) => state.load);
+  const competitionRecord = useCompetitionStore((state) => state.record);
+  const loadCompetition = useCompetitionStore((state) => state.load);
   const authHydrated = useAuthStore((state) => state.hydrated);
   const hydrateAuth = useAuthStore((state) => state.hydrate);
   const levelRecord = useLevelStore((state) => state.record);
@@ -81,14 +98,34 @@ export default function ProfileScreen() {
       void loadLevel();
       void loadLoadout();
     }
-  }, [authHydrated, session?.account.userId, loadLevel, loadLoadout]);
+    void loadAccountProfile();
+    void loadCompetition();
+  }, [
+    authHydrated,
+    session?.account.userId,
+    loadLevel,
+    loadLoadout,
+    loadAccountProfile,
+    loadCompetition,
+  ]);
 
   const profile = summariseProfile({
     stats,
     careerStars: { earned: totalStars(progress), available: TOTAL_CAREER_STARS },
     hasAccount: session !== null,
-    displayName: session?.account.email ?? null,
+    /*
+     * The profile row's own fields, not the email.
+     *
+     * This read `session.account.email` — the email address, in the largest
+     * type on the screen. `public.profiles` carries a server-normalised
+     * `display_name` and `username`, both put through the reserved-name and
+     * profanity filter, and the specification's hierarchy is
+     * "Avatar / Display name / @username".
+     */
+    displayName: accountProfile?.displayName ?? null,
+    username: accountProfile?.username ?? null,
     progression: levelRecord,
+    tournamentWins: competitionRecord?.tournamentWins ?? null,
   });
 
   const { identity, headline, progression } = profile;
@@ -109,6 +146,35 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {/*
+          THE DOOR THAT HAD NO HANDLE ON THE INSIDE.
+
+          `guard_profile_username`, `normalise_profile_display_name`, the unique
+          key and TWO rate-limit policies have guarded renaming since phase 3 —
+          `docs/AUDIT.md` records the 30-day limit being measured over HTTP —
+          and nothing in this app had ever written either column after signup.
+          A player was stuck with whatever handle the signup form derived.
+
+          Only for a signed-in player, because there is no row to change
+          otherwise. A guest sees the account card further down instead.
+        */}
+        {accountProfile ? (
+          /*
+            KEYED ON THE STORED VALUES, which is how the drafts stay in step
+            with the server without a `setState` inside an effect — the pattern
+            the React Compiler lint rejects, and rightly: it schedules a second
+            render pass on every change of the row.
+
+            A successful save changes the row, so this remounts with the new
+            name already in the fields. A REFUSED one does not, so the refusal
+            stays on screen with what the player typed still in place.
+          */
+          <EditIdentityCard
+            key={`${accountProfile.displayName}:${accountProfile.username}`}
+            profile={accountProfile}
+          />
+        ) : null}
+
         {/* Level and XP: absent, and the screen says why rather than showing a
             level the player has not earned. */}
         {progression.status === "unavailable" ? (
@@ -124,7 +190,7 @@ export default function ProfileScreen() {
 
         <SurfaceCard
           onPress={() => router.push("/stats")}
-          accessibilityLabel="Your statistics"
+          accessibilityLabel={`Your statistics. Strategy accuracy ${headline.accuracy} per cent, unaided.`}
           accessibilityHint="Accuracy, play and decision behaviour in full"
         >
           <View style={styles.ringRow}>
@@ -160,6 +226,15 @@ export default function ProfileScreen() {
             tone="textSecondary"
           />
           <StatRow label="Practice hands played" value={formatChips(headline.handsPlayed)} />
+          {/*
+            Tournament wins, from the server. Absent — an em dash — rather than
+            zero when it could not be read: a zero is a value, and this screen's
+            whole discipline is that no number appears unless somebody earned it.
+          */}
+          <StatRow
+            label="Tournament wins"
+            value={headline.tournamentWins === null ? "—" : String(headline.tournamentWins)}
+          />
           <StatRow
             label="Career stars"
             value={
@@ -182,6 +257,20 @@ export default function ProfileScreen() {
           about you.
         </AppText>
 
+        {/*
+          TWO ROWS OF TWO, not four across.
+
+          `Button` carries `flex: 1`, so four in one row each got a quarter of a
+          393pt screen — about 74pt before padding — and `numberOfLines={2}`
+          then split the labels mid-word: "Statist / ics", "Invent / ory",
+          "Friend / s", "Settin / gs". At the DEFAULT text size, which is worse
+          than the Dynamic Type case CLAUDE.md already records for the action
+          dock: that one only breaks at the largest setting.
+
+          `flexWrap` would not have fixed it. A `flex: 1` child has a flex-basis
+          of 0, so it never overflows its line and never wraps — it just shrinks
+          further. The row count is the thing that had to change.
+        */}
         <View style={styles.actions}>
           <Button label="Statistics" onPress={() => router.push("/stats")} />
           <Button
@@ -190,6 +279,20 @@ export default function ProfileScreen() {
             testID="profile-inventory"
             accessibilityHint="Avatars, card backs and table themes you have earned"
             onPress={() => router.push("/profile/inventory")}
+          />
+        </View>
+        <View style={styles.actions}>
+          {/*
+            The Social TAB, not a `/friends` route — there is not one. Friends,
+            requests and blocks all live on `app/(tabs)/social.tsx`, and the
+            route contract forbids a dead link, so this names the screen that
+            exists rather than the one the specification's button label implies.
+          */}
+          <Button
+            label="Friends"
+            variant="secondary"
+            onPress={() => router.push("/(tabs)/social")}
+            testID="profile-friends"
           />
           <Button
             label="Settings"
@@ -211,11 +314,138 @@ export default function ProfileScreen() {
         <Button label="Back" variant="quiet" onPress={() => router.back()} />
 
         <AppText variant="caption" color="textDisabled" align="center">
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * Change your display name and your handle.
+ *
+ * TWO FIELDS, ONE SAVE, and the limits stated BEFORE the player commits rather
+ * than discovered by hitting them. A handle can be changed once every thirty
+ * days; a limit somebody learns about by tripping it is a trap.
+ *
+ * The card renders the SERVER's values, not the draft, once a save succeeds:
+ * both columns are normalised by triggers — the handle is lowercased, the
+ * display name sanitised — so echoing what was typed would show a value that
+ * does not exist. `rename` re-reads the row for exactly that reason.
+ *
+ * Nothing is validated here as a security control. `credentials.ts` says the
+ * same of its own rules and is right to: the checks below only stop a typo
+ * spending a thirty-day budget on a round trip the server would refuse.
+ */
+function EditIdentityCard({ profile }: { profile: AccountProfile }) {
+  const rename = useAccountProfileStore((state) => state.rename);
+
+  const [open, setOpen] = useState(false);
+  const [displayName, setDisplayName] = useState(profile.displayName);
+  const [username, setUsername] = useState(profile.username);
+  const [busy, setBusy] = useState(false);
+  /*
+   * Errors only. A success needs no word: the card closes and renders the
+   * SERVER's new name, which is stronger evidence than the string "Saved" and
+   * cannot disagree with what was actually stored.
+   */
+  const [refusal, setRefusal] = useState<string | null>(null);
+
+  const request = changedFields({
+    current: { displayName: profile.displayName, username: profile.username },
+    draft: { displayName, username },
+  });
+
+  const displayNameError =
+    request.displayName === undefined ? undefined : validateDisplayName(displayName);
+  const usernameError = request.username === undefined ? undefined : validateUsername(username);
+  const canSave = hasChanges(request) && !displayNameError && !usernameError && !busy;
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setRefusal(null);
+    const outcome = await rename(request);
+    setBusy(false);
+    if (outcome.ok) {
+      setOpen(false);
+      return;
+    }
+    setRefusal(outcome.message);
+  }
+
+  if (!open) {
+    return (
+      <SurfaceCard>
+        <AppText variant="bodyStrong">Your name</AppText>
+        <AppText variant="body" color="textSecondary">
+          {`${profile.displayName} · @${profile.username}`}
+        </AppText>
+        <Button
+          label="Edit name"
+          variant="secondary"
+          size="medium"
+          testID="profile-edit-name"
+          onPress={() => {
+            setRefusal(null);
+            setOpen(true);
+          }}
+        />
+      </SurfaceCard>
+    );
+  }
+
+  return (
+    <SurfaceCard>
+      <AppText variant="bodyStrong">Your name</AppText>
+      <AuthField
+        label="Display name"
+        value={displayName}
+        onChangeText={setDisplayName}
+        error={displayNameError}
+        editable={!busy}
+        maxLength={DISPLAY_NAME_MAX_LENGTH}
+        testID="profile-display-name"
+      />
+      <AuthField
+        label="Handle"
+        value={username}
+        onChangeText={setUsername}
+        error={usernameError}
+        editable={!busy}
+        maxLength={USERNAME_MAX_LENGTH}
+        testID="profile-username"
+      />
+      <AppText variant="caption" color="textDisabled">
+        {RENAME_LIMIT_NOTE}
+      </AppText>
+      {refusal ? (
+        <AppText variant="caption" color="danger" testID="profile-name-refusal">
+          {refusal}
+        </AppText>
+      ) : null}
+      <View style={styles.actions}>
+        <Button
+          label="Cancel"
+          variant="quiet"
+          size="medium"
+          disabled={busy}
+          onPress={() => {
+            setDisplayName(profile.displayName);
+            setUsername(profile.username);
+            setRefusal(null);
+            setOpen(false);
+          }}
+        />
+        <Button
+          label={busy ? "Saving…" : "Save"}
+          size="medium"
+          disabled={!canSave}
+          pending={busy}
+          testID="profile-save-name"
+          onPress={() => void save()}
+        />
+      </View>
+    </SurfaceCard>
   );
 }
 

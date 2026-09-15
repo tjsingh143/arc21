@@ -1,0 +1,44 @@
+# Inspect with the simulator's maximum accessibility text size enabled.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://learn/strategy-guide
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element: 'Hard 5 against dealer 2:.*'
+    direction: DOWN
+    centerElement: true
+    timeout: 30000
+- takeScreenshot: accessibility-strategy-chart
+- tapOn: 'Hard 5 against dealer 2:.*'
+- assertVisible: Close cell detail
+- assertVisible: Hard 5 vs 2
+- takeScreenshot: accessibility-strategy-detail
+- scrollUntilVisible:
+    element: Dealer busts
+    direction: DOWN
+    centerElement: true
+    timeout: 30000
+- assertVisible: Close cell detail
+- takeScreenshot: accessibility-strategy-probabilities
+- tapOn: Close cell detail
+- scrollUntilVisible:
+    element: Soft totals
+    direction: UP
+- tapOn: Soft totals
+- assertVisible:
+    text: Soft totals
+    selected: true
+- tapOn: Pairs totals
+- assertVisible:
+    text: Pairs totals
+    selected: true
+- takeScreenshot: accessibility-strategy-pairs
+- tapOn:
+    id: back-bar

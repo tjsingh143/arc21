@@ -1,0 +1,69 @@
+# Run at the maximum iOS accessibility text size, with a live Practice hand.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: open-profile
+    timeout: 30000
+- assertVisible:
+    id: header-chips
+- takeScreenshot: accessibility-home
+- tapOn:
+    id: open-profile
+- scrollUntilVisible:
+    element:
+      id: profile-edit-name
+    direction: DOWN
+    timeout: 30000
+- takeScreenshot: accessibility-profile
+- scrollUntilVisible:
+    element:
+      id: profile-inventory
+    direction: DOWN
+    timeout: 30000
+- assertVisible:
+    id: profile-friends
+- takeScreenshot: accessibility-profile-actions
+- tapOn:
+    id: back-bar
+- openLink: arc21://game/practice
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: action-stand
+    timeout: 20000
+- scrollUntilVisible:
+    element:
+      id: player-hand-value
+    direction: DOWN
+    timeout: 20000
+- assertVisible: '.*Bet 100.*'
+- takeScreenshot: accessibility-practice-actions
+- scrollUntilVisible:
+    element: '.*Bet 100.*'
+    direction: DOWN
+    centerElement: true
+    timeout: 20000
+- waitForAnimationToEnd
+- takeScreenshot: accessibility-practice-wager
+- tapOn: Leave practice table
+- scrollUntilVisible:
+    element:
+      id: open-profile
+    direction: UP
+    timeout: 30000
+- waitForAnimationToEnd
+- takeScreenshot: accessibility-return-home

@@ -1,0 +1,272 @@
+# Arc 21 — continuous integration.
+#
+# The specification's rule is the whole point of this file: "A pull request must
+# not pass with TypeScript errors or failing engine tests."
+#
+# WHAT HAS ACTUALLY BEEN RUN. Every step below is run locally, in this order,
+# and its output recorded in the phase report — a workflow whose steps have
+# never been run is a wish.
+#
+# The line that used to sit here said "there is no remote and no CI runner has
+# ever executed this workflow". That was true when it was written and is not
+# now: `origin` is a private GitHub repository holding both `main` and the
+# working branch, `gh` is authenticated with the `workflow` scope, and phase 11
+# pushed a branch and opened a pull request specifically so the `pull_request`
+# trigger below would fire on a real runner. Its result is in
+# `docs/phase-reports/phase-11.md`. A comment asserting something about the
+# build that has stopped being true is the kind of claim this repository keeps a
+# list of, so it is corrected here rather than left to be read as current.
+#
+# The half that only a runner can exercise is the plumbing — `actions/checkout`,
+# `actions/setup-node` and `supabase/setup-cli` — none of which can exist on a
+# developer machine.
+#
+# TWO JOBS, AND WHY THE SPLIT MATTERS. `tests/server/**` talks to real Edge
+# Functions over HTTP and SKIPS when no stack is reachable. A skip is not a
+# pass. So `checks` explicitly EXCLUDES that directory rather than running it
+# and quietly skipping it, and `database` runs it with
+# ARC21_REQUIRE_SERVER_STACK=1, which turns the skip into a hard failure. A
+# database job whose stack failed to come up therefore reports a broken stack
+# instead of a green suite that tested nothing. The two together run every test
+# in the repository exactly once: 2,405 + 302 = 2,707 as of phase 12. The
+# numbers move; what must not is that neither half is skipped.
+#
+# Both steps call the npm script rather than repeating its command, so the
+# workflow cannot drift from what a local run does — including the
+# `--maxWorkers=2` the server half needs to stop being load-dependent.
+#
+# Node is pinned to the version every local run was validated on. package.json
+# `engines` permits >=22, but only 26 has been exercised here, and claiming
+# otherwise is the kind of untested assertion this repository keeps a list of.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: "26"
+
+jobs:
+  checks:
+    name: Lint, typecheck, unit tests, bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        # 0 errors is the bar. Warnings are tracked but do not fail the build.
+        run: npm run lint
+
+      - name: Typecheck
+        # `supabase/functions` is excluded from tsconfig.json and is NOT covered
+        # by this step — its `.js` specifiers resolve only through a per-function
+        # import map, which tsc cannot be given. The step below covers it.
+        run: npx tsc --noEmit
+
+      - name: Typecheck the Edge Functions
+        # Each function checked with its OWN deno.json import map, which is the
+        # only way this directory typechecks at all. Its first run found eight
+        # throws of a rejection code that does not exist — live behaviour was
+        # HTTP 200 with the literal message "undefined" — plus a ledger reason
+        # its own callers pass and a seat persisted without a required field.
+        # Running the stack proves the paths that are exercised; this proves the
+        # ones that are not.
+        run: npm run check:functions
+
+      - name: Unit and integration tests (no server stack)
+        # tests/server/** is excluded here on purpose — see the header. It runs
+        # in the `database` job, where a stack exists and a skip is a failure.
+        # The npm script IS this command; calling it rather than repeating it
+        # keeps the workflow and a local run from drifting apart.
+        run: npm run test:unit
+
+      - name: Per-area coverage gates
+        # NEVER RUN BY CI UNTIL THIS STEP EXISTED, and it had been FAILING.
+        # `decision-grading.ts` sat at 47.76% statements against an 85% bar from
+        # the moment the assistance selector shipped — `adviceFor`, the function
+        # that decides what a Learn table TELLS a player before they choose, had
+        # no unit test at all. A gate nobody runs is not a gate.
+        #
+        # It is the unit half only: `tests/server/**` is excluded from the
+        # COVERAGE run because those tests drive the real functions over HTTP
+        # and score zero under unit instrumentation, which would average real
+        # logic against untestable plumbing.
+        run: npm run test:coverage
+
+      - name: Expo config doctor
+        run: npx expo-doctor@latest
+
+      - name: Build validation — the app must bundle
+        # Not a store build: this proves every import resolves and the bundler
+        # produces a Hermes bytecode bundle. A native build needs EAS and
+        # credentials, which are the deployment boundary.
+        #
+        # --clear is not cosmetic. Without it this step failed locally with
+        # "Failed to get the SHA-1 for … react-native-worklets/.worklets/…":
+        # the worklets plugin writes generated files under node_modules, and a
+        # Metro cache that outlives a dependency change points at files that no
+        # longer exist. A fresh runner would not usually have that cache, but
+        # the command below is the one that was actually run and proved.
+        run: npm run bundle:check
+
+  database:
+    name: pgTAP and server integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - uses: supabase/setup-cli@v1
+        # Pinned for the same reason Node is: `latest` let an upstream release
+        # turn a green commit red. CLI v2.117.0 (published 2026-09-07) fails
+        # `supabase start` on these migrations with "failed to create seed
+        # table: current transaction is aborted" — reproduced locally, with and
+        # without the newest migration. v2.116.0 is the last version this job
+        # passed on (2026-09-04), and it also applies every migration and seeds
+        # from empty locally; v2.115.0 does too, and is what local verification
+        # including Astra Refresh A ran on, but neither of its two runs here
+        # passed: a stack probe timed out mid-suite, then the edge runtime died
+        # on start ("Bus error (core dumped)"). Not shown to be the CLI's fault,
+        # so the pin prefers the version with a green run. Move it deliberately,
+        # after a
+        # local `supabase start` from empty passes on the new version.
+        with:
+          version: 2.116.0
+
+      - name: Start the stack
+        run: supabase start
+
+      - name: Apply every migration from scratch
+        run: supabase db reset
+
+      - name: pgTAP
+        run: supabase test db
+
+      - name: Serve the Edge Functions
+        # --no-verify-jwt tells the GATEWAY not to pre-check the token. The
+        # function still authenticates every request itself, which is what the
+        # 401 below proves.
+        run: supabase functions serve --no-verify-jwt &
+
+      - name: Wait for the functions to serve
+        # Only a 401 proves the FUNCTION is up. With the Edge runtime stopped
+        # the API gateway still answers — 503 — and an "any response" check
+        # once reported the stack as up while nine tests failed instead of
+        # skipping.
+        run: |
+          for attempt in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+              http://127.0.0.1:54321/functions/v1/game-command \
+              -H "content-type: application/json" -d '{}' || true)
+            if [ "$code" = "401" ]; then
+              echo "functions serving (401 after ${attempt}s)"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the Edge Functions never answered 401; last code was '${code}'" >&2
+          exit 1
+
+      - name: And the functions can reach the database
+        # A 401 DOES NOT PROVE THIS. The auth check runs before anything is
+        # read, so a function that is serving perfectly and cannot resolve
+        # Postgres answers 401 exactly like a healthy one. Proved by
+        # disconnecting the database container from the Docker network: the
+        # probe above still returned 401 while every command returned
+        # `INTERNAL … getaddrinfo ENOTFOUND supabase_db_arc21`, and a hundred
+        # server tests would have reported a broken container network as a
+        # broken product.
+        #
+        # `tests/server/stack-guard.ts` makes the same second check, for the
+        # same reason — this step exists so the JOB fails on the stack rather
+        # than on the suite, which is a shorter path to the actual cause.
+        #
+        # The command is signed for an account that does not exist and names a
+        # game that does not exist. `handle()` takes the engine-state lock
+        # before anything else, so it reaches Postgres either way:
+        # NOT_A_PARTICIPANT (4xx) means the database answered; INTERNAL (500)
+        # means it did not. Nothing is moved and nothing is created.
+        run: |
+          node -e '
+            const { createHmac } = require("node:crypto");
+            const b64 = (v) => Buffer.from(JSON.stringify(v)).toString("base64url");
+            const header = b64({ alg: "HS256", typ: "JWT" });
+            const payload = b64({
+              sub: "00000000-0000-4000-8000-0000000000ff",
+              role: "authenticated",
+              aud: "authenticated",
+              exp: Math.floor(Date.now() / 1000) + 300,
+            });
+            const secret = "super-secret-jwt-token-with-at-least-32-characters-long";
+            const sig = createHmac("sha256", secret).update(header + "." + payload).digest("base64url");
+            const token = header + "." + payload + "." + sig;
+            (async () => {
+              for (let attempt = 1; attempt <= 60; attempt += 1) {
+                try {
+                  const response = await fetch("http://127.0.0.1:54321/functions/v1/game-command", {
+                    method: "POST",
+                    headers: { "content-type": "application/json", authorization: "Bearer " + token },
+                    body: JSON.stringify({
+                      gameId: "00000000-0000-4000-8000-0000000000fe",
+                      clientActionId: "00000000-0000-4000-8000-0000000000fd",
+                      type: "NEXT_HAND",
+                      payload: {},
+                      expectedVersion: 1,
+                      clientSentAt: new Date().toISOString(),
+                    }),
+                    // BOUNDED. Without it one hung connection blocks the whole
+                    // loop for ever: a gateway that accepts the socket and never
+                    // answers is exactly what a half-started stack looks like,
+                    // and the retry budget below only means something if each
+                    // attempt can end.
+                    signal: AbortSignal.timeout(5000),
+                  });
+                  if (response.status < 500) {
+                    console.log("functions reached the database (" + response.status + " after " + attempt + "s)");
+                    process.exit(0);
+                  }
+                  if (attempt === 60) console.error(await response.text());
+                } catch (error) {
+                  if (attempt === 60) console.error(String(error));
+                }
+                await new Promise((resolve) => setTimeout(resolve, 1000));
+              }
+              console.error("the functions are serving but never reached Postgres");
+              process.exit(1);
+            })();
+          '
+
+      - name: Server integration tests
+        # `npm run test:server` carries BOTH halves of what this step needs, and
+        # carrying them in the script rather than here is deliberate:
+        #
+        #   ARC21_REQUIRE_SERVER_STACK=1 — without it these SKIP when the stack
+        #   is down and the job passes having tested nothing;
+        #
+        #   --maxWorkers=2 — these ten files drive ONE Edge-runtime container
+        #   over HTTP, and at full file parallelism the two tests that hold a
+        #   real race or a real clock open time out on a busy machine. A gate
+        #   must not depend on how idle the runner is.
+        run: npm run test:server

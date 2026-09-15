@@ -24,7 +24,10 @@ appId: com.arc21.app
     when:
       visible: "Open"
     commands:
-      - tapOn: "Cancel"
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
 
 # Onboarding gates a fresh install. Skipping to the app as a guest is one tap,
 # and this stays conditional so the flow also works on a device that has already
@@ -51,7 +54,17 @@ appId: com.arc21.app
             visible:
               id: "onboarding-guest"
           commands:
+            # `optional`, because the branch above and this tap are two
+            # separate reads of the screen: the tap that LANDS navigates
+            # away, and a `when` evaluated against a hierarchy captured
+            # mid-transition then sends the next iteration at a control
+            # that has gone. Measured on a Release build at load 5.6 —
+            # `Element not found: home-practice` with the failure
+            # screenshot showing the Practice table, already open. The
+            # assertion that follows this block is what proves the tap
+            # landed; the tap itself never was the evidence.
             - tapOn:
+                optional: true
                 id: "onboarding-guest"
 
 - extendedWaitUntil:
@@ -59,16 +72,37 @@ appId: com.arc21.app
       id: "home-practice"
     timeout: 30000
 
-# Reach Career through the Play tab, exercising the tab shell on the way.
+# Touch the tab shell on the way past — `every-screen.yaml` is what actually
+# walks it, this is just so the flow does not start from a deep link alone.
 - tapOn: "Play"
-- extendedWaitUntil:
-    visible: ".*Career.*"
-    timeout: 10000
-- tapOn: ".*Career.*"
 
+# THEN REACH THE MAP BY DEEP LINK, NOT BY MATCHING ".*Career.*".
+#
+# That selector matched the HOME card, whose accessibility label names the
+# career too, and tapping it opens the ACTIVE NODE rather than the map. The
+# flow then sat on First Deal's detail screen and failed the next line — an
+# assertion about the map — while every screen involved rendered perfectly.
+# Diagnosed from the failure screenshot plus a deep link to `arc21://career`,
+# which showed the map correct and "Locked" plainly on every gated node.
+#
+# A regex that matches two different destinations is not a selector. CLAUDE.md
+# already records the remedy: a deep link is the reliable way to reach a screen
+# from Maestro.
+- openLink: arc21://career
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# The MAP, named by something only the map has.
 - extendedWaitUntil:
-    visible: ".*First Deal.*"
+    visible: ".*of 54 stars.*"
     timeout: 20000
+- assertVisible: ".*First Deal.*"
 
 # Only the first node is open on a fresh profile; the rest state that plainly.
 - assertVisible: ".*Locked.*"

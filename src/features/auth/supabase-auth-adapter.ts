@@ -57,6 +57,10 @@ export function createSupabaseAuthAdapter(
   options: { readonly timeoutMs?: number } = {},
 ): AuthAdapter {
   const { timeoutMs } = options;
+  // A PKCE code is single-use; a refused password does not undo its exchange.
+  // Keep only the verified flow's identity so the same screen can retry the
+  // password update. Never reuse it for a different code or signed-in account.
+  let recovery: { code: string; userId: string } | null = null;
 
   async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
     // `Promise.resolve` because PostgREST's builder is a thenable, not a Promise.
@@ -132,6 +136,7 @@ export function createSupabaseAuthAdapter(
     },
 
     async signOut(): Promise<AuthVoidResult> {
+      recovery = null;
       /*
        * Local scope, not global.
        *
@@ -151,14 +156,18 @@ export function createSupabaseAuthAdapter(
        * arguments and reads the caller from the verified session, so this
        * cannot be pointed at anyone else.
        *
-       * The local session is NOT cleared here. The store does that after a
-       * confirmed success, because clearing it first would leave a player whose
-       * deletion was refused — mid-hand, say — signed out of an account that
-       * still exists.
+       * Clear the SDK's saved session only after confirmed deletion. Clearing
+       * Zustand alone lets a cold launch restore the deleted account; clearing
+       * either session before a refusal would sign out an account that remains.
        */
       const result = await bounded(client.rpc("delete_own_account"));
       if (result === null) return { ok: false, failure: NETWORK };
       if (result.error) return { ok: false, failure: classifyAuthError(result.error) };
+      recovery = null;
+      // The account is already gone. The SDK removes its saved session even
+      // when GoTrue answers that the user no longer exists. A logout error
+      // cannot turn confirmed deletion into an "account not deleted" verdict.
+      await bounded(client.auth.signOut({ scope: "local" })).catch(() => null);
       return { ok: true };
     },
 
@@ -181,13 +190,29 @@ export function createSupabaseAuthAdapter(
       // via PKCE, on THIS device, and turns the one-time code into a session.
       // Nothing here trusts the code as an identity — GoTrue does that
       // verification, and a code that fails it never reaches `updateUser`.
-      const exchanged = await bounded(client.auth.exchangeCodeForSession(code));
-      if (exchanged === null) return { ok: false, failure: NETWORK };
-      if (exchanged.error) return { ok: false, failure: classifyAuthError(exchanged.error) };
+      if (recovery?.code === code) {
+        const current = await bounded(client.auth.getSession());
+        if (current === null) return { ok: false, failure: NETWORK };
+        if (current.error) return { ok: false, failure: classifyAuthError(current.error) };
+        if (current.data.session?.user.id !== recovery.userId) {
+          recovery = null;
+          return { ok: false, failure: authFailure("RECOVERY_LINK_INVALID") };
+        }
+      } else {
+        recovery = null;
+        const exchanged = await bounded(client.auth.exchangeCodeForSession(code));
+        if (exchanged === null) return { ok: false, failure: NETWORK };
+        if (exchanged.error) return { ok: false, failure: classifyAuthError(exchanged.error) };
+        if (!exchanged.data.session) {
+          return { ok: false, failure: authFailure("RECOVERY_LINK_INVALID") };
+        }
+        recovery = { code, userId: exchanged.data.session.user.id };
+      }
 
       const updated = await bounded(client.auth.updateUser({ password: newPassword }));
       if (updated === null) return { ok: false, failure: NETWORK };
       if (updated.error) return { ok: false, failure: classifyAuthError(updated.error) };
+      recovery = null;
       return { ok: true };
     },
 
@@ -207,6 +232,7 @@ export function createSupabaseAuthAdapter(
 
     onAuthStateChange(listener): () => void {
       const { data } = client.auth.onAuthStateChange((_event, session) => {
+        if (recovery && session?.user.id !== recovery.userId) recovery = null;
         listener(toSnapshot(session as SessionLike | null));
       });
       return () => data.subscription.unsubscribe();

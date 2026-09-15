@@ -2,6 +2,7 @@ export {
   toFormat,
   toEntry,
   toStandings,
+  tableForEntry,
   describeProgress,
   ordinal,
   sharedPlacements,

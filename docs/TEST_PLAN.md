@@ -212,29 +212,47 @@ placement ordering (a survivor always finishes above an eliminated player with
 more chips), pooled-and-floored prizes for a shared placement, and the invariant
 that a payout never exceeds the schedule.
 
-`tests/server/game-command.integration.test.ts` plays a whole four-player
+`tests/server/sprint-tournament.integration.test.ts` plays a whole four-player
 tournament through the real functions: entry debited once per player and not again
 on a retry with a fresh request id, four equal stacks, twelve scheduled hands, the
 ceiling changing, the button moving every hand, exactly one elimination after hand
 six, placements assigned to all four, prizes never exceeding the schedule, and the
-wallet arithmetic reconciling to fees-out minus prizes-in.
+wallet arithmetic reconciling to fees-out minus prizes-in. It also drives one hand
+by letting the SETTLEMENT WINDOW lapse, because the competition boundary used to
+be skipped on that path entirely.
+
+Betting order is asserted where it is enforced: only `activeSeatId` may stake,
+everybody else is refused `NOT_YOUR_TURN` and is offered no bet bounds at all, the
+turn moves one seat along per lock with its own seven-second clock, and the
+committed bet is on the snapshot every seat reads. Three further cases construct a
+STANDING in `private.game_state_private` — an elimination tie, a player below the
+table minimum, a tie at the top after hand twelve — because a fair shoe will not
+produce those on demand and retrying until it does is a flake by construction.
 
 `supabase/tests/16_sprint_and_daily.test.sql` holds `sprint_format()` to the
-specification field by field, so the client's format, the server's enforcement and
-`SPRINT` in `tournament-format.ts` cannot drift apart.
+specification field by field, and the server suite compares that published format
+with `SPRINT` in `tournament-format.ts` directly, so the client's format, the
+server's enforcement and the constant cannot drift apart.
 
-Still open: sequential betting asserted as *visible* to other seats (the data is
-sent; no test yet reads one seat's staged bet from another's snapshot), and hints
-disabled in ranked play asserted on device.
+On a device: `tests/e2e/sprint-wait-and-withdraw.yaml` pays an entry, waits, and
+takes the fee back through the screen; `tests/e2e/sprint-table.yaml` completes a
+field seeded from outside the device and asserts the table renders and takes a
+bet in turn. Hints disabled in ranked play are asserted on the server (no `advice`
+on any tournament snapshot, and no ranked decision rows) rather than on a
+screenshot.
 
 ### Daily challenge suite — **written**
-`tests/daily/daily-challenge.test.ts` (24 assertions) covers same-seed-same-shoe
+`tests/daily/daily-challenge.test.ts` (35 assertions) covers same-seed-same-shoe
 at both the raw-stream and the dealt-shoe level, independence from read batch
 size, divergence on a one-character seed change, that the stream is genuinely
 HMAC-SHA-256 over a big-endian counter (recomputed independently), commitment
 verification, that the commitment covers the date, the score being the ending
 bankroll with no speed term, and the one-ranked-attempt rule including after an
-abandoned attempt.
+abandoned attempt. Phase 9 added the shoe AFTER the cut card — same seed and
+shuffle number gives the same second shoe, a different shuffle number gives a
+different one, and a CSPRNG reshuffle is shown not to have that property — and
+`attemptCompletion`, which ends an attempt at the hand count OR below the table
+minimum, whichever comes first.
 
 `tests/server/…` proves the claim that matters end to end: two different accounts
 dealt the identical twenty-hand sequence, the seed absent from every response, the
@@ -254,12 +272,25 @@ blocked, only unbuilt; recorded in `docs/AUDIT.md` as ABSENT rather than
 approximated.
 
 ### Leaderboards and cosmetics suite — **written**
-`tests/features/leaderboards-and-cosmetics.test.ts` (28 assertions) covers
+`tests/features/leaderboards-and-cosmetics.test.ts` (33 assertions) covers
 reading a board, dropping an unreadable row rather than half-rendering it,
 formatting each board's value in the units it is actually in — accuracy arrives in
 basis points, so 8,734 is 87.34% — the four categories being the specification's
 four with global bankroll absent, every board explaining why it is empty, and a
-locked cosmetic never showing anything that reads as a price.
+locked cosmetic never showing anything that reads as a price. Phase 9 added
+paging: the predicates rather than the store, because what goes wrong there is a
+CONTROL — a "Load more" that fires twice appends the same page twice, and one
+that never stops asks the server for an empty page for ever.
+
+`tests/server/rls-writes.integration.test.ts` gained the direct attack on the
+board inputs: `player_daily_xp`, `player_decision_periods`, `daily_entries.score`
+and `tournament_entries.placement` written over PostgREST with a real session
+token, plus `user_cosmetics` and the six server-only functions behind them. It
+was proved to FAIL first — granting `insert` on `player_daily_xp` to
+`authenticated` answered HTTP 201 with 999,999 XP — and that grant is now also
+stopped by a `deny_client_write` trigger, which
+`supabase/tests/20_authorization_surface.test.sql` requires of every server-owned
+table by asking the catalogue rather than naming them.
 
 `tests/progression/decision-grading.test.ts` (13 assertions) covers eligibility as
 an allowlist, the exclusions the specification names, and the four cases that are

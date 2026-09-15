@@ -17,7 +17,12 @@ export const colors = {
 
   textPrimary: "#F5F3EE",
   textSecondary: "#A5ADB7",
-  textDisabled: "#6B737D",
+  /**
+   * #727A84, not the visually similar #6B737D it replaced — that shade sat at
+   * 2.90:1 on `surfaceSoft`, just under the 3:1 AA floor for large/disabled
+   * text. See `scripts/check-contrast.ts` and `tests/design/contrast.test.ts`.
+   */
+  textDisabled: "#727A84",
 
   accent: "#F0B36A",
   accentSoft: "#5A4630",
@@ -29,7 +34,12 @@ export const colors = {
 
   cardFace: "#F8F6F1",
   cardInk: "#15171A",
-  cardRed: "#C84D55",
+  /**
+   * #BC3E47, not the visually similar #C84D55 it replaced — that shade sat at
+   * 4.18:1 on `cardFace`, under the 4.5:1 AA floor for body text, which is
+   * exactly what a diamond or heart rank is. See `scripts/check-contrast.ts`.
+   */
+  cardRed: "#BC3E47",
 
   border: "rgba(255,255,255,0.10)",
   borderStrong: "rgba(255,255,255,0.18)",
@@ -39,6 +49,18 @@ export const colors = {
 } as const;
 
 export type ColorToken = keyof typeof colors;
+
+/**
+ * Substituted for the corresponding `colors` entry only when the "Increased
+ * contrast" accessibility setting is on — see `src/design/accessibility.tsx`.
+ * `border` at 0.4 alpha measures ~3.8:1 against both `background` and
+ * `surface` in `scripts/check-contrast.ts`, clearing the 3:1 WCAG floor for a
+ * meaningful UI graphic that the default 0.10/0.18-alpha hairlines do not.
+ */
+export const accessibleColors = {
+  border: "rgba(255,255,255,0.4)",
+  textSecondary: "#C3CAD2",
+} as const;
 
 /**
  * Cosmetic art surfaces — the only colours that may appear in cosmetic artwork

@@ -110,6 +110,23 @@ A commitment nobody verifies is theatre, so the check is in the database rather
 than in a runbook. `revealed_seed` may only be written once `closes_at` has
 passed.
 
+**And until phase 9 nothing ever wrote it.** The column, the trigger, the
+projection, the client parser and the render branch all existed, and no code path
+in the product published a seed — so the commitment could not be checked by
+anybody, while the Daily screen told the player it could. A commitment nobody CAN
+verify is worse than one nobody does. `reveal_closed_daily_seeds()` publishes
+every challenge whose window has closed and is called by
+`ensure_todays_daily_challenge()` as its first act — on demand rather than on a
+schedule, for the same reason the challenge row itself is created that way.
+`latest_verifiable_daily_challenge()` returns the seed, the commitment and **no
+verdict**: the device recomputes SHA-256 itself, because a server that also
+answered "yes, it matches" would be asking to be believed twice.
+
+The shoe is deterministic at every shuffle, not only the first.
+`dailyShoeSource(seed, shuffleNumber)` keys the stream on the shuffle number, so
+an attempt that passes the cut card is dealt a second shoe every other entrant is
+also dealt. Before phase 9 that reshuffle came from the CSPRNG.
+
 ---
 
 ## Authorization model
@@ -205,9 +222,9 @@ server: a correction is a new row, never an edit to history.
 | `game_sessions` | One table/room. Sanitised metadata; `escrow_chips` blocks deletion while chips are unreconciled |
 | `game_session_seats` | Seat occupancy and table stack. The membership source every game-scoped policy consults |
 | `game_events` | Append-only sanitised event stream with a monotonic `seq`. `visibility` is `public` or `seat`; a seat-scoped row reaches only its recipient |
-| `hand_records` | Completed-hand archive. Dealer cards may only be stored once `completed_at` is set |
-| `hand_players` | One settled player hand. `net = credit - wager` is a constraint |
-| `player_actions` | Per-decision log with optional strategy grading. Readable only by the player who made the decision |
+| `hand_records` | **V1.1, unwritten.** Completed-hand archive. Dealer cards may only be stored once `completed_at` is set |
+| `hand_players` | **V1.1, unwritten.** One settled player hand. `net = credit - wager` is a constraint |
+| `player_actions` | **V1.1, unwritten.** Per-decision log with optional strategy grading. Readable only by the player who made the decision |
 | `private.game_state_private` | See above |
 
 `game_session_seats` is not in the original table list but is required: RLS needs
@@ -218,6 +235,21 @@ hand has been dealt.
 exactly the sort of place a hole card leaks from — an "archive" row written at
 deal time would publish the dealer's down card to every participant before the
 peek. The constraint makes that shape unstorable rather than merely discouraged.
+
+**Those three tables are empty, and that is the specification's instruction.**
+"hand history/replay" is listed under **V1.1 — DO NOT LET THESE DELAY MVP**, so
+the schema is architected for it and nothing writes a row. The tables, their
+CHECK constraints, their indexes, their RLS policies and their
+`deny_client_write` triggers all exist and are asserted; the archive does not.
+Until this note existed, the migration header said "Written by the server at
+settlement" and this table said "Completed-hand archive" — both describing a
+feature that records nothing, which is the same class of untruth as a screen
+claiming a shipped feature is missing.
+
+`tests/server/rls-idor.integration.test.ts` asserts they are EMPTY rather than
+skipping them: zero rows after a full hand at a Quick Play table is the evidence
+that this is a decision. The day one gains a row, that test fails and the
+participant-visibility assertions have to be written before the suite is green.
 
 ### Career, competition, cosmetics
 
@@ -350,14 +382,40 @@ suite.
 ## Reversibility and recovery
 
 The specification asks that migrations be "reversible where reasonable or include
-documented recovery". This is the position for every one of the thirty-two, so
-that a bad deploy is answered by reading rather than by improvising.
+documented recovery". This is the position for every one of them, so that a bad
+deploy is answered by reading rather than by improvising. The count was
+forty-four when this section was written and is **fifty-nine** now. The
+fifteen added since mostly add DDL, replace function bodies, or narrow policies.
+The Career attempt repair also recomputes a derived aggregate, as described
+below. One index change needs a sentence of its own:
+`20260906120000_seat_index_reuse.sql` DROPS `game_session_seats_unique_index`
+and replaces it with a PARTIAL unique index over `status <> 'left'`, because the
+old constraint made a departed seat's index unusable for ever and the eighth
+player ever to sit at a public table was refused by it. Recreating the old
+constraint is the reversal, and it would fail on any table that has since seated
+somebody in a freed index — which is the change working, not a fault. The three
+phase 9 added are `20260903120000_leaderboard_pagination.sql` (which DROPS the
+one-argument board arities — recovery is to recreate them from
+`20260817300000` and `20260818110000`, and nothing else references them),
+`20260903130000_daily_seed_reveal.sql` and
+`20260903140000_server_owned_write_guards.sql` (five triggers; dropping them
+restores the prior shape and loses nothing).
+
+`20260909120000_career_attempt_counts.sql` keeps counting attempts at start,
+removes the second increment at completion, and repairs `career_progress.attempts`
+from the retained `career_attempts` rows. Re-running that aggregate repair is
+idempotent; it changes no chips, XP, stars or rewards. Restoring the old function
+would reintroduce double counting. `30_career_attempt_counts.test.sql` covers
+the repair and repeat-completion behavior.
 
 **There is no down-migration framework, and adding one would be worse than not
 having it.** A `down.sql` that nobody runs is a file that describes a rollback
 somebody believes in; the recovery below is what would actually be done.
 
 ### The shape of the history
+
+These classification counts describe the original reviewed subset, rather than
+all 59 current migration files. Later additions are discussed above.
 
 | Class | Count | Reversal |
 |---|---|---|
@@ -423,7 +481,7 @@ bites on three of them, and it is worth naming which:
 
 ### The forward guarantee, which is the one that is actually tested
 
-`supabase db reset` applies all thirty-two from an empty database on every run of
+`supabase db reset` applies all fifty-three from an empty database on every run of
 the test suite, and `20260818120000_authorization_gate.sql` fails the migration
 if the authorization surface is wrong when it finishes. A migration that cannot
 apply cleanly from scratch is caught before it is ever deployed, which is the
@@ -458,11 +516,33 @@ supabase/tests/
   17_leaderboards_and_cosmetics  board projections, decisions, unlocks
   18_notifications.test.sql      the notification writer, payload allowlist and
                                  delivery record
+  19_rate_limits.test.sql        every window is a policy row, and refusals are
+                                 not themselves recorded
+  20_authorization_surface.test  the whole client authorization surface, as a
+                                 function called from migrations and from here
+  21_daily_tiebreak.test.sql     the daily board's tie-breaks come from the
+                                 attempt, not the week bucket
+  22_migration_recovery.test.sql the three derived states are re-derivable
+  23_account_lifecycle.test.sql  deletion is total and refuses for exactly one
+                                 stated reason. Does NOT name the tables it
+                                 checks: it asks the catalogue for every
+                                 cascading reference to the account, so a table
+                                 added later without a cascade fails it with no
+                                 edit
 ```
 
-**355 assertions across 19 files.** They test authorization by **acting as the
+**469 assertions across 24 files.** They test authorization by **acting as the
 attacker** — `SET LOCAL ROLE authenticated` plus a `request.jwt.claims` subject,
 which is exactly the context PostgREST establishes for a real request.
+
+Two things pgTAP cannot reach, both in `tests/server/`:
+
+* **concurrency.** One session in one transaction cannot express two signups
+  racing for a handle. `account-lifecycle.integration.test.ts` fires eight at
+  once through the real GoTrue.
+* **the write half of the IDOR sweep.** `rls-idor.integration.test.ts` reads;
+  `rls-writes.integration.test.ts` writes, with a second real token, across
+  every one of the thirteen client write grants.
 
 Two real defects surfaced while writing them, both fixed:
 
@@ -470,6 +550,15 @@ Two real defects surfaced while writing them, both fixed:
    handle was `'p' || substr(id, 1, 12)`, and the collision branch retried the
    same string — so two accounts sharing their first twelve hex digits would
    deadlock on the unique index instead of falling back. Now suffixed until free.
+   Two further versions of the same bug have been found since, and both cost a
+   player their account: a derived handle that folded into a forbidden word
+   could not be repaired by suffixing at all (fixed in
+   `20260823150000`), and a *concurrent* signup for the same requested handle
+   violated `profiles_username_key` between the check and the insert, which
+   aborted the trigger, aborted the `auth.users` insert, and answered HTTP 500
+   (fixed in `20260829120000`). Every version of it looks like a different bug
+   and is the same one: **the pre-check is advisory, so the insert must be able
+   to fail and recover.**
 2. **Guard triggers were unreachable for client roles.** `is_client_role()` had
    its `EXECUTE` revoked from `PUBLIC` and never re-granted. Trigger functions
    run as the invoker, so *every* legitimate client write — renaming yourself,

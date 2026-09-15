@@ -28,9 +28,26 @@ import {
   PRIVATE_TABLE_STACK,
   privateTableRules,
   randomIntBelow,
+  isVacatedSeat,
   type GameTiming,
 } from "../../../shared/blackjack/index.js";
-import { DAILY, hmacCounterStream, isRankedAttempt } from "../_shared/daily-challenge.ts";
+import {
+  DAILY,
+  dailyShoeSource,
+  hmacCounterStream,
+  isRankedAttempt,
+} from "../_shared/daily-challenge.ts";
+import {
+  buildDrillScenarios,
+  careerNodeBySlug,
+  CAREER_RULES,
+  evaluateStars,
+  gradeDrillDecision,
+  maxWagerForNode,
+  type CareerNode,
+} from "../_shared/career/index.ts";
+import { settleCareerReward } from "../_shared/career-rewards.ts";
+import { adviceFor } from "../_shared/decision-grading.ts";
 import {
   maxBetForHand,
   rotateToButton,
@@ -46,6 +63,9 @@ import {
   type JoinPublicTableRequest,
   type StartDailyChallengeRequest,
   type RegisterSprintRequest,
+  type StartCareerNodeRequest,
+  type SubmitCareerDrillRequest,
+  type CareerDrillScenario,
 } from "../../../shared/contracts/index.js";
 import { authenticate } from "../_shared/identity.ts";
 import { classify, CommandError, toRejectedResponse } from "../_shared/command-errors.ts";
@@ -54,6 +74,7 @@ import {
   newRequestId,
   preflightResponse,
   readJsonBody,
+  withUnreadBodyDrained,
 } from "../_shared/http-json.ts";
 import { logError, logInfo, logWarn, type LogFields } from "../_shared/structured-log.ts";
 import { RollbackSignal, withTransaction, toInteger, type Tx } from "../_shared/postgres-client.ts";
@@ -61,11 +82,14 @@ import {
   appendEvents,
   applyWalletDelta,
   buyInKey,
+  closeRoomForSession,
   findLedgerEntry,
   findSeat,
   insertEngineState,
   loadSession,
+  releaseRoomSeat,
   lockEngineState,
+  lockRoomForSession,
   persistEngineState,
   syncSeatRow,
   syncSessionRow,
@@ -106,7 +130,9 @@ const PRIVATE_TIMING: GameTiming = {
   settlementMillis: 12_000,
 };
 
-Deno.serve(async (request: Request): Promise<Response> => {
+// A refusal returned before the body is read can be lost by the runtime;
+// see `withUnreadBodyDrained`.
+Deno.serve(withUnreadBodyDrained(async (request: Request): Promise<Response> => {
   if (request.method === "OPTIONS") return preflightResponse();
 
   const startedAt = Date.now();
@@ -147,9 +173,18 @@ Deno.serve(async (request: Request): Promise<Response> => {
         startDailyChallenge(tx, identity.userId, command, log),
       );
       log.outcome = "daily_challenge_started";
+    } else if (command.action === "START_CAREER_NODE") {
+      response = await withTransaction((tx) => startCareerNode(tx, identity.userId, command, log));
+      log.outcome = "career_node_started";
+    } else if (command.action === "SUBMIT_CAREER_DRILL") {
+      response = await withTransaction((tx) => submitCareerDrill(tx, identity.userId, command, log));
+      log.outcome = "career_drill_graded";
     } else if (command.action === "REGISTER_SPRINT") {
       response = await withTransaction((tx) => registerSprint(tx, identity.userId, command, log));
       log.outcome = "sprint_registered";
+    } else if (command.action === "WITHDRAW_SPRINT") {
+      response = await withTransaction((tx) => withdrawSprint(tx, identity.userId, log));
+      log.outcome = "sprint_withdrawn";
     } else {
       log.gameId = command.gameId;
       response = await withTransaction((tx) => cashOut(tx, identity.userId, command, log));
@@ -172,7 +207,7 @@ Deno.serve(async (request: Request): Promise<Response> => {
 
     return jsonResponse(toRejectedResponse(rejection, log.requestId), rejection.httpStatus);
   }
-});
+}));
 
 // ---------------------------------------------------------------------------
 // OPEN
@@ -230,16 +265,15 @@ async function startPrivateTable(
   const room = rooms[0] as
     | { id: string; status: string; host_user_id: string; game_session_id: string | null }
     | undefined;
-  if (!room) throw new CommandError("NOT_FOUND", "no such table");
+  if (!room) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
 
-  const members = await tx`
+  const seated = await tx<{ user_id: string; seat_index: number; display_name: string }[]>`
     select m.user_id, m.seat_index, p.display_name
     from public.room_members m
     join public.profiles p on p.id = m.user_id
     where m.room_id = ${command.roomId}::uuid and m.status = 'joined'
     order by m.seat_index
   `;
-  const seated = members as Array<{ user_id: string; seat_index: number; display_name: string }>;
 
   if (!seated.some((member) => member.user_id === userId)) {
     throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
@@ -338,7 +372,7 @@ async function resetPrivateStack(
   log: LogFields,
 ): Promise<SessionResponse> {
   const session = await loadSession(tx, command.gameId);
-  if (!session) throw new CommandError("NOT_FOUND", "no such table");
+  if (!session) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
   if (session.mode !== "private_table") {
     throw new CommandError("ILLEGAL_ACTION", "only a private table can reset a stack");
   }
@@ -348,7 +382,7 @@ async function resetPrivateStack(
   log.seatId = seat.id;
 
   const locked = await lockEngineState(tx, command.gameId);
-  if (!locked) throw new CommandError("NOT_FOUND", "that table has no game");
+  if (!locked) throw new CommandError("NOT_A_PARTICIPANT", "that table has no game");
 
   const state = locked.state;
   if (!canCloseSession(state, seat.id)) {
@@ -367,11 +401,32 @@ async function resetPrivateStack(
     );
   }
 
+  /*
+   * THE SEAT IS REINSTATED AS WELL AS REFILLED, and the second half is not a
+   * nicety.
+   *
+   * `openBetting` sits a seat out when it cannot cover the minimum, and clears
+   * that flag only at the START of a later hand. So a reset that moved chips
+   * alone left the player holding 5,000 and still `sittingOut` for the betting
+   * window they were looking at — `getLegalActions` returns NO_ACTIONS for a
+   * seat that is sitting out, so the screen would have answered a successful
+   * reset with the same "waiting" it showed before it. The specification's rule
+   * is a free reset BETWEEN HANDS, and the betting window is between hands.
+   *
+   * Safe by construction: this only ever runs at a phase where no wager is
+   * committed (`canCloseSession` above), and only for a stack that has just
+   * been set to a figure the table minimum is a small fraction of, so the
+   * engine's own reinstatement condition — `stack >= minBet` — is already true.
+   * `sitOutNextHand` is untouched: that is a competition's decision about the
+   * NEXT hand and never a consequence of chips.
+   */
   const next = {
     ...state,
     version: state.version + 1,
     seats: state.seats.map((candidate) =>
-      candidate.seatId === seat.id ? { ...candidate, stack: PRIVATE_TABLE_STACK } : candidate,
+      candidate.seatId === seat.id
+        ? { ...candidate, stack: PRIVATE_TABLE_STACK, sittingOut: false }
+        : candidate,
     ),
   };
 
@@ -385,6 +440,96 @@ async function resetPrivateStack(
     stack: PRIVATE_TABLE_STACK,
     publicState: sanitise(next),
   };
+}
+
+/**
+ * One live seat per player, enforced beside the money.
+ *
+ * Escrow that nobody is watching is how a wallet quietly empties into abandoned
+ * tables — but the sharper reason is that a SECOND seat means a SECOND buy-in
+ * out of the same wallet, and the buy-in idempotency key is derived from the
+ * game, so two different games are two different keys and both are honoured.
+ *
+ * `exceptGameId` is what keeps a reconnect working. The invariant is "no seat at
+ * some OTHER live table", not "no seat at all": a player re-joining the table
+ * they are already sitting at must land on the existing seat and the existing
+ * ledger row, or the guard would lock them out of their own chips.
+ *
+ * It also refuses a player holding a PAID sprint entry whose field has not
+ * filled. That is not a seat row yet, and it becomes one without the player
+ * sending anything: the fourth registrant's command seats the whole field. See
+ * the second query for what that cost when it was missing.
+ *
+ * This is the CONTROL. `join_matchmaking` refuses an already-seated player too,
+ * but that one is a courtesy that keeps a client out of a queue it cannot use —
+ * the same relationship the tier's unlock level already has with this function.
+ * Being matched is not being seated, and nothing stops a matched player opening
+ * a solo table first, so the queue's refusal cannot be the only one.
+ */
+async function assertNoOtherLiveSeat(
+  tx: Tx,
+  userId: string,
+  exceptGameId: string | null,
+): Promise<void> {
+  const seated = await tx<{ game_session_id: string }[]>`
+    select s.game_session_id
+    from public.game_session_seats s
+    join public.game_sessions g on g.id = s.game_session_id
+    where s.user_id = ${userId}::uuid
+      and s.status <> 'left'
+      and g.status in ('lobby', 'active')
+      and (${exceptGameId}::uuid is null or s.game_session_id <> ${exceptGameId}::uuid)
+    limit 1
+  `;
+  if (seated.length > 0) {
+    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
+  }
+
+  /*
+   * A player returning to a table they already hold is not taking a new seat, so
+   * nothing further is asked of them. Reached only when `exceptGameId` named a
+   * game — the query above has already proved there is no seat anywhere ELSE.
+   */
+  if (exceptGameId !== null) {
+    const own = await tx<{ id: string }[]>`
+      select s.id from public.game_session_seats s
+      where s.user_id = ${userId}::uuid
+        and s.game_session_id = ${exceptGameId}::uuid
+        and s.status <> 'left'
+      limit 1
+    `;
+    if (own.length > 0) return;
+  }
+
+  /*
+   * A PAID SPRINT ENTRY IS A SEAT ALREADY BOUGHT, even though no seat row exists
+   * for it yet.
+   *
+   * The tournament is dealt by whoever registers fourth, and it seats everybody
+   * already in the field without asking any of them again. So a player who
+   * registers, then opens a solo table while the field is still filling, is
+   * given a second live seat by somebody else's command — the same invariant
+   * break as the one `registerSprint` now refuses, reached from the other end.
+   * Touch one path, check the other.
+   *
+   * The entry is refundable (`WITHDRAW_SPRINT`) and expires by itself, so this
+   * refusal always names something the player can do.
+   */
+  const queued = await tx<{ tournament_id: string }[]>`
+    select e.tournament_id
+    from public.tournament_entries e
+    join public.tournaments t on t.id = e.tournament_id
+    where e.user_id = ${userId}::uuid
+      and e.status = 'registered'
+      and t.status = 'registering'
+    limit 1
+  `;
+  if (queued.length > 0) {
+    throw new CommandError(
+      "SESSION_ALREADY_ACTIVE",
+      `waiting for tournament ${queued[0]?.tournament_id}`,
+    );
+  }
 }
 
 /**
@@ -413,16 +558,40 @@ async function joinPublicTable(
     for update
   `;
   const room = rooms[0] as
-    | { id: string; tier: string | null; game_session_id: string | null; max_seats: number }
+    | {
+        id: string;
+        tier: string | null;
+        game_session_id: string | null;
+        status: string;
+        max_seats: number;
+      }
     | undefined;
-  if (!room) throw new CommandError("NOT_FOUND", "no such table");
+  if (!room) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
   if (!room.tier) throw new CommandError("INTERNAL", "a public table with no stakes");
+
+  /*
+   * A room that is no longer open takes no more buy-ins.
+   *
+   * `matchmaking_queue.room_id` and an `expo-router` parameter both outlive the
+   * table they name, so a client can present a room id minutes after the room
+   * closed or aged out — and a `joined` membership row survives an expiry,
+   * because `expire_stale_rooms()` only touches the room. Without this the
+   * debit below would run and `rooms.status` would be set back to `active`,
+   * resurrecting an expired table around a fresh 2,000 chips.
+   */
+  if (room.status !== "lobby" && room.status !== "active") {
+    throw new CommandError("SESSION_CLOSED", `room ${room.status}`);
+  }
 
   const seated = await tx`
     select 1 from public.room_members
     where room_id = ${command.roomId}::uuid and user_id = ${userId}::uuid and status = 'joined'
   `;
   if (!seated[0]) throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
+
+  // Before anything is looked up and long before anything is charged. The
+  // exception is this room's own session, so a reconnect is still idempotent.
+  await assertNoOtherLiveSeat(tx, userId, room.game_session_id);
 
   const tier = tierFor(room.tier);
   const profile = await loadProfile(tx, userId);
@@ -435,11 +604,6 @@ async function joinPublicTable(
   const gameId = room.game_session_id ?? crypto.randomUUID();
   log.gameId = gameId;
 
-  // Derived from the game and the player. A retry with a new request id lands
-  // on the same key and returns the first result instead of buying twice.
-  const idempotencyKey = `public_buy_in:${gameId}:${userId}`;
-  const existing = await findLedgerEntry(tx, idempotencyKey);
-
   if (!room.game_session_id) {
     await tx`
       insert into public.game_sessions
@@ -451,24 +615,103 @@ async function joinPublicTable(
     `;
   }
 
-  let seat = await findSeat(tx, gameId, userId);
-  if (!seat) {
-    const seatRows = await tx`
+  // The seat ID, not the row: everything below needs only the id, and assigning
+  // a `{ id }` literal back into a `SeatRow | null` was a type error that
+  // `deno check` reports and `tsconfig.json` cannot see, because
+  // `supabase/functions` is excluded from it.
+  const existingSeat = await findSeat(tx, gameId, userId);
+  /*
+   * A SEAT THIS PLAYER HAS LEFT IS NOT A SEAT THEY STILL HAVE.
+   *
+   * `findSeat` answers with the latest row whatever its status, deliberately —
+   * the command that closes a table also ends the seat, and it has to be able
+   * to find its own idempotency record on a retry. Reusing that row HERE meant
+   * a player who cashed out and was matched back into the same table (which
+   * matchmaking does, correctly: it is the oldest table with room) was handed
+   * their departed seat back — `status = 'left'`, stack 0 — and their next
+   * command was refused SESSION_CLOSED. Measured: HTTP 200, seat row still
+   * `left:0`, and the table screen with nothing on it.
+   *
+   * Returning is a NEW visit: a new seat, and a new buy-in, which is why the
+   * key below is derived from the seat rather than from the player.
+   */
+  let seatId = existingSeat && existingSeat.status !== "left" ? existingSeat.id : null;
+  if (!seatId) {
+    /*
+     * NEVER OVERFILL THE TABLE, and check it here rather than trusting the
+     * allocator.
+     *
+     * `poll_matchmaking` counts `room_members` under a per-tier advisory lock
+     * and will not hand out a seat past `max_seats`, which is the courtesy.
+     * This is the control: it stands beside the debit, it counts the seats the
+     * ENGINE will actually deal to, and it runs with the room row locked `for
+     * update` above — so two players presenting a matched room id at the same
+     * millisecond cannot both become the sixth seat. A membership row is not a
+     * seat: one survives a room expiring, and a client may present a room id
+     * long after the allocation that produced it.
+     */
+    const occupancy = await tx<{ taken: string }[]>`
+      select count(*) as taken from public.game_session_seats
+      where game_session_id = ${gameId}::uuid and status <> 'left'
+    `;
+    if (toInteger(occupancy[0]?.taken ?? 0, "seat occupancy") >= room.max_seats) {
+      throw new CommandError("TABLE_FULL", `${room.max_seats} seats taken`);
+    }
+
+    const seatRows = await tx<{ id: string }[]>`
       insert into public.game_session_seats
         (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
       values
         (${gameId}::uuid,
-         (select coalesce(max(seat_index) + 1, 0) from public.game_session_seats
-          where game_session_id = ${gameId}::uuid),
+         /*
+          * The LOWEST index no live seat holds, not max(seat_index) + 1.
+          *
+          * A departed seat keeps its row -- display_name is a copy taken when
+          * the seat opened, and a game other people played is not deleted under
+          * them -- so counting from the highest index ever used made the eighth
+          * arrival at a public table index 7, which the 0..6 check refuses. That
+          * reached the player as HTTP 500, and because a public table stays
+          * active while anybody is at it, it kept being allocated and kept
+          * answering 500 with seats visibly free. See the migration
+          * 20260906120000_seat_index_reuse.sql for the measurement.
+          *
+          * No coalesce needed: the occupancy guard above runs with the room row
+          * locked and refuses TABLE_FULL unless fewer than max_seats live seats
+          * exist, and live seats hold distinct indices, so one of the max_seats
+          * candidates is always free by pigeonhole.
+          */
+         (select min(candidate.seat_index)
+          from generate_series(0, ${room.max_seats}::int - 1) as candidate(seat_index)
+          where not exists (
+            select 1 from public.game_session_seats held
+            where held.game_session_id = ${gameId}::uuid
+              and held.seat_index = candidate.seat_index
+              and held.status <> 'left')),
          ${userId}::uuid, ${profile.displayName}, ${tier.buyIn}::bigint,
          ${tier.buyIn}::bigint, 'active')
       returning id
     `;
-    const seatId = (seatRows[0] as { id?: string } | undefined)?.id;
+    seatId = seatRows[0]?.id ?? null;
     if (!seatId) throw new CommandError("INTERNAL", "seat insert returned no id");
-    seat = { id: seatId };
   }
-  log.seatId = seat.id;
+  log.seatId = seatId;
+
+  /*
+   * DERIVED FROM THE SEAT, not from the client's request id and not from the
+   * player.
+   *
+   * A retry with a fresh request id must not buy a second seat — and it cannot:
+   * the live seat found above gives the same key, so the ledger answers with
+   * the first movement instead of making another. The seat rather than the
+   * PLAYER, because the same player may sit at one table twice: they left, the
+   * chips went back to their wallet, and sitting down again is a purchase. Keyed
+   * on the player, the second visit found the first visit's ledger row, skipped
+   * the debit and dealt them a funded seat nobody had paid for.
+   *
+   * The same shape as `cashOutKey(gameId, seatId)`, for the same reason.
+   */
+  const idempotencyKey = `public_buy_in:${gameId}:${seatId}`;
+  const existing = await findLedgerEntry(tx, idempotencyKey);
 
   const now = serverNow();
   const locked = room.game_session_id ? await lockEngineState(tx, gameId) : null;
@@ -478,40 +721,71 @@ async function joinPublicTable(
     const created = createGame({
       gameId,
       rules: rulesForTier(tier),
-      seats: [{ seatId: seat.id, userId, displayName: profile.displayName, stack: tier.buyIn }],
+      seats: [{ seatId, userId, displayName: profile.displayName, stack: tier.buyIn }],
       random: serverRandom(),
       timing: PRIVATE_TIMING,
       now,
     });
     const opened = startSession(created, { now, random: serverRandom() });
     await insertEngineState(tx, gameId, opened.state);
-  } else if (!locked.state.seats.some((candidate) => candidate.seatId === seat.id)) {
+  } else if (!locked.state.seats.some((candidate) => candidate.seatId === seatId)) {
     /*
-     * A later arrival. The seat is appended with its own funded stack and the
+     * A later arrival. The seat is added with its own funded stack and the
      * version bumped, so every client refetches. The specification says a
      * mid-hand joiner plays from the next BETTING_OPEN — which is what happens
      * naturally: the engine deals to seats that have locked a bet, and this one
      * has not.
      */
+    const newcomer = {
+      seatId,
+      userId,
+      displayName: profile.displayName,
+      stack: tier.buyIn,
+      originalBet: 0,
+      insuranceBet: 0,
+      // Present, not omitted. Every read path happens to treat `undefined`
+      // as "not pending", which is the right answer for a seat that was not
+      // dealt in — but a persisted seat missing a required field is a state
+      // that only stays harmless by luck, and the engine resets this to
+      // exactly this value at the start of the next hand anyway.
+      insuranceDecision: "NOT_OFFERED" as const,
+      hands: [],
+      currentHandIndex: 0,
+      connected: true,
+      sittingOut: false,
+      betLocked: false,
+    };
+
+    /*
+     * A VACATED SLOT IS REUSED, exactly as the seat INDEX above is.
+     *
+     * Appending unconditionally is what the previous version did, and it was
+     * bounded only by the defect this file's seat allocator used to have: the
+     * eighth arrival was answered HTTP 500, so no table ever held more than
+     * seven engine seats. With that fixed the list grew with every arrival for
+     * the life of the table — measured at TWELVE seats on a FIVE-seat table
+     * after ten ordinary arrivals and departures, ten of them players who had
+     * gone. That list is persisted under lock on every command, sent back in
+     * every response, broadcast to every subscriber, and drawn on every
+     * remaining player's screen.
+     *
+     * `isVacatedSeat` is the engine's own answer to "has this seat left,
+     * completely" — no chips, no wager, no hand, `connected` false — so a
+     * player who left MID-HAND keeps their slot until the wager they committed
+     * has resolved. The list is therefore bounded by `max_seats`: a slot is
+     * only appended when every existing one is live, and the occupancy guard
+     * above has already refused TABLE_FULL unless a live seat is missing.
+     */
+    const vacated = locked.state.seats.findIndex(isVacatedSeat);
+    const seats =
+      vacated >= 0
+        ? locked.state.seats.map((seat, index) => (index === vacated ? newcomer : seat))
+        : [...locked.state.seats, newcomer];
+
     await persistEngineState(tx, gameId, {
       ...locked.state,
       version: locked.state.version + 1,
-      seats: [
-        ...locked.state.seats,
-        {
-          seatId: seat.id,
-          userId,
-          displayName: profile.displayName,
-          stack: tier.buyIn,
-          originalBet: 0,
-          insuranceBet: 0,
-          hands: [],
-          currentHandIndex: 0,
-          connected: true,
-          sittingOut: false,
-          betLocked: false,
-        },
-      ],
+      seats,
     });
   }
 
@@ -555,7 +829,7 @@ async function joinPublicTable(
     status: "public_seat_taken",
     gameId,
     roomId: command.roomId,
-    seatId: seat.id,
+    seatId,
     buyIn: tier.buyIn,
     walletBalance: balance,
     publicState: sanitise(finalState.state),
@@ -569,7 +843,7 @@ async function describePrivateTable(
   userId: string,
 ): Promise<SessionResponse> {
   const locked = await lockEngineState(tx, gameId);
-  if (!locked) throw new CommandError("NOT_FOUND", "that table has no game");
+  if (!locked) throw new CommandError("NOT_A_PARTICIPANT", "that table has no game");
 
   const seat = await findSeat(tx, gameId, userId);
   if (!seat) throw new CommandError("NOT_A_PARTICIPANT", "you are not at that table");
@@ -613,30 +887,29 @@ async function open(
     throw new CommandError("TABLE_LOCKED", `level ${profile.level} < ${tier.unlockLevel}`);
   }
 
-  // One live seat per player. Escrow that nobody is watching is how a wallet
-  // quietly empties into abandoned tables.
-  const seated = await tx<{ game_session_id: string }[]>`
-    select s.game_session_id
-    from public.game_session_seats s
-    join public.game_sessions g on g.id = s.game_session_id
-    where s.user_id = ${userId}::uuid
-      and s.status <> 'left'
-      and g.status in ('lobby', 'active')
-    limit 1
-  `;
-  if (seated.length > 0) {
-    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
-  }
+  // One live seat per player. A solo table is never a re-join — the idempotent
+  // path for OPEN is the ledger key above — so nothing is excepted here.
+  await assertNoOtherLiveSeat(tx, userId, null);
 
   const rulesetId = await resolveRulesetId(tx);
   const buyIn = tier.buyIn;
 
+  /*
+   * The assistance mode is recorded HERE and never again. A client that could
+   * name its assistance per decision could opt a mistake out of its own
+   * accuracy by claiming it had help, so the choice is made once, at the moment
+   * the table opens, and every decision in the session is judged against it.
+   * It also decides whether the server sends advice with the snapshot at all.
+   */
+  const assistance = command.assistance ?? "play";
+
   const sessionRows = await tx<{ id: string }[]>`
     insert into public.game_sessions
-      (mode, ruleset_id, tier, host_user_id, status, max_seats, escrow_chips, started_at)
+      (mode, ruleset_id, tier, host_user_id, status, max_seats, escrow_chips,
+       assistance, started_at)
     values
       ('solo', ${rulesetId}::uuid, ${tier.id}::public.table_tier, ${userId}::uuid,
-       'active', 1, ${buyIn}, now())
+       'active', 1, ${buyIn}, ${assistance}::public.assistance_mode, now())
     returning id
   `;
   const gameId = sessionRows[0]?.id;
@@ -714,6 +987,10 @@ async function describeExistingSession(
   if (!locked || !seat) {
     throw new CommandError("NOT_A_PARTICIPANT", `no seat for ${userId} in ${gameId}`);
   }
+  const session = await loadSession(tx, gameId);
+  const advice = session
+    ? adviceFor({ state: locked.state, seatId: seat.id, assistance: session.assistance })
+    : null;
   return {
     status: "opened",
     gameId,
@@ -723,7 +1000,9 @@ async function describeExistingSession(
     // the table has been played since, and a stale snapshot would be worse than
     // useless to the client that is retrying.
     walletBalance: await walletBalance(tx, userId),
-    publicState: sanitise(locked.state),
+    // A resumed Learn table keeps its help. Losing it on reconnect would be the
+    // same defect as losing it on refresh.
+    publicState: advice ? { ...sanitise(locked.state), advice } : sanitise(locked.state),
   };
 }
 
@@ -737,6 +1016,18 @@ async function cashOut(
   command: CashOutRequest,
   log: LogFields,
 ): Promise<SessionResponse> {
+  /*
+   * THE ROOM FIRST, and that ordering is the whole of a deadlock fix.
+   *
+   * `JOIN_PUBLIC_TABLE` locks the room row and then the engine state; this used
+   * to take them the other way round, reaching `rooms` only at the end inside
+   * `release_room_seat`. One player leaving while another sits down is an
+   * ordinary event at a public table now that a running table keeps taking
+   * players, and Postgres answered the loser `deadlock detected` — surfaced to
+   * that player as HTTP 500 on an ordinary leave.
+   */
+  await lockRoomForSession(tx, command.gameId);
+
   const locked = await lockEngineState(tx, command.gameId);
   const session = locked ? await loadSession(tx, command.gameId) : null;
   const seat = locked && session ? await findSeat(tx, command.gameId, userId) : null;
@@ -795,6 +1086,16 @@ async function cashOut(
   const seatState = state.seats.find((candidate) => candidate.seatId === seat.id);
   if (!seatState) throw new CommandError("INTERNAL", "seat missing from engine state");
   await syncSeatRow(tx, seat.id, seatState, { status: "left", leftAt: now });
+  // The player has left the ROOM as well as the table. This migrates the host
+  // role if they held it, and closes the room when it empties — the same rule
+  // `leave_room` applies in the lobby, from its own implementation.
+  await releaseRoomSeat(tx, command.gameId, userId);
+  // And the room retires with the TABLE, not with this seat: a five-seat private
+  // table keeps its code while the other four are still playing. This is the
+  // path a player actually takes out of a private table — "Leave table" sends
+  // CASH_OUT — and nothing here had ever touched the room, so a played-out room
+  // sat at `active` for ever and locked its host out of opening another.
+  if (closure.sessionEnded) await closeRoomForSession(tx, command.gameId);
   await appendEvents(tx, command.gameId, events, state);
 
   log.stateVersion = state.version;
@@ -874,6 +1175,25 @@ async function startDailyChallenge(
     });
   }
 
+  /*
+   * A NEW ATTEMPT IS A NEW SEAT, so the one-live-seat control applies here too.
+   *
+   * It did not, and the consequence was measured against the running stack
+   * before this line existed: an account holding a solo table with 5,000 chips
+   * in escrow started the Daily Challenge, was answered 200, and ended up with
+   * TWO active seats — after which `my_active_session()` named only the newer
+   * one, because it orders by start time. The solo buy-in was then unaddressable
+   * from any screen, which is the exact failure `my_active_session` was written
+   * to close and the exact one phase 8 closed for a Sprint entry. Every other
+   * mode that opens a seat asks — `open`, `joinPublicTable`, `startCareerNode`,
+   * `registerSprint` — and this one did not.
+   *
+   * Deliberately BELOW the resume branch above. Returning to an attempt already
+   * in progress takes no new seat, so a player whose ranked run is open must
+   * always be able to get back to it.
+   */
+  await assertNoOtherLiveSeat(tx, userId, null);
+
   // A finished or abandoned attempt has spent the ranked slot. The replay is
   // playable — practising against a shoe you know is useful — and it writes no
   // entry row at all, so an unranked run cannot overwrite a ranked score. That
@@ -907,7 +1227,9 @@ async function startDailyChallenge(
 
   const now = serverNow();
   // The deterministic stream, not the CSPRNG. Same seed, same shoe, every time.
-  const shoeSource = hmacCounterStream(challenge.seed_secret);
+  // Keyed on the shuffle number so a RESHUFFLE mid-attempt is reproducible too —
+  // `game-command` builds shuffle two the same way. See `dailyShoeSource`.
+  const shoeSource = dailyShoeSource(challenge.seed_secret, 1);
   const created = createGame({
     gameId,
     rules: { ...ARC_STANDARD_RULES, minBet: DAILY.minBet, maxBet: DAILY.maxBet },
@@ -1009,6 +1331,17 @@ async function registerSprint(
    */
   await tx`select pg_advisory_xact_lock(hashtext('sprint:registration'))`;
 
+  /*
+   * Clear out tournaments that have sat unfilled past the registration window,
+   * refunding their entries, before allocating anybody into one.
+   *
+   * Here rather than on a schedule for the reason the daily challenge row and
+   * the matchmaking room are both created on demand: a cron job that has not run
+   * yet is an outage, whereas work done by the next person through the door
+   * cannot be late.
+   */
+  await expireStaleSprints(tx);
+
   // Already entered: return the same entry rather than a second one. This is the
   // reconnect path as much as the double-tap path.
   const mine = await tx<
@@ -1026,6 +1359,23 @@ async function registerSprint(
   let entryId = mine[0]?.entry_id ?? null;
 
   if (!tournamentId) {
+    /*
+     * ONE LIVE SEAT, and a tournament seat is a seat.
+     *
+     * `OPEN`, `JOIN_PUBLIC_TABLE` and `START_CAREER_NODE` all refuse a player
+     * who is already sitting somewhere, and this did not — measured against the
+     * running stack: an account holding a live solo table registered, filled a
+     * field, and was dealt a second seat. `my_active_session()` then named only
+     * the newer of the two, which is precisely the failure phase 7 recorded as
+     * "a live seat must be ADDRESSABLE": the solo table's buy-in was stranded at
+     * a game id the player could no longer discover.
+     *
+     * Only on the path that would create a NEW entry. A player already in a
+     * tournament is reconnecting, and the seat the guard would find is their
+     * own.
+     */
+    await assertNoOtherLiveSeat(tx, userId, null);
+
     const open = await tx<{ id: string }[]>`
       select t.id
       from public.tournaments t
@@ -1206,6 +1556,16 @@ async function dealSprintTable(tx: Tx, tournamentId: string, log: LogFields): Pr
       ...ARC_STANDARD_RULES,
       minBet: SPRINT.minBet,
       maxBet: maxBetForHand(1),
+      /*
+       * The format's defining mechanic, and the only table in Arc 21 that has
+       * it: "Betting is sequential. Earlier committed tournament bets become
+       * visible. This is intentional because bankroll-position strategy
+       * matters." The engine takes bets one seat at a time in `state.seats`
+       * order — which is the order the button rotates — and gives each seat its
+       * own seven-second clock, so the specification's "7 seconds/person" is
+       * seven seconds each rather than seven seconds between four people.
+       */
+      sequentialBetting: true,
     },
     seats: rotateToButton(seats, initialButton),
     random: serverRandom(),
@@ -1263,6 +1623,624 @@ async function debitSprintEntry(
     }
     throw error;
   }
+}
+
+/**
+ * Give up a seat that has not been dealt, and take the entry fee back.
+ *
+ * THE THREE THINGS THIS HAS TO GET RIGHT.
+ *
+ * 1. IT MUST BE IMPOSSIBLE AFTER THE CARDS ARE OUT. A player cannot buy out of
+ *    a tournament they are losing, so the only withdrawable state is
+ *    `registering` with no table dealt — checked against the tournament row
+ *    held FOR UPDATE, in the same transaction as the refund.
+ * 2. THE REFUND IS KEYED, like every other chip movement in this file. The key
+ *    is derived from the tournament and the player, never from the request id,
+ *    so a retry with a fresh id returns the first result instead of minting a
+ *    second 500 chips.
+ * 3. AN EMPTIED TOURNAMENT IS CLOSED. Otherwise the pool fills with husks that
+ *    later registrants are allocated into one at a time and nothing ever deals
+ *    — which is the very flake the drain helper exists to work around.
+ */
+async function withdrawSprint(tx: Tx, userId: string, log: LogFields): Promise<SessionResponse> {
+  // Same lock as registration, and for the same reason: withdrawing changes how
+  // full a tournament is, which is exactly the number allocation reads.
+  await tx`select pg_advisory_xact_lock(hashtext('sprint:registration'))`;
+
+  const rows = await tx<
+    {
+      entry_id: string;
+      tournament_id: string;
+      entry_status: string;
+      tournament_status: string;
+      game_session_id: string | null;
+    }[]
+  >`
+    select e.id as entry_id, e.tournament_id, e.status as entry_status,
+           t.status as tournament_status,
+           (select g.id from public.game_sessions g where g.tournament_id = t.id limit 1)
+             as game_session_id
+    from public.tournament_entries e
+    join public.tournaments t on t.id = e.tournament_id
+    where e.user_id = ${userId}::uuid
+      and t.status in ('registering', 'running')
+    order by e.registered_at desc
+    limit 1
+  `;
+
+  const mine = rows[0];
+  if (!mine) throw new CommandError("NOT_A_PARTICIPANT", "no tournament entry to withdraw");
+  log.tournamentId = mine.tournament_id;
+
+  if (mine.tournament_status !== "registering" || mine.game_session_id !== null) {
+    // The cards are out. `SESSION_BUSY` rather than a refusal that reads as
+    // final: the entry resolves itself when the tournament finishes.
+    throw new CommandError("SESSION_BUSY", "the tournament has already been dealt");
+  }
+
+  const refunded = await refundSprintEntry(tx, {
+    userId,
+    tournamentId: mine.tournament_id,
+    entryId: mine.entry_id,
+  });
+
+  const cancelled = await closeSprintIfEmpty(tx, mine.tournament_id);
+
+  return {
+    status: "sprint_withdrawn",
+    tournamentId: mine.tournament_id,
+    entryId: mine.entry_id,
+    refundChips: refunded.refunded,
+    walletBalance: refunded.balance,
+    tournamentCancelled: cancelled,
+  };
+}
+
+/**
+ * Marks one entry withdrawn and returns its fee, at most once.
+ *
+ * Shared by the player's own withdrawal and by the server-side expiry below, so
+ * "a cancelled tournament refunds through the ledger" has one implementation
+ * rather than one per trigger. The entry is marked `withdrawn` whether or not
+ * the ledger moved anything: a replay finds the row already withdrawn, reports
+ * a refund of zero, and does not claim a second one.
+ */
+async function refundSprintEntry(
+  tx: Tx,
+  params: { userId: string; tournamentId: string; entryId: string },
+): Promise<{ refunded: number; balance: number }> {
+  await tx`
+    update public.tournament_entries
+    set status = 'withdrawn', chips = 0, score = 0
+    where id = ${params.entryId}::uuid
+  `;
+
+  const key = `sprint_refund:${params.tournamentId}:${params.userId}`;
+  const already = await findLedgerEntry(tx, key);
+  if (already) {
+    return { refunded: 0, balance: await walletBalance(tx, params.userId) };
+  }
+
+  // Nothing was ever debited for this entry — a state the code does not produce,
+  // because the fee and the entry commit together — so there is nothing to give
+  // back. Asked rather than assumed: a refund with no matching debit is minting.
+  const paid = await findLedgerEntry(tx, `sprint_entry:${params.tournamentId}:${params.userId}`);
+  if (!paid) {
+    return { refunded: 0, balance: await walletBalance(tx, params.userId) };
+  }
+
+  const ledger = await applyWalletDelta(tx, {
+    userId: params.userId,
+    delta: SPRINT.entryFee,
+    reason: "tournament_refund",
+    idempotencyKey: key,
+    referenceId: params.tournamentId,
+    metadata: { entryId: params.entryId },
+  });
+  return { refunded: SPRINT.entryFee, balance: ledger.balanceAfter };
+}
+
+/** Cancels a `registering` tournament nobody is left in. Returns whether it did. */
+async function closeSprintIfEmpty(tx: Tx, tournamentId: string): Promise<boolean> {
+  const remaining = await tx<{ n: unknown }[]>`
+    select count(*) as n from public.tournament_entries
+    where tournament_id = ${tournamentId}::uuid and status <> 'withdrawn'
+  `;
+  if (toInteger(remaining[0]?.n ?? 0, "remaining entries") > 0) return false;
+
+  await tx`
+    update public.tournaments
+    set status = 'cancelled', ends_at = now(), updated_at = now()
+    where id = ${tournamentId}::uuid and status = 'registering'
+  `;
+  return true;
+}
+
+/**
+ * Cancels and refunds sprints that have sat unfilled for too long.
+ *
+ * The specification's error handling asks for a refund through the ledger when
+ * a committed tournament is cancelled server-side; this is the trigger, because
+ * a cancellation nothing can cause is not a behaviour. Without it a player who
+ * registered and never came back would hold a paid entry — and be refused every
+ * other online mode — for the life of the database.
+ *
+ * Run from registration, under the same advisory lock, so there is no scheduler
+ * to be late. Bounded to tournaments already older than the window, so ordinary
+ * registration does no extra work once the pool is clean.
+ */
+async function expireStaleSprints(tx: Tx): Promise<void> {
+  const stale = await tx<{ id: string }[]>`
+    select t.id
+    from public.tournaments t
+    where t.code like 'sprint-%'
+      and t.status = 'registering'
+      and t.registration_opens_at < now() - ${SPRINT.registrationWindowMinutes}::int * interval '1 minute'
+    order by t.registration_opens_at
+    limit 8
+    for update
+  `;
+
+  for (const tournament of stale) {
+    const entries = await tx<{ id: string; user_id: string }[]>`
+      select id, user_id from public.tournament_entries
+      where tournament_id = ${tournament.id}::uuid and status <> 'withdrawn'
+    `;
+    for (const entry of entries) {
+      await refundSprintEntry(tx, {
+        userId: entry.user_id,
+        tournamentId: tournament.id,
+        entryId: entry.id,
+      });
+    }
+    await tx`
+      update public.tournaments
+      set status = 'cancelled', ends_at = now(), updated_at = now()
+      where id = ${tournament.id}::uuid
+    `;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CAREER
+// ---------------------------------------------------------------------------
+
+/**
+ * Start or resume a reward-bearing attempt at a career node.
+ *
+ * The specification puts career rewards on the server in three separate places
+ * — the authority table, the offline-design paragraph, and the build phases —
+ * and this is where that becomes true. Nothing was writing `career_progress` at
+ * all before it: the table existed, the cosmetic gates read it, and no code
+ * path anywhere put a row in it.
+ *
+ * WHAT THE CLIENT SUPPLIES: the node's slug. That is the whole list. The
+ * bankroll, the hand count, the wager ceiling, the shoe, the accuracy basis and
+ * whether the prerequisite is met are all read here.
+ *
+ * A STANDARD node becomes a real single-seat session in the `career` mode — the
+ * server owns the shoe, validates every action and grades every decision — and
+ * finishes through the boundary in `_shared/session-boundary.ts`. A DRILL has
+ * no table: its scenarios are constructed from a secret held in `private`, and
+ * graded by `submitCareerDrill` below.
+ *
+ * A career stack is a SCORING MEDIUM. No wallet is debited to sit down, and the
+ * stack vanishes with the session — `career` is deliberately absent from
+ * `WALLET_BACKED_MODES`, because crediting 2,000 chips back per attempt is a
+ * chip mint, which is the exact defect that module was written for.
+ */
+async function startCareerNode(
+  tx: Tx,
+  userId: string,
+  command: StartCareerNodeRequest,
+  log: LogFields,
+): Promise<SessionResponse> {
+  const node = careerNodeBySlug(command.nodeSlug);
+  if (!node) throw new CommandError("INVALID_REQUEST", `no career node ${command.nodeSlug}`);
+
+  const rows = await tx<{ id: string; reward_chips: unknown; reward_xp: unknown }[]>`
+    select id, reward_chips, reward_xp from public.career_nodes
+    where code = ${node.slug} and is_active
+  `;
+  const nodeRow = rows[0];
+  if (!nodeRow) throw new CommandError("INTERNAL", `career node ${node.slug} not in the catalogue`);
+
+  /*
+   * The prerequisite, checked from the player's OWN progress rather than from
+   * anything the client said. One star is enough and completion always awards
+   * one, so this can never be closed by bad cards — see `stars.ts`.
+   */
+  if (node.prerequisiteSlug !== null) {
+    const met = await tx<{ ok: boolean }[]>`
+      select true as ok
+      from public.career_progress p
+      join public.career_nodes n on n.id = p.career_node_id
+      where p.user_id = ${userId}::uuid
+        and n.code = ${node.prerequisiteSlug}
+        and p.status = 'completed'
+    `;
+    if (!met[0]) {
+      throw new CommandError("TABLE_LOCKED", `${node.slug} needs ${node.prerequisiteSlug}`);
+    }
+  }
+
+  const priorRows = await tx<{ stars: unknown; reward_claimed_at: string | null }[]>`
+    select stars, reward_claimed_at from public.career_progress
+    where user_id = ${userId}::uuid and career_node_id = ${nodeRow.id}::uuid
+  `;
+  const bestStars = toInteger(priorRows[0]?.stars ?? 0, "career_progress.stars");
+  const rewardPaid = priorRows[0]?.reward_claimed_at !== null && priorRows[0] !== undefined;
+
+  // An attempt already in flight is RESUMED, not restarted. Restarting would
+  // hand a player a second shoe at the same node and let them keep whichever
+  // went better, which is the career equivalent of a second ranked daily run.
+  const live = await tx<{ id: string; format: string; game_session_id: string | null }[]>`
+    select id, format, game_session_id from public.career_attempts
+    where user_id = ${userId}::uuid and career_node_id = ${nodeRow.id}::uuid
+      and status = 'in_progress'
+    for update
+  `;
+  const existing = live[0];
+  if (existing) {
+    log.gameId = existing.game_session_id ?? undefined;
+    return await describeCareerAttempt(tx, {
+      attemptId: existing.id,
+      userId,
+      node,
+      gameId: existing.game_session_id,
+      bestStars,
+      rewardPaid,
+    });
+  }
+
+  await tx`select public.record_career_attempt_started(${userId}::uuid, ${nodeRow.id}::uuid)`;
+
+  if (node.format === "drill") {
+    const decisions = node.decisions ?? 0;
+    if (decisions <= 0) throw new CommandError("INTERNAL", `drill ${node.slug} asks nothing`);
+
+    const attemptRows = await tx<{ id: string }[]>`
+      insert into public.career_attempts
+        (user_id, career_node_id, format, starting_chips)
+      values (${userId}::uuid, ${nodeRow.id}::uuid, 'drill', 0)
+      returning id
+    `;
+    const attemptId = attemptRows[0]?.id;
+    if (!attemptId) throw new CommandError("INTERNAL", "career attempt insert returned no id");
+
+    // 32 bytes of CSPRNG. The scenarios are regenerated from this to grade the
+    // answers, so a client cannot answer an easier question than it was asked.
+    const seed = seedSecret();
+    await tx`
+      insert into private.career_drill_seeds (attempt_id, seed_secret, focus, scenario_count)
+      values (${attemptId}::uuid, ${seed}, ${node.drillFocus ?? "mixed"}, ${decisions}::int)
+    `;
+
+    return {
+      status: "career_node_started",
+      attemptId,
+      nodeSlug: node.slug,
+      format: "drill",
+      startingChips: 0,
+      gameId: null,
+      seatId: null,
+      publicState: null,
+      scenarios: issuedScenarios(node, seed, decisions),
+      bestStars,
+      rewardPaid,
+    };
+  }
+
+  // --- A standard node: one seat, one server-owned shoe -------------------
+  await assertNoOtherLiveSeat(tx, userId, null);
+
+  const profile = await loadProfile(tx, userId);
+  const gameId = crypto.randomUUID();
+  log.gameId = gameId;
+
+  await tx`
+    insert into public.game_sessions
+      (id, mode, ruleset_id, host_user_id, status, max_seats, escrow_chips, started_at)
+    values
+      (${gameId}::uuid, 'career', ${await resolveRulesetId(tx)}::uuid, ${userId}::uuid,
+       'active', 1, 0, now())
+  `;
+
+  const seatRows = await tx<{ id: string }[]>`
+    insert into public.game_session_seats
+      (game_session_id, seat_index, user_id, display_name, stack, buy_in, status)
+    values
+      (${gameId}::uuid, 0, ${userId}::uuid, ${profile.displayName},
+       ${node.startingBankroll}::bigint, 0, 'active')
+    returning id
+  `;
+  const seatId = seatRows[0]?.id;
+  if (!seatId) throw new CommandError("INTERNAL", "seat insert returned no id");
+  log.seatId = seatId;
+
+  const now = serverNow();
+  const created = createGame({
+    gameId,
+    // The node's wager ceiling, applied as the table maximum. It is table
+    // configuration — a posted limit — and never a card or an outcome.
+    rules: { ...CAREER_RULES, maxBet: maxWagerForNode(node) },
+    seats: [
+      { seatId, userId, displayName: profile.displayName, stack: node.startingBankroll },
+    ],
+    // The CSPRNG. A career shoe is a normal fair shoe and nothing here inspects
+    // or arranges it to make a target reachable.
+    random: serverRandom(),
+    // No clocks, for the same reason a solo table has none: one player stalls
+    // nobody, and auto-standing would silently change their recorded accuracy.
+    timing: SOLO_TIMING,
+    now,
+  });
+  const opened = startSession(created, { now, random: serverRandom() });
+  await insertEngineState(tx, gameId, opened.state);
+  await appendEvents(tx, gameId, opened.events, opened.state);
+
+  const attemptRows = await tx<{ id: string }[]>`
+    insert into public.career_attempts
+      (user_id, career_node_id, game_session_id, format, starting_chips, final_chips)
+    values (${userId}::uuid, ${nodeRow.id}::uuid, ${gameId}::uuid, 'standard',
+            ${node.startingBankroll}::bigint, ${node.startingBankroll}::bigint)
+    returning id
+  `;
+  const attemptId = attemptRows[0]?.id;
+  if (!attemptId) throw new CommandError("INTERNAL", "career attempt insert returned no id");
+
+  return {
+    status: "career_node_started",
+    attemptId,
+    nodeSlug: node.slug,
+    format: "standard",
+    startingChips: node.startingBankroll,
+    gameId,
+    seatId,
+    publicState: sanitise(opened.state),
+    scenarios: [],
+    bestStars,
+    rewardPaid,
+  };
+}
+
+/** Resuming: the same answer the start would have given, from what is stored. */
+async function describeCareerAttempt(
+  tx: Tx,
+  params: {
+    attemptId: string;
+    userId: string;
+    node: CareerNode;
+    gameId: string | null;
+    bestStars: number;
+    rewardPaid: boolean;
+  },
+): Promise<SessionResponse> {
+  if (params.node.format === "drill") {
+    const seedRows = await tx<{ seed_secret: string; scenario_count: unknown }[]>`
+      select seed_secret, scenario_count from private.career_drill_seeds
+      where attempt_id = ${params.attemptId}::uuid
+    `;
+    const seed = seedRows[0];
+    if (!seed) throw new CommandError("INTERNAL", "a drill attempt with no scenarios");
+    const count = toInteger(seed.scenario_count, "career_drill_seeds.scenario_count");
+    return {
+      status: "career_node_started",
+      attemptId: params.attemptId,
+      nodeSlug: params.node.slug,
+      format: "drill",
+      startingChips: 0,
+      gameId: null,
+      seatId: null,
+      publicState: null,
+      // Regenerated, never stored twice. Same secret, same questions.
+      scenarios: issuedScenarios(params.node, seed.seed_secret, count),
+      bestStars: params.bestStars,
+      rewardPaid: params.rewardPaid,
+    };
+  }
+
+  if (!params.gameId) throw new CommandError("INTERNAL", "a standard attempt with no table");
+  const locked = await lockEngineState(tx, params.gameId);
+  const seat = await findSeat(tx, params.gameId, params.userId);
+  if (!locked || !seat) throw new CommandError("NOT_A_PARTICIPANT", "no attempt to resume");
+
+  return {
+    status: "career_node_started",
+    attemptId: params.attemptId,
+    nodeSlug: params.node.slug,
+    format: "standard",
+    startingChips: params.node.startingBankroll,
+    gameId: params.gameId,
+    seatId: seat.id,
+    publicState: sanitise(locked.state),
+    scenarios: [],
+    bestStars: params.bestStars,
+    rewardPaid: params.rewardPaid,
+  };
+}
+
+/**
+ * The scenarios for a drill attempt, derived from its secret.
+ *
+ * Regenerated on every call rather than stored: the secret IS the scenario
+ * list, and a stored copy is a second thing that can disagree with what the
+ * grader will use. `hmacCounterStream` is the same deterministic source the
+ * daily challenge's shoe comes from.
+ *
+ * Note what a scenario carries: the two player cards, the dealer's UP card and
+ * the legal actions. No hole card — a drill has no dealer hand to resolve — and
+ * no recommendation, because that is the question being asked.
+ */
+function issuedScenarios(
+  node: CareerNode,
+  seed: string,
+  count: number,
+): CareerDrillScenario[] {
+  const scenarios = buildDrillScenarios({
+    rules: CAREER_RULES,
+    focus: node.drillFocus ?? "mixed",
+    count,
+    random: hmacCounterStream(seed),
+  });
+  return scenarios.map((scenario, index) => ({
+    index,
+    // The engine's own `Card` shape, so the drill screen renders them with the
+    // same component the table uses and nothing has to translate a code.
+    playerCards: [...scenario.playerCards],
+    dealerUpCard: scenario.dealerUpcard,
+    legalActions: scenario.legalActions.filter(isDrillAction),
+    label: scenario.handLabel,
+    upcardLabel: scenario.upcardLabel,
+  }));
+}
+
+/** The five actions a chart can price. `INSURANCE` is not one of them. */
+type DrillAction = CareerDrillScenario["legalActions"][number];
+
+function isDrillAction(action: string): action is DrillAction {
+  return action === "HIT" || action === "STAND" || action === "DOUBLE" ||
+    action === "SPLIT" || action === "SURRENDER";
+}
+
+/** 32 bytes of CSPRNG, hex. Never `Math.random()`, and never a client value. */
+function seedSecret(): string {
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Grade a drill and settle the attempt.
+ *
+ * The scenarios are REGENERATED from the server's secret and the answers are
+ * marked against those, by index. A client may send whatever actions it likes;
+ * it cannot send a different question, and it cannot decide what its answer was
+ * worth. `evaluateStars` — the same pure function the local runner uses, moved
+ * rather than copied — turns the counts into stars.
+ *
+ * The whole attempt arrives at once. That is no weaker than one answer at a
+ * time: a modified client that knows basic strategy answers perfectly either
+ * way, and a drill has no hidden information to protect. What matters is that
+ * the GRADE is the server's and the reward follows the grade.
+ */
+async function submitCareerDrill(
+  tx: Tx,
+  userId: string,
+  command: SubmitCareerDrillRequest,
+  log: LogFields,
+): Promise<SessionResponse> {
+  const attemptRows = await tx<
+    { id: string; user_id: string; status: string; format: string; node_code: string; node_id: string }[]
+  >`
+    select a.id, a.user_id, a.status, a.format, n.code as node_code, n.id as node_id
+    from public.career_attempts a
+    join public.career_nodes n on n.id = a.career_node_id
+    where a.id = ${command.attemptId}::uuid
+    for update of a
+  `;
+  const attempt = attemptRows[0];
+  if (!attempt) throw new CommandError("NOT_A_PARTICIPANT", "no such attempt");
+  // Identity comes from the verified JWT, never from the row the client named.
+  if (attempt.user_id !== userId) throw new CommandError("NOT_A_PARTICIPANT", "not your attempt");
+  if (attempt.format !== "drill") throw new CommandError("INVALID_REQUEST", "not a drill");
+  if (attempt.status !== "in_progress") {
+    // Not an error worth a 500: the attempt is finished, and the finished
+    // record is the answer. Replaying must not grade a second time.
+    throw new CommandError("SESSION_CLOSED", "this attempt has already been graded");
+  }
+
+  const node = careerNodeBySlug(attempt.node_code);
+  if (!node) throw new CommandError("INTERNAL", `attempt names unknown node ${attempt.node_code}`);
+
+  const seedRows = await tx<{ seed_secret: string; scenario_count: unknown }[]>`
+    select seed_secret, scenario_count from private.career_drill_seeds
+    where attempt_id = ${attempt.id}::uuid
+  `;
+  const seed = seedRows[0];
+  if (!seed) throw new CommandError("INTERNAL", "a drill attempt with no scenarios");
+  const count = toInteger(seed.scenario_count, "career_drill_seeds.scenario_count");
+
+  if (command.answers.length !== count) {
+    throw new CommandError("INVALID_REQUEST", `expected ${count} answers`);
+  }
+
+  const scenarios = buildDrillScenarios({
+    rules: CAREER_RULES,
+    focus: node.drillFocus ?? "mixed",
+    count,
+    random: hmacCounterStream(seed.seed_secret),
+  });
+
+  const verdicts: { chosen: DrillAction; recommended: DrillAction; correct: boolean }[] = [];
+  let decisions = 0;
+  let correct = 0;
+  let evLostMicros = 0;
+
+  for (const [index, scenario] of scenarios.entries()) {
+    const chosen = command.answers[index]!;
+    const verdict = gradeDrillDecision(CAREER_RULES, scenario, chosen);
+    // `drillPool` only ever emits scenarios the validated tables can answer, so
+    // null is impossible for a shipped focus — and if it ever happened the
+    // decision is DROPPED rather than marked wrong. "We could not grade that"
+    // and "you were wrong" are different statements.
+    if (!verdict) continue;
+    decisions += 1;
+    if (verdict.correct) correct += 1;
+    if (verdict.evLost !== null) evLostMicros += Math.round(verdict.evLost * 1_000_000);
+    verdicts.push({
+      chosen,
+      recommended: verdict.recommended as DrillAction,
+      correct: verdict.correct,
+    });
+  }
+
+  // Every drill decision is unaided by construction: the scenario shows the
+  // hand and asks for the play, and no recommendation is ever sent with it.
+  const evaluation = evaluateStars(node, {
+    nodeId: node.id,
+    completed: true,
+    completionReason: "target_reached",
+    handsPlayed: 0,
+    decisions,
+    correct,
+    unaidedDecisions: decisions,
+    unaidedCorrect: correct,
+    estimatedEvLost: evLostMicros / 1_000_000,
+    startingBankroll: 0,
+    endingBankroll: 0,
+  });
+
+  await tx`
+    update public.career_attempts
+    set status = 'completed', completed_at = now(), stars = ${evaluation.stars}::int,
+        decisions_total = ${decisions}::int, decisions_optimal = ${correct}::int,
+        unaided_total = ${decisions}::int, unaided_optimal = ${correct}::int,
+        ev_lost_micros = ${evLostMicros}::bigint
+    where id = ${attempt.id}::uuid
+  `;
+
+  const paid = await settleCareerReward(tx, {
+    userId,
+    nodeId: attempt.node_id,
+    node,
+    stars: evaluation.stars,
+    score: correct,
+  });
+
+  log.chipDelta = paid.rewardChips;
+  return {
+    status: "career_drill_graded",
+    attemptId: attempt.id,
+    nodeSlug: node.slug,
+    stars: evaluation.stars,
+    decisions,
+    correct,
+    rewardChips: paid.rewardChips,
+    rewardXp: paid.rewardXp,
+    walletBalance: paid.walletBalance,
+    verdicts,
+  };
 }
 
 // ---------------------------------------------------------------------------

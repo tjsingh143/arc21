@@ -12,7 +12,6 @@
  */
 
 import {
-  actionEVs,
   adviseActionWithDiagnostics,
   bestLegalEV,
   describeStrategyState,
@@ -22,9 +21,12 @@ import {
   legalActionEVs,
   type ActionEV,
   type StrategyAction,
+  type StrategyDiagnostic,
+  type StrategyProbabilities,
   type StrategyRecommendation,
   type StrategyState,
 } from "../../../shared/strategy/index.js";
+import { recordStrategyDiagnostic } from "./strategy-diagnostics.js";
 import { activeHandOf } from "../../../shared/blackjack/legal-actions.js";
 import type { BlackjackGameState, PlayerActionType, SeatState } from "../../../shared/blackjack/types.js";
 
@@ -35,11 +37,28 @@ export interface TableAdvice {
   /** EVs for the legal actions only, best first. Empty when unpriced. */
   evs: ActionEV[];
   best: ActionEV | null;
+  /**
+   * Solver probabilities for this position, or null when the table serving the
+   * recommendation does not carry them.
+   *
+   * Null is a real state and callers must render nothing for it. A table
+   * generated before probabilities existed is still a valid table, and
+   * substituting a computed-here estimate would put a number produced by
+   * different arithmetic next to EVs produced by the solver — the two could
+   * disagree and nothing would notice. Same fail-safe rule as the
+   * recommendation itself, one level down.
+   */
+  probabilities: StrategyProbabilities | null;
   /** Chart-style labels, e.g. "Hard 16" and "10". */
   handLabel: string | null;
   upcardLabel: string | null;
-  /** Why nothing was served. For diagnostics, not for users. */
-  diagnostic: string | null;
+  /**
+   * Why nothing was served. For diagnostics, not for users.
+   *
+   * Structured rather than a formatted string so a caller can record it without
+   * parsing prose — see `recordAdviceDiagnostic`.
+   */
+  diagnostic: StrategyDiagnostic | null;
 }
 
 const NO_ADVICE: TableAdvice = {
@@ -47,6 +66,7 @@ const NO_ADVICE: TableAdvice = {
   state: null,
   evs: [],
   best: null,
+  probabilities: null,
   handLabel: null,
   upcardLabel: null,
   diagnostic: null,
@@ -100,10 +120,55 @@ export function computeAdvice(
     state,
     evs: [...evs].sort((a, b) => b.ev - a.ev),
     best,
+    // From the cell actually being served, so a probability and an EV on the
+    // same panel always describe the same cell — including under TOTAL_ROW
+    // resolution, where the pair row was not the row that answered.
+    probabilities: decision?.probabilities ?? null,
     handLabel: describeStrategyStateLabel(state),
     upcardLabel: describeUpcardLabel(state.dealerUpcardValue),
-    diagnostic: result.diagnostic ? `${result.diagnostic.code}: ${result.diagnostic.message}` : null,
+    diagnostic: result.diagnostic ?? null,
   };
+}
+
+/**
+ * Records the reason no recommendation was served.
+ *
+ * The third half of failing safe. Play continues and the hint stays hidden
+ * without this; what this adds is that a hole in the tables leaves EVIDENCE,
+ * instead of being indistinguishable from an advisor with nothing to say.
+ *
+ * Deliberately separate from `computeAdvice`, which stays pure so it can be
+ * called from a `useMemo` without writing during render. Callers record from an
+ * effect (the table) or from the command path (the store); the sink counts
+ * occurrences of a hole being REACHED, so a state that is both displayed and
+ * then acted on is two honest observations of it.
+ *
+ * Safe to call with anything, including a successful lookup: it does nothing
+ * unless there is a diagnostic to record.
+ */
+export function recordAdviceDiagnostic(advice: TableAdvice): void {
+  const diagnostic = advice.diagnostic;
+  if (diagnostic === null) return;
+
+  recordStrategyDiagnostic({
+    code: diagnostic.code,
+    key: diagnostic.key,
+    rulesetId: diagnostic.rulesetId,
+    rulesetVersion: diagnostic.rulesetVersion,
+  });
+}
+
+/**
+ * A stable identity for the current diagnostic, or null when there is none.
+ *
+ * The table keys its recording effect on this so a re-render that leaves the
+ * same hole in place — expanding the panel, placing a chip — does not record it
+ * again, while genuinely arriving at the hole a second time does.
+ */
+export function adviceDiagnosticKey(advice: TableAdvice): string | null {
+  const diagnostic = advice.diagnostic;
+  if (diagnostic === null) return null;
+  return `${diagnostic.rulesetId}@${diagnostic.rulesetVersion}|${diagnostic.code}|${diagnostic.key ?? "-"}`;
 }
 
 export interface DecisionVerdict {
@@ -208,6 +273,18 @@ export function format(ev: number): string {
  */
 export function formatMagnitude(value: number): string {
   return Math.abs(Math.round(value * 100) / 100).toFixed(2);
+}
+
+/**
+ * A solver probability as a whole-percent string.
+ *
+ * Whole percents on purpose: the underlying model carries documented
+ * approximations, and "61.2%" claims a tenth of a point the cell aggregation
+ * does not support. `Math.round` rather than truncation so 0.6117 reads as 61%
+ * and not 61% by accident.
+ */
+export function formatProbability(probability: number): string {
+  return `${Math.round(probability * 100)}%`;
 }
 
 /** Human label for an action, used in chips and buttons. */

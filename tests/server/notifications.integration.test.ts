@@ -27,7 +27,9 @@
 import crypto from "node:crypto";
 import { beforeAll, describe, expect, it } from "vitest";
 
-const FUNCTIONS = "http://127.0.0.1:54321/functions/v1";
+import { callFunction as call } from "./call-function.js";
+import { stackUp } from "./stack-guard.js";
+
 const REST = "http://127.0.0.1:54321/rest/v1";
 const AUTH_ADMIN = "http://127.0.0.1:54321/auth/v1/admin/users";
 
@@ -40,6 +42,23 @@ const LOCAL_ANON_KEY =
 
 const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString("base64url");
 
+/**
+ * The test tokens carry NO `iat`, deliberately.
+ *
+ * PostgREST validates `iat` against its own clock and answers
+ * `PGRST303 "JWT issued at future"` when it is ahead — and the failure does not
+ * look like a clock problem. It looks like a wallet that reads as -1, a profile
+ * column that reads as null, or a career reward that was never paid.
+ *
+ * Backdating by a minute was the first fix and it was not enough: the Docker VM
+ * clock jumps rather than drifts, so any constant is a guess about how far.
+ * `iat` is an OPTIONAL claim that PostgREST validates only when present, and
+ * nothing in this app reads it, so omitting it removes the failure mode instead
+ * of narrowing it. `exp` still bounds the token, and an `exp` an hour out is
+ * safe against skew in the direction that matters.
+ *
+ * Test-only: Supabase issues real tokens server-side, where there is one clock.
+ */
 function signToken(sub: string): string {
   const header = b64({ alg: "HS256", typ: "JWT" });
   const now = Math.floor(Date.now() / 1000);
@@ -47,8 +66,7 @@ function signToken(sub: string): string {
     sub,
     role: "authenticated",
     aud: "authenticated",
-    iat: now,
-    exp: now + 3600,
+        exp: now + 3600,
   });
   const signature = crypto
     .createHmac("sha256", LOCAL_JWT_SECRET)
@@ -98,58 +116,29 @@ async function rpc(token: string, name: string, args: unknown): Promise<{ status
 }
 
 async function drain(limit = 500): Promise<Record<string, number>> {
-  const response = await fetch(`${FUNCTIONS}/send-notifications`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${LOCAL_SERVICE_KEY}`,
-    },
-    body: JSON.stringify({ limit }),
-  });
-  return (await response.json()) as Record<string, number>;
-}
-
-let stackUp = false;
-try {
-  const probe = await fetch(`${FUNCTIONS}/send-notifications`, { method: "POST", body: "{}" });
-  // Only a 401 proves the FUNCTION is serving; the gateway answers 503 when the
-  // Edge runtime is down.
-  stackUp = probe.status === 401;
-} catch {
-  stackUp = false;
+  const result = await call("send-notifications", LOCAL_SERVICE_KEY, { limit });
+  if (result.status !== 200) {
+    // A helper that reads something THROWS when it cannot. Returning an empty
+    // summary here would surface as "expected undefined to be 1".
+    throw new Error(`the queue could not be drained: HTTP ${result.status} ${result.raw}`);
+  }
+  return result.body as Record<string, number>;
 }
 
 const suite = stackUp ? describe : describe.skip;
-if (!stackUp) {
-  console.warn(
-    "[tests/server] notifications SKIPPED — run `supabase start` and " +
-      "`supabase functions serve --no-verify-jwt`.",
-  );
-}
 
 suite("who may drain the queue", () => {
   it("refuses an unauthenticated caller", async () => {
-    const response = await fetch(`${FUNCTIONS}/send-notifications`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-    });
-    expect(response.status).toBe(401);
+    const result = await call("send-notifications", null, {});
+    expect(result.status).toBe(401);
   });
 
   it("refuses a signed-in PLAYER", async () => {
     // This endpoint reads other people's notification titles and bodies by
     // design. No amount of being logged in makes that acceptable.
     const userId = await createUser();
-    const response = await fetch(`${FUNCTIONS}/send-notifications`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${signToken(userId)}`,
-      },
-      body: "{}",
-    });
-    expect(response.status).toBe(401);
+    const result = await call("send-notifications", signToken(userId), {});
+    expect(result.status).toBe(401);
   });
 
   it("accepts the service key", async () => {
@@ -343,36 +332,28 @@ suite("a timed-out hand tells the player it was played for them", () => {
     const room = created.body as { id: string; code: string };
     await rpc(guest, "join_private_room", { p_code: room.code });
 
-    const started = await fetch(`${FUNCTIONS}/create-session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host}` },
-      body: JSON.stringify({
-        action: "START_PRIVATE_TABLE",
-        clientRequestId: crypto.randomUUID(),
-        roomId: room.id,
-        clientSentAt: new Date().toISOString(),
-      }),
+    const started = await call("create-session", host, {
+      action: "START_PRIVATE_TABLE",
+      clientRequestId: crypto.randomUUID(),
+      roomId: room.id,
+      clientSentAt: new Date().toISOString(),
     });
-    const table = (await started.json()) as {
+    expect(started.status).toBe(200);
+    const table = started.body as unknown as {
       gameId: string;
       publicState: { version: number };
     };
-    expect(started.status).toBe(200);
 
     // Nobody bets. The private table's betting deadline is fifteen seconds.
     await new Promise((resolve) => setTimeout(resolve, 16_000));
 
-    const resolved = await fetch(`${FUNCTIONS}/game-command`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${host}` },
-      body: JSON.stringify({
-        gameId: table.gameId,
-        clientActionId: crypto.randomUUID(),
-        expectedVersion: table.publicState.version,
-        type: "RESOLVE_TIMEOUT",
-        payload: {},
-        clientSentAt: new Date().toISOString(),
-      }),
+    const resolved = await call("game-command", host, {
+      gameId: table.gameId,
+      clientActionId: crypto.randomUUID(),
+      expectedVersion: table.publicState.version,
+      type: "RESOLVE_TIMEOUT",
+      payload: {},
+      clientSentAt: new Date().toISOString(),
     });
     expect(resolved.status).toBe(200);
 

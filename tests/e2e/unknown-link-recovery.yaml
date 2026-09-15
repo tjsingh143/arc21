@@ -1,0 +1,31 @@
+# Also run at the maximum system text size: both escape controls must be reachable.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://this-screen-does-not-exist
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: That link led nowhere
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: not-found-home
+    direction: DOWN
+    centerElement: true
+    timeout: 20000
+- assertVisible:
+    id: not-found-practice
+- takeScreenshot: unknown-link-recovery-controls
+- tapOn:
+    id: not-found-home
+- extendedWaitUntil:
+    visible:
+      id: open-profile
+    timeout: 15000
+- takeScreenshot: unknown-link-return-home

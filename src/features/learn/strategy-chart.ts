@@ -30,6 +30,7 @@ import {
   type HandClass,
   type StrategyAction,
   type StrategyDecision,
+  type StrategyProbabilities,
   type StrategyState,
   type StrategyTable,
 } from "../../../shared/strategy/index.js";
@@ -171,6 +172,15 @@ export interface ChartCell {
   accessibilityLabel: string;
   /** Every priced action for this cell, best first. Empty if the cell has none. */
   evs: ActionEV[];
+  /**
+   * The solver's probabilities for this coordinate, or null when the table does
+   * not carry them.
+   *
+   * Null rather than a computed stand-in, for the same reason the cell itself is
+   * null when there is no entry: the guide's job is to show what was solved, and
+   * a number worked out here would look exactly like one that was.
+   */
+  probabilities: StrategyProbabilities | null;
 }
 
 export interface ChartRow {
@@ -300,6 +310,7 @@ function buildCell(
       upcardValue === 11 ? "ace" : upcardValue
     }: ${meaning.toLowerCase()}`,
     evs: actionEVs(decision),
+    probabilities: decision.probabilities ?? null,
   };
 }
 

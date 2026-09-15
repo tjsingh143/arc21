@@ -1,0 +1,257 @@
+# Arc 21 — every server-backed screen, on a build that HAS a server.
+#
+# THE GAP THIS FILLS, and it is the deeper half of the one `private-lobby.yaml`
+# and `online-table.yaml` opened.
+#
+# `every-screen.yaml` is the audit flow, and it asserts `.*no server
+# configured.*` in six places. That string appears only while
+# `EXPO_PUBLIC_SUPABASE_URL` is UNSET, so the whole flow describes what a screen
+# says in ONE configuration — the one nobody ships. A build with a server has
+# never been walked by it. Half the screens in this app change completely when a
+# server exists: Leaderboards stops apologising and renders four boards, the
+# Daily Challenge shows a real seed commitment, the Sprint screen shows the fee
+# and the format from `sprint_format()`, and Notifications becomes an inbox.
+#
+# So this is the same audit, from the other side. Each stop asserts something
+# that CANNOT be true without a server, and asserts that the unconfigured
+# apology is ABSENT — which is the single strongest statement a configured build
+# can make about itself, and the one that would have caught a screen wired to
+# nothing.
+#
+# It deliberately does not PLAY anything: `online-table.yaml` plays, and this
+# would only duplicate it more slowly. What this covers is reachability and
+# content on the screens that flow does not visit.
+#
+# BEFORE RUNNING:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT — the opposite of every-screen.yaml
+#
+# `e2e-account.ts` also seeds YESTERDAY's daily challenge. The fairness card
+# checks the most recently CLOSED challenge, and a database reset on the same UTC
+# day has none — production reaches that state on its second day without anybody
+# doing anything, and a local run has to be given it.
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/every-screen-online.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow: sign-in.yaml
+
+# Signed in, so the whole app is in its configured state. Home shows a real chip
+# balance read from the wallet — a number no offline build can produce.
+- assertVisible: "Chips"
+- assertNotVisible: ".*no server configured.*"
+
+# --- Leaderboards ----------------------------------------------------------
+# Four boards, server-derived. On a build with no server this screen says so in
+# place of every one of them.
+- openLink: arc21://leaderboards
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "leaderboard-purpose"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- assertVisible: ".*Weekly XP.*"
+- assertVisible: ".*Strategy Accuracy.*"
+# A board with nobody on it says so, in its own words, rather than rendering
+# sample rows. Either that or a real row — both are honest, and only one of them
+# can be true at a time, so this asserts the SCREEN reached its data rather than
+# which answer it got.
+- assertVisible: ".*Every figure here is recorded by the server.*"
+
+# --- Daily Challenge -------------------------------------------------------
+# The seed COMMITMENT is the assertion worth making here: a 64-character hex
+# digest the server computed over a secret it never sends. Nothing offline can
+# invent one, and `every-screen.yaml` explicitly cannot check it.
+- openLink: arc21://daily
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible: ".*Everyone plays the same shoe.*"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- scrollUntilVisible:
+    element:
+      id: "daily-commitment"
+    direction: DOWN
+    timeout: 20000
+- assertVisible:
+    id: "daily-commitment"
+    text: ".*[0-9a-f]{16}.*"
+
+# THE COMMITMENT, CHECKED. Today's seed is secret by design, so what a fairness
+# view can show is the most recently CLOSED challenge — and the check happens on
+# the DEVICE, by recomputing SHA-256 of the published seed with `expo-crypto`.
+#
+# For the whole life of this feature nothing ever wrote `revealed_seed`: the
+# column, the trigger, the projection, the parser and the render branch all
+# existed and no code path published a seed, so this card could never appear and
+# the sentence above it promised a check nobody could make.
+#
+# NEEDS A CLOSED CHALLENGE to assert against, which a database reset on the same
+# UTC day does not have. `scripts/e2e-account.ts` seeds yesterday's.
+- scrollUntilVisible:
+    element:
+      id: "daily-verification-verdict"
+    direction: DOWN
+    timeout: 20000
+# The RESULT, not the presence of the card: "checking" would render in exactly
+# the same place and mean nothing was verified.
+- assertVisible:
+    id: "daily-verification-verdict"
+    text: ".*SHA-256 of the published seed is exactly the commitment.*"
+
+# --- Sprint Tournament -----------------------------------------------------
+# The format and the entry fee, from `sprint_format()`, BEFORE anything is spent
+# — the specification's "user must know the format before spending". That path
+# needs a server, which is exactly why the offline audit flow can only assert
+# that its absence is stated.
+- openLink: arc21://tournament
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible: ".*Four players, equal stacks, one elimination.*"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- assertVisible: ".*500.*"
+- scrollUntilVisible:
+    element:
+      id: "tournament-register"
+    direction: DOWN
+    timeout: 20000
+
+# --- Social ----------------------------------------------------------------
+# "Friends need a server" is what this tab says without one. Signed in, it is a
+# real friends list — empty for this account, and saying so.
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible: "Social"
+    timeout: 30000
+- assertNotVisible: ".*Friends need a server.*"
+- assertNotVisible: ".*no server configured.*"
+
+# --- Notifications ---------------------------------------------------------
+# The RECORD of what the server said, not a fallback for push.
+#
+# THIS USED TO ASSERT `notifications-empty`, with a comment beside it reading
+# "an empty inbox is the honest answer for a FRESH account" — which names the
+# assumption that expires. The account is not fresh: `two-client-public-*`
+# seats it at a PUBLIC table, a public table carries clocks, and the server
+# writes a `your_turn` notification exactly when it has APPLIED A DEFAULT. So
+# the first run after that scenario found one real row, and a correct screen
+# failed a correct-looking assertion — the fourth instance in this project of a
+# test asserting a global, time-dependent fact instead of a relationship.
+#
+# What the screen actually promises is that it never leaves you looking at
+# nothing: either it says WHY it is empty, or it lists what it has. Both are a
+# pass, neither may be the unconfigured message, and a blank screen is neither.
+- openLink: arc21://notifications
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible: "Notifications"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+- runFlow:
+    when:
+      notVisible:
+        id: "notifications-empty"
+    commands:
+      - assertVisible:
+          id: "notifications-list"
+
+# --- Statistics ------------------------------------------------------------
+# Its Competition section is server-owned. Offline it states the absence; here it
+# must not.
+- openLink: arc21://stats
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible: "Statistics"
+    timeout: 30000
+- assertNotVisible: ".*no server configured.*"
+
+# --- Profile ---------------------------------------------------------------
+# The account screen. Signed in it shows the player's own identity and the two
+# routes off it; signed out it is an invitation to make an account.
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "profile-inventory"
+    timeout: 30000
+- assertVisible:
+    id: "profile-friends"
+- assertNotVisible: ".*no server configured.*"
+
+# --- Inventory -------------------------------------------------------------
+# THE ONE SERVER-BACKED SCREEN NO AUDIT FLOW HAD WALKED WITH A SERVER PRESENT.
+# `every-screen.yaml` visits it unconfigured, where it correctly states the
+# absence — so the only assertion either flow made about this screen was about
+# the apology. Signed in, the catalogue comes from `my_inventory()` and the
+# equipped set from `my_loadout()`: `inventory-count` is a real figure and at
+# least one item is equippable, which cannot be true of a build talking to
+# nothing. The absence assertion stays, because nothing here is ever for sale.
+- tapOn:
+    id: "profile-inventory"
+- extendedWaitUntil:
+    visible:
+      id: "inventory-count"
+    timeout: 30000
+- assertVisible: ".*none of it changes the game.*"
+- assertNotVisible: ".*no server configured.*"
+- assertNotVisible: ".*Buy.*"
+- assertVisible:
+    id: "inventory-tab-avatar"

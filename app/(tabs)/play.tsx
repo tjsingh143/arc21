@@ -9,6 +9,7 @@
  * does: the dealer follows fixed rules and never varies with anything.
  */
 
+import { useEffect, useMemo } from "react";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -16,7 +17,21 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { SurfaceCard } from "../../src/components/ui/Card";
 import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { AppText } from "../../src/components/ui/AppText";
+import { Button } from "../../src/components/ui/Button";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import {
+  modeAccessibilityHint,
+  modeAccessibilityLabel,
+  modeBadge,
+  modeNotice,
+} from "../../src/features/home/play-mode-presentation";
+import {
+  describeActiveSession,
+  describeActiveSessionMode,
+  resumeTargetFor,
+  selectActiveSession,
+  useActiveSessionStore,
+} from "../../src/features/table";
 
 interface Mode {
   title: string;
@@ -47,6 +62,18 @@ const MODES: Mode[] = [
     purpose: "A standard table using your global chip balance.",
     structure: "Casual, Standard or High stakes",
     availability: "online",
+    route: "/table/quick",
+    /*
+     * Reachable since the closure mission. It was grey for a whole phase with
+     * an honest note explaining that the SCREEN did not exist — the server half
+     * always did: `create-session` handles `action: "OPEN"`, debits the buy-in
+     * once, and is the most heavily covered path in `tests/server`. Nothing had
+     * ever sent it.
+     *
+     * The setup screen states the buy-in, the bet range and what each
+     * assistance mode costs you on the accuracy board before anything is spent,
+     * which is where that belongs.
+     */
     reason: "Needs an account so chips are server-authoritative.",
   },
   {
@@ -80,10 +107,61 @@ const MODES: Mode[] = [
 ];
 
 export default function PlayScreen() {
+  /*
+   * WHERE THE PLAYER'S CHIPS ARE, asked every time this screen opens.
+   *
+   * A buy-in leaves the wallet for a server-owned table stack, and the server
+   * refuses a second one while the seat is still held. Both are right — but the
+   * game id and the seat id reached the client exactly once, in the reply to
+   * the OPEN, and lived afterwards only in a route parameter. Kill the app
+   * mid-hand and every online mode below answered SESSION_ALREADY_ACTIVE for
+   * ever, with the buy-in stranded and each refusal advising the player to
+   * "leave that table first" — the one thing they could no longer do.
+   *
+   * `my_active_session()` is the ask that was missing. It derives the seat from
+   * `auth.uid()` using the SAME predicate as the server's one-live-seat control,
+   * so the card below can never point at a table the server does not count, and
+   * can never be absent for one it does.
+   */
+  const activeStatus = useActiveSessionStore((state) => state.status);
+  const refreshActive = useActiveSessionStore((state) => state.refresh);
+
+  useEffect(() => {
+    void refreshActive();
+  }, [refreshActive]);
+
+  // Derived from subscribed state with `useMemo`, never by calling a store
+  // getter during render — the React Compiler memoises against the stable
+  // function reference and freezes the value.
+  const active = useMemo(() => selectActiveSession(activeStatus), [activeStatus]);
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ScreenHeader title="Play" subtitle="Same rules everywhere." balance={null} />
+        <ScreenHeader title="Play" subtitle="Same rules everywhere." />
+
+        {/*
+          * Not a pressable card. A labelled `Pressable` REPLACES the text of
+          * everything inside it in the iOS accessibility tree, which has cost
+          * this project three surfaces already — so the card is inert and the
+          * Button inside it is the control.
+          */}
+        {active ? (
+          <SurfaceCard testID="play-resume-card">
+            <AppText variant="overline" color="textSecondary">
+              Still at a table
+            </AppText>
+            <AppText variant="sectionTitle">{describeActiveSessionMode(active.mode)}</AppText>
+            <AppText variant="body" color="textSecondary">
+              {describeActiveSession(active)}
+            </AppText>
+            <Button
+              label="Return to your table"
+              onPress={() => router.replace(resumeTargetFor(active) as never)}
+              testID="play-resume"
+            />
+          </SurfaceCard>
+        ) : null}
 
         {MODES.map((mode) => {
           const playable = mode.route !== undefined;
@@ -92,18 +170,60 @@ export default function PlayScreen() {
               key={mode.title}
               onPress={playable ? () => router.push(mode.route as never) : undefined}
               disabled={!playable}
-              accessibilityLabel={mode.title}
-              accessibilityHint={playable ? mode.purpose : mode.reason}
+              /*
+                * THE WHOLE CARD, because a labelled Pressable REPLACES its
+                * children in the iOS accessibility tree.
+                *
+                * `accessibilityLabel={mode.title}` was correct while these
+                * modes were unbuilt: an unplayable card has no `onPress`, so
+                * `SurfaceCard` renders a plain View and every line inside it
+                * kept its own node. The moment they all became reachable, every
+                * card became a labelled Pressable and a screen reader started
+                * hearing one word — the title — where a sighted player reads
+                * the stakes, the seat count and the note about needing an
+                * account.
+                */
+              accessibilityLabel={modeAccessibilityLabel({
+                title: mode.title,
+                purpose: mode.purpose,
+                structure: mode.structure,
+                playable,
+                reason: mode.reason,
+              })}
+              accessibilityHint={modeAccessibilityHint({ playable })}
             >
               <View style={styles.cardHeader}>
-                <AppText variant="sectionTitle" color={playable ? "textPrimary" : "textSecondary"}>
+                <AppText
+                  variant="sectionTitle"
+                  color={playable ? "textPrimary" : "textSecondary"}
+                  style={styles.cardTitle}
+                >
                   {mode.title}
                 </AppText>
-                <View style={[styles.badge, playable ? styles.badgeOffline : styles.badgeOnline]}>
-                  <AppText variant="caption" color={playable ? "success" : "textSecondary"}>
-                    {mode.availability === "offline" ? "Offline" : "Online"}
-                  </AppText>
-                </View>
+                {/*
+                  * Word and colour from the SAME field. They used to come from
+                  * different ones — the word from `availability`, the colour
+                  * from whether a route existed — and the two disagreed for
+                  * every online mode the moment those modes shipped.
+                  */}
+                {(() => {
+                  const badge = modeBadge(mode.availability);
+                  return (
+                    <View
+                      style={[
+                        styles.badge,
+                        badge.tone === "success" ? styles.badgeOffline : styles.badgeOnline,
+                      ]}
+                    >
+                      <AppText
+                        variant="caption"
+                        color={badge.tone === "success" ? "success" : "textSecondary"}
+                      >
+                        {badge.label}
+                      </AppText>
+                    </View>
+                  );
+                })()}
               </View>
 
               <AppText variant="body" color="textSecondary">
@@ -116,11 +236,25 @@ export default function PlayScreen() {
                 {mode.structure}
               </AppText>
 
-              {!playable && mode.reason ? (
-                <AppText variant="caption" color="warning">
-                  {mode.reason}
-                </AppText>
-              ) : null}
+              {/*
+                * Shown whether or not the mode is playable. It used to render
+                * only when it was NOT, so the moment every mode became
+                * reachable six sentences about what each one needs were shown
+                * to nobody — and a guest learned an account was wanted only
+                * after tapping.
+                */}
+              {(() => {
+                const notice = modeNotice({ playable, reason: mode.reason });
+                if (notice === null) return null;
+                return (
+                  <AppText
+                    variant="caption"
+                    color={notice.tone === "warning" ? "warning" : "textSecondary"}
+                  >
+                    {notice.text}
+                  </AppText>
+                );
+              })()}
             </SurfaceCard>
           );
         })}
@@ -150,7 +284,13 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     gap: spacing.sm,
   },
+  // The title yields width and the badge keeps it. Without the pair, a title
+  // grown by Dynamic Type pushed the "Offline" pill off the right edge, where
+  // it rendered as a clipped "Offlin" — the one word on the card that says
+  // whether the mode works without an account.
+  cardTitle: { flexShrink: 1 },
   badge: {
+    flexShrink: 0,
     paddingHorizontal: spacing.sm,
     paddingVertical: 2,
     borderRadius: radius.pill,

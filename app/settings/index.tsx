@@ -17,7 +17,7 @@
  */
 
 import { useState } from "react";
-import { Alert, ScrollView, StyleSheet, Switch, View } from "react-native";
+import { Alert, Pressable, ScrollView, StyleSheet, Switch, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Constants from "expo-constants";
@@ -40,6 +40,7 @@ import {
   type StatsVisibility,
 } from "../../src/features/settings/settings";
 import { useSettings } from "../../src/features/settings/use-settings";
+import { syncProfilePrivacy } from "../../src/features/settings/profile-privacy";
 import { usePushRegistration } from "../../src/features/notifications";
 import { applyDailyReminderPreference } from "../../src/lib/notifications/daily-reminder";
 import { hasRoute } from "../../src/features/home/route-availability";
@@ -66,6 +67,21 @@ export default function SettingsScreen() {
     setPracticeMode(mode);
   }
 
+  /**
+   * The visibility choice is stored locally AND carried to the profile row.
+   *
+   * It used to be stored only, which meant the control displayed the player's
+   * answer back to them while `profiles.privacy` stayed at its default of
+   * `public` for every account ever created. The write is best-effort: a guest
+   * has no row to write, and a preference that blocks on the network is a
+   * control that feels broken. `syncProfilePrivacy` also runs when a session
+   * appears, which is what covers a choice made before signing in.
+   */
+  async function changeVisibility(visibility: StatsVisibility): Promise<void> {
+    await update({ statsVisibility: visibility });
+    await syncProfilePrivacy(visibility);
+  }
+
   function confirmResetStatistics(): void {
     Alert.alert(
       "Reset practice statistics?",
@@ -90,7 +106,7 @@ export default function SettingsScreen() {
         <BackBar />
       </View>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <ScreenHeader title="Settings" subtitle="Stored on this device." balance={null} />
+        <ScreenHeader title="Settings" subtitle="Stored on this device." />
 
         {failureMessage ? <UnavailableNote>{failureMessage}</UnavailableNote> : null}
 
@@ -122,6 +138,26 @@ export default function SettingsScreen() {
           </SurfaceCard>
 
           <SurfaceCard>
+            {/*
+              THE ROW THAT DID NOT EXIST. `confirmLeavingOnlineGame` was
+              declared in `AppSettings`, defaulted to true, validated by the Zod
+              schema and written to disk on every save — and a full-repository
+              grep found three references to it, all inside `settings.ts`. No
+              row offered it and no call site read it.
+
+              It guards the one economic command a single mis-tap can fire:
+              "Leave table" sends `CASH_OUT`, closing the seat and returning the
+              escrowed stack, and it sits top-left of the table where a thumb
+              reaches for back. `shouldConfirmLeavingTable` is the predicate the
+              table now reads.
+            */}
+            <ToggleRow
+              label="Confirm before leaving an online table"
+              detail="Ask first, because leaving closes your seat and returns your chips."
+              value={settings.confirmLeavingOnlineGame}
+              disabled={!ready}
+              onChange={(next) => void update({ confirmLeavingOnlineGame: next })}
+            />
             <ToggleRow
               label="Large card labels"
               detail="Bigger ranks and suits on the cards themselves."
@@ -129,10 +165,6 @@ export default function SettingsScreen() {
               disabled={!ready}
               onChange={(next) => void update({ largeCardLabels: next })}
             />
-            <UnavailableNote>
-              Saved on this device. No screen in this build reads it yet, so
-              nothing changes on the table until one does.
-            </UnavailableNote>
           </SurfaceCard>
         </Section>
 
@@ -210,13 +242,6 @@ export default function SettingsScreen() {
               disabled={!ready}
               onChange={(next) => void update({ largerTableText: next })}
             />
-
-            <UnavailableNote>
-              These three are saved on this device. The system Reduce Motion
-              setting above is the one that is already respected everywhere;
-              contrast, text size and the app-level motion override are stored for
-              the screens that will read them and change nothing yet.
-            </UnavailableNote>
           </SurfaceCard>
         </Section>
 
@@ -250,7 +275,7 @@ export default function SettingsScreen() {
                   label={STATS_VISIBILITY_LABELS[visibility]}
                   size="medium"
                   variant={settings.statsVisibility === visibility ? "primary" : "secondary"}
-                  onPress={() => void update({ statsVisibility: visibility })}
+                  onPress={() => void changeVisibility(visibility)}
                   disabled={!ready}
                   style={styles.choice}
                 />
@@ -537,8 +562,17 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 /**
  * A switch row.
  *
- * The whole row is the accessible control rather than just the switch, so the
- * target comfortably clears 48dp and the label is announced with the state.
+ * The whole row IS the control — a `Pressable` carrying the switch role, with
+ * the `Switch` inside it rendered as a non-interactive indicator.
+ *
+ * It did not used to be. The row was a plain `View` under a comment claiming
+ * it was "the accessible control rather than just the switch, so the target
+ * comfortably clears 48dp"; nothing about it was pressable, so the only target
+ * was the iOS `Switch` — 51×31pt, UNDER the 48dp minimum in height — and
+ * tapping the label did nothing at all. `minHeight: MIN_TOUCH_TARGET` on the
+ * row sized a box that could not be tapped. Found by driving the Settings
+ * screen with Maestro: all three accessibility taps reported COMPLETED and no
+ * switch moved.
  */
 function ToggleRow({
   label,
@@ -554,7 +588,15 @@ function ToggleRow({
   disabled?: boolean;
 }) {
   return (
-    <View style={styles.row}>
+    <Pressable
+      onPress={() => onChange(!value)}
+      disabled={disabled}
+      style={styles.row}
+      accessibilityRole="switch"
+      accessibilityLabel={label}
+      accessibilityHint={detail}
+      accessibilityState={{ disabled, checked: value }}
+    >
       <View style={styles.rowText}>
         <AppText variant="body" color={disabled ? "textDisabled" : "textPrimary"}>
           {label}
@@ -563,17 +605,23 @@ function ToggleRow({
           {detail}
         </AppText>
       </View>
+      {/*
+        `pointerEvents="none"` so the row's press is the single source of the
+        change: a Switch that also handled its own toggle would fire twice
+        where the two targets overlap, landing back on the original value.
+      */}
       <Switch
         value={value}
         onValueChange={onChange}
         disabled={disabled}
-        accessibilityLabel={label}
-        accessibilityHint={detail}
+        pointerEvents="none"
+        importantForAccessibility="no-hide-descendants"
+        accessibilityElementsHidden
         trackColor={{ false: colors.surfaceSoft, true: colors.accentSoft }}
         thumbColor={value ? colors.accent : colors.textSecondary}
         ios_backgroundColor={colors.surfaceSoft}
       />
-    </View>
+    </Pressable>
   );
 }
 

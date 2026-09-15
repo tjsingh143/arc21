@@ -2,8 +2,10 @@
 
 A **simulated** blackjack game. Expo (iOS/Android) + Supabase. Virtual chips only.
 
-Read `docs/IMPLEMENTATION_STATUS.md` for where the build actually is, and
+Read `docs/LAUNCH_STATE.md` for where the build actually is (it points to the
+Astra Refresh A baseline audit, the current release evidence), and
 `docs/AUDIT.md` for how strongly each area has been verified.
+`docs/IMPLEMENTATION_STATUS.md` is a historical tracker.
 
 ---
 
@@ -158,6 +160,8 @@ npm test
 npm run test:coverage                   # per-area gates, not global
 npm run strategy:generate               # regenerate tables after a rules change
 npm run audio:generate                  # re-synthesise the sound palette
+npm run contrast:check                  # WCAG ratios for every rendered pairing
+npm run benchmark                       # engine hot path, memory, deal budget
 
 supabase db reset && supabase test db   # 422 pgTAP assertions
 supabase functions serve --no-verify-jwt   # the FUNCTION still enforces auth
@@ -328,6 +332,116 @@ One such failure also ran `xcrun simctl uninstall` for five minutes and left the
 app UNINSTALLED — `xcrun simctl get_app_container <udid> com.arc21.app` before
 diagnosing anything else, because a missing app reads as a broken flow.
 
+**...AND SOMETIMES THE APP REALLY DID CRASH, WHICH MAESTRO REPORTS WITH THE SAME
+SENTENCE.** `Request for viewHierarchy failed, because of app crash` is printed
+both when the driver cannot read a live screen and when there is no app left to
+read, and the note above is so much the commoner case that an idle-host rerun
+which passes reads as proof of it. It is not proof: the rerun passing is equally
+consistent with a crash that needed load to be likely. **Two artefacts settle
+it.** First, `~/Library/Logs/DiagnosticReports/Arc21-*.ips` — the `.ips` is JSON
+after its first line, and its `captureTime` against the failure's timestamp is
+the whole answer. Second, the hierarchy Maestro SAVED for the failing step: a
+degraded dump is the eight identifier-bearing nodes described above, whereas
+this one was 92 KB of the iOS springboard — a COMPLETE dump, of the app being
+gone. What crashed was `expo-notifications`' process-global
+`NotificationCenterManager.delegates`, a plain Swift array appended with no lock
+by every module registration, while a DEBUG build whose Metro bundle took 33
+seconds had eight `com.facebook.react.runtime.JavaScript` threads and ten
+`hades` alive at once. A release build embeds `main.jsbundle` and registers its
+modules once, so it cannot happen there — which is the wider lesson: **device QA
+on a debug build is QA of a configuration nobody ships.** Run the flows against
+`--configuration Release` before believing either a crash or a clean sweep.
+
+**`home-practice` IS VISIBLE TO A GUEST, SO IT CANNOT PROVE A SIGN-IN — AND THE
+FIX FOR THAT WAS ALREADY WRITTEN, IN THE OTHER COPY.** `mc-sign-in.yaml` types
+its credential and exits on `header-chips`; `sign-in.yaml` pasted and exited on
+`home-practice`, and FOUR server-configured flows use the second one. Both
+differences are defects. Pasting is unreliable — `mc-sign-in.yaml`'s own comment
+records "three taps on Paste reported COMPLETED and left both fields empty", and
+that is exactly how `every-screen-online.yaml` failed on a Release build, with a
+screenshot of an untouched `you@example.com` placeholder. The reason the paste
+existed does not apply on that screen at all: it is the CREATE-ACCOUNT form whose
+`textContentType="newPassword"` swallows `inputText`; the sign-IN form types
+fine. And `home-practice` is Home, which a GUEST reaches too — only a balance in
+the header (`header-chips`) says the server answered for an account. **When two
+files do the same job and one of them gets fixed, the other is now the bug**;
+`grep -l` for the sibling before calling it done.
+
+**A FLOW THAT ASSERTS AN EMPTY INBOX EXPIRES THE FIRST TIME THE SERVER WRITES
+ONE.** `every-screen-online.yaml` waited for `notifications-empty`, reasoning
+that "an empty inbox is the honest answer for a fresh account". The account stops
+being fresh the moment `two-client-public-*` seats it at a table with clocks,
+because a `your_turn` notification is written precisely when the server APPLIES A
+DEFAULT. Assert the RELATIONSHIP the screen actually promises — it says why it is
+empty, or it lists what it has, and a blank screen is neither. Fourth instance,
+after the pgTAP file that counted global rows, the leaderboard place and the
+daily superlative. Note what it cost: the list had no stable identifier, because
+the "Mark all read" control renders only while something is unread — an
+assertable contract sometimes needs one `testID` added to the product.
+
+**THE THIRD DESTINATION AFTER BETTING CLOSES HAS NOW CAUGHT THREE HELPERS.**
+`reachPlayerTurns`, then `dealAHand`, then `standToSettlement` — which threw
+`unexpected phase while standing out a hand: INSURANCE_OFFER` from inside
+`closeTable` on an ordinary `npm run test:server`. A dealer ace is about one
+hand in thirteen and has nothing to do with load, so it presents as a suite that
+fails once in several runs. **Any helper that drives a hand must answer all
+three**, and `standToSettlement` needed a fourth branch besides: a snapshot
+sends `RESOLVE_TIMEOUT`, a settlement-window timeout STARTS THE NEXT HAND, so a
+loop that waits a stranger out for longer than the 12 s window legitimately
+finds `BETTING_OPEN` — which is a fine place to stop, because a cash-out is
+refused only while a wager is live.
+
+**A MONOTONIC INDEX OVER ROWS THAT ARE NEVER DELETED IS A COUNTDOWN.**
+`JOIN_PUBLIC_TABLE` allocated `coalesce(max(seat_index) + 1, 0)` over every seat
+row the session had ever held, and `seat_index` is `check (seat_index between 0
+and 6)` — so the EIGHTH person ever to sit at a public table got index 7 and the
+insert was refused by the check, which the function surfaces as **HTTP 500**.
+Not the full-table case, which is guarded and answers TABLE_FULL: measured with
+two live seats and five departed, so three seats were advertised and nobody could
+take one, and a public table stays `active` while anybody is at it, so
+matchmaking kept allocating a table that answered 500 to everybody for the rest
+of its life. Turnover of seven is an ordinary evening. The fix is to ask what the
+uniqueness is FOR: two people must not hold one index AT THE SAME TIME, so the
+constraint is a PARTIAL unique index over `status <> 'left'` and the allocator
+takes the lowest index no LIVE seat holds. A departed row stays as history —
+`display_name` is a copy no foreign key touches.
+
+**AND IT WAS FOUND BY A LOAD GENERATOR AIMED AT SOMETHING ELSE.** The test said
+`expected 500 to be 200` and nothing more; the whole diagnosis was in
+`supabase functions serve`'s own log, which names the constraint. **When a test
+reports an unexpected 5xx, read the runtime log before reading the test** — a
+500 is our handler failing, never a refusal, and `call-function.ts` deliberately
+does not retry one.
+
+**A DOCS-ONLY COMMIT THAT FAILS CI IS TELLING YOU ABOUT THE SUITE.** Two markdown
+files changed and `pgTAP and server integration` failed:
+`expected 6000 to be 4000` on a public table's escrow (three seats of 2,000, not
+two) and `expected 'SESSION_CLOSED' to be 'SESSION_ALREADY_ACTIVE'` (a room
+strangers had finished with). Both are "a shared public table is not your test's
+table", which this very file's own helper already carried in a doc comment.
+Assert `escrow === Σ stacks` rather than `buyIn * n`, and make a premise real
+rather than assumed — a partner holding a seat is what keeps a room open, so the
+refusal under test becomes the only one available.
+
+**AND WHEN YOU BUILD A LOAD GENERATOR TO REPRODUCE ONE, READ ITS OWN LOG BEFORE
+BELIEVING THE TEST.** A stranger-seeding script died instantly on
+`Top-level await is currently not supported with the "cjs" output format`; the
+test then passed and looked like evidence that the fix worked. It was evidence of
+nothing. Two further calibration points: CI's contention is reproduced by CI's
+own invocation — `npm run test:server` is `--maxWorkers=2` and shares the pool
+exactly as the runner does — and driving it much harder than that stops being
+useful, because a five-seat pool saturates and `expected 409 to be 200` on a
+buy-in is a player correctly being told the table is full.
+
+**A HARNESS THAT GIVES UP ON A MID-HAND SEAT STRANDS EVERY LATER RUN.**
+`scripts/e2e-account.ts` cashed the account out of tables an earlier run
+abandoned, and left a seat refused `SESSION_BUSY` alone because "it will settle
+on its own". True with clocks, false for solo, career and the daily challenge,
+which carry none on purpose — so `RESOLVE_TIMEOUT` can never fire and the hand
+stays mid-play for ever, and every later flow is answered "You are already seated
+at a table". It plays the hand out through `game-command` now, standing and
+declining, which is what the absent-player default does anyway.
+
 **`create or replace function` silently reverts every LATER redefinition.** Five
 functions gained a rate limit this phase, which meant replacing their bodies —
 and two had already been redefined by a later migration than the one that
@@ -409,6 +523,947 @@ dozens), not the process exit status. Check `xcrun simctl list devices` for
 `Booted` before trusting a run, and count `COMPLETED` lines after, whatever the
 exit code says.
 
+**A Maestro step that COMPLETED did not necessarily DO anything.** Three
+`tapOn`s on the accessibility switches all reported COMPLETED and not one
+switch moved: `ToggleRow` was a plain `View`, so the label Maestro matched and
+tapped was not a control, and the tap landed on nothing. The comment above it
+claimed the opposite — "the whole row is the accessible control… comfortably
+clears 48dp" — which is how it survived. COMPLETED means Maestro found
+something matching the selector and sent a tap at it; assert the RESULT (a
+screenshot, a changed value), never the tap.
+
+**React Native imports are a wall between `src/design` and the test suite.**
+`typography.ts` calls `Platform.select` at module load, so anything importing
+it fails to parse under Node with `Flow is not supported` — pointing at
+`react-native/index.js`, not at your file. Four modules now exist purely to put
+plain constants on the testable side of that wall: `format-chips.ts`,
+`type-metrics.ts`, `type-scale.ts` and `motion-timing.ts`, each re-exported by
+its RN-importing neighbour so component call sites are unchanged. Follow the
+pattern rather than giving up on the test.
+
+**Scaling a type token can change the rendered STRING, not just its size.**
+"Larger table text" first mapped `overline` → `caption`; caption has no
+`textTransform`, so "DEALER" silently became "Dealer". Maestro matches rendered
+text case-sensitively, so every flow asserting an uppercase label would have
+begun failing for anyone with the setting on. `overlineLarge` exists for this,
+and `tests/design/type-scale.test.ts` fails any mapping that alters
+`textTransform`.
+
+**A fixed `height` on the tab bar overrides the safe-area inset.** `height: 64`
+squeezed the label against the home indicator and clipped the descender of
+"Play", which rendered as "Plav" at every text size — invisible at a glance and
+present in every screenshot the project has ever taken. Let React Navigation
+size the bar.
+
+**Some chrome cannot reflow, and should be capped rather than wrapped.** The
+action dock and the three-column table headers have fixed geometry: at the
+largest Dynamic Type size, uncapped labels truncated ("Sta…"), and simply
+allowing more lines split words instead ("Stan / d"). `MAX_FIXED_CONTROL_FONT_SCALE`
+bounds those; body copy is never capped, because it reflows. The value was
+measured against the longest label that ships, not picked.
+
+**Contrast is arithmetic — compute it, do not eyeball it.** `npm run
+contrast:check` measures every pairing the app renders. Two tokens were under
+AA by margins no one would see by looking: `cardRed` on `cardFace` at 4.18:1
+(needs 4.5) and `textDisabled` on `surfaceSoft` at 2.90:1 (needs 3.0). Both are
+now fixed and both directions are asserted, including the hairline borders that
+stay under 3:1 on purpose — so a green report cannot hide a boundary that
+clears the bar in neither state.
+
+**Quote a benchmark's RANGE.** The engine measures 752–808 µs per hand across
+five runs, but a single cold run on the same commit measured 1,242 µs. One
+number is not evidence of a regression; `uptime` matters here as much as it
+does for Maestro.
+
+**A control can be gated on a condition only the server can satisfy and only
+that control can trigger.** `BettingBar` disabled Deal unless
+`legal.canLockBet`, which asks whether the ENGINE already holds a bet. Practice
+satisfies it because `addChip` applies `PLACE_BET` locally on every tap; a
+server table never does, because the bet is not sent until Deal is pressed. So
+**no online table could take a wager in any mode**, and `lockBet` — written,
+unit-tested, correct — was wired to a button that could not be pressed. Nothing
+caught it: `tests/server/*` send commands directly, the store's `lockBet` is
+tested by CALLING it, and no E2E flow plays an online table. When practice and
+an online table share a component, check every predicate that reads engine
+state: the two stores fill it at different times.
+
+**Only the host could ever reach a private table.** `dealt`, the state the
+lobby navigates on, was set inside `startTable`, which only the host calls. A
+guest polled every three seconds, saw the room's `gameSessionId` appear, and
+sat there. If exactly one participant sets the state that opens a shared
+surface, everyone else is stranded — look for the second path, not just the
+first.
+
+**Test the CONTROL, not only the function behind it.** Three of the defects
+above survived because the thing that was tested was the function a disabled
+button would have called. A test that calls `lockBet` proves `lockBet` works;
+it proves nothing about whether anybody can invoke it. Extract the enablement
+predicate and assert that too — `src/features/table/betting-affordance.ts` is
+the shape to copy.
+
+**`every-screen.yaml` only passes against an UNCONFIGURED build.** It asserts
+`.*no server configured.*` in five places, and that copy appears only while
+`EXPO_PUBLIC_SUPABASE_URL` is unset. The repository ships with no `.env.local`,
+so the flow passes as checked out — but the moment you add one to do online
+work (a private table, sign-in, anything server-side) those five assertions
+fail, and it reads as a regression you just caused. It is not. Move
+`.env.local` aside before running the audit flow, or expect it. The deeper
+point is that the flow asserts what a screen SAYS in one configuration; a
+build with a server configured has never been walked by it.
+
+**`supabase/functions` typechecks with `npm run check:functions`, not with
+`tsc`.** The directory is excluded from `tsconfig.json` because its `.js`
+specifiers resolve only through a per-function `deno.json` import map, which tsc
+cannot be given — so `deno check --config <fn>/deno.json` per directory is the
+only thing that reads it. Its FIRST run found four defects, one of them live:
+eight `throw new CommandError("NOT_FOUND", …)` where `NOT_FOUND` is not in
+`COMMAND_REJECTION_CODES`, so both lookups keyed on it returned undefined and
+the wire carried **HTTP 200** with `"message":"undefined (ref …)"` — and
+`functions.invoke` reports 200 as SUCCESS, so the refusal never reached the
+client's refusal handling at all. Also found: `LedgerReason` missing two labels
+its own callers pass, and a seat appended to a live public table without
+`insuranceDecision`. Run it before believing anything in that directory.
+
+**PostgREST rejects a token whose `iat` is in the FUTURE by its own clock.**
+`PGRST303 "JWT issued at future"`. The host and the database container drift by
+a second or two under load, so a test signing `iat: Math.floor(Date.now()/1000)`
+is a coin flip — and it never looks like a clock problem. It looks like a wallet
+that reads as -1, a profile column that reads as null, or a career reward that
+was never paid. Every test signer backdates by 60 seconds now, the same
+allowance the function's own verifier makes. And the reason it took three
+failures to find: a helper that returned `-1` on an unreadable wallet turned a
+harness error into "expected 25200 to be 199". **A test helper that reads
+something must THROW when it cannot, never return a sentinel.**
+
+**`npm test` includes `tests/server/**`; CI splits them for a reason.** Running
+`npm test` and the server suite at the same time runs the integration tests
+TWICE against one Postgres, and they time out at 120 s — which reads as a
+product regression and is nothing but contention. Use `npm run test:unit`
+(exactly CI's `--exclude 'tests/server/**'`) when loading the machine on
+purpose, and `npm run test:server` for the other half.
+
+**A read through RLS is scoped to what the POLICY permits, not to "your own
+rows".** Two test helpers made this mistake in one session and both looked
+right. `profiles?select=xp` returns EVERY profile — it is a directory — so
+`rows[0].xp` was a stranger's, and an XP assertion failed against somebody
+else's zero. `game_session_seats?status=neq.left` returns every seat at a table
+you are seated at, because `game_session_seats_select_participant` correctly
+shows a player the other stacks — so a "how many seats do I hold" check reported
+two the moment a second account was matched into the same public room, which
+reads exactly like a wallet defect. Add `user_id=eq.<you>` and check the policy
+before assuming a filter is implied.
+
+**Reproduce a flake by making the machine look like the failing run.** A server
+test failed once in six runs. The tell was in the run BEFORE it: the unit suite
+had taken 178 s instead of its usual 50 s, so the host was loaded. Starting
+`npm test` in the background and running the server suite five seconds later
+reproduced it on the second attempt, with the offending rows printed — and it
+turned out to be the RLS-scoping bug above rather than timing at all. Load was
+the trigger, not the cause: it made a second account exist at the same table.
+
+**An `accessibilityLabel` on a `Pressable` silences everything INSIDE it, so a
+scrim must never wrap its sheet.** Both Practice sheets were a labelled
+`Pressable` scrim containing the sheet: the whole Analysis surface — four
+expected values, two probabilities, the ruleset caption — collapsed into the two
+words "Close analysis" in the tree, and the review collapsed into "Close review".
+Nothing looked wrong; the failure screenshot shows every number rendered
+correctly. Found only by asserting on the RESULT — a probe could not see "Bust if
+you hit" on a screenshot that plainly showed it. Make the dismiss target a
+SIBLING occupying the visible scrim above the sheet; an `absoluteFill` sibling
+fixes the tree but puts the hit area's centre under the sheet, so a
+coordinate-driven tap hits the sheet instead. This is the third instance (Home
+card, accessibility switches, these two sheets).
+
+**A degraded Maestro hierarchy has a signature: identifier-bearing nodes only.**
+Three consecutive runs had `tapOn` report COMPLETED and do nothing, with a dump
+of EIGHT nodes — the three carrying an `accessibilityIdentifier` plus the status
+bar — while the screenshot showed a full screen and the device log carried
+`XCTAS Error: Error getting main window Unknown kAXError value -25218`. The
+driver taps coordinates from a snapshot it could not read. Killing stale
+`maestro-driver-ios` processes fixes it for a plain launch but NOT after an
+in-session `stopApp`/`launchApp` — use a deep link there.
+
+**A source-scan gate written as `grep … $DIRS` in zsh scans NOTHING.** zsh does
+not word-split an unquoted parameter, so grep receives one nonexistent path,
+errors, and a trailing `|| echo NONE` prints reassurance. The phase 2 anti-fake
+sweep reported clean across nine directories this way before it had scanned a
+single file. Use an array (`DIRS=(a b c)` … `"${DIRS[@]}"`) and print the file
+count before the result.
+
+**A DEEP LINK is the reliable way to reach a screen from Maestro.**
+`arc21://table/lobby` lands directly; tapping through the tab bar cost several
+runs to selectors that "COMPLETED" while the app sat on the wrong tab. Note
+that iOS raises an "Open in Arc 21?" confirmation when the app is already
+foregrounded — handle it with a conditional `tapOn: "Open"`.
+
+**A UNIQUENESS PRE-CHECK IS ADVISORY, so the insert must be able to fail and
+recover.** `handle_new_user` asks whether a requested handle is taken and then
+inserts it, and `not exists (select …)` answers against COMMITTED rows. Two
+signups a millisecond apart both found it free; the second violated
+`profiles_username_key`, which aborted the trigger, aborted the `auth.users`
+insert that fired it, and answered the player **HTTP 500 with no account**.
+Twelve concurrent pairs, twelve 500s. Nothing had promised the handle — the very
+same function already falls back to a derived one when the name is taken — so
+the fix is to catch `unique_violation` on that ONE constraint and derive.
+Distinguish the constraint: a duplicate primary key there means the account
+already has a profile, which is a real fault. This is the third version of one
+bug (see `docs/DATABASE.md`); each looked different and each cost an account.
+
+**A FOREIGN KEY ANONYMISES A REFERENCE, NOT THE COPY BESIDE IT.**
+`game_session_seats.user_id` is `on delete set null` so a game other people
+played is not deleted under them — and `display_name` is a COPY of the profile's
+name taken when the seat opened, which no key touches. A deleted player stayed
+named, by name, on every table they had ever sat at, visible to every other
+participant, while both the migration and `docs/PRIVACY.md` said the row "no
+longer identifies you". When a column is denormalised for a good reason, it is
+outside every guarantee the key gives you.
+
+**A `no action` FOREIGN KEY TURNS A CASCADE INTO A REFUSAL somewhere that reads
+nothing like the constraint.** `matchmaking_queue.room_id` had no `on delete`
+clause. `rooms.host_user_id` cascades from `auth.users`, and whoever arrives
+first at a tier hosts the room `join_matchmaking` creates — so as soon as a
+second player was matched in, the first could not delete their account at all:
+`update or delete on table "rooms" violates foreign key constraint
+"matchmaking_queue_room_id_fkey"`, rendered by PostgREST as a 409 naming a
+constraint. Before trusting a `delete … cascade`, walk the FK graph one hop
+past the tables you were thinking about.
+
+**A GUARD THAT COUNTS ROWS MUST ASK WHAT THE ROW'S STATUS MEANS.** Account
+deletion refused while any seat of the player's sat in an ACTIVE session —
+including seats with status `left`, which are written only after
+`settleTableClosure` has returned the escrow. So leaving a busy public table and
+then deleting produced "leave your table before deleting your account", telling
+the player to do the thing they had just done, for as long as the other players
+kept the table running. `active` and `disconnected` are held seats; `left` is
+not.
+
+**A POLICY THE CLIENT ENFORCES AND THE SERVER DOES NOT IS A STATED POLICY, NOT
+AN ENFORCED ONE.** `credentials.ts` has always required eight characters and its
+own header says it is "deliberately client-side only… not a security control" —
+both true, and together they left `minimum_password_length = 6` accepting what
+the client refused. When a validator's comment says the server checks this too,
+go and look.
+
+**A TEST THAT NAMES THE TABLES IT CHECKS STOPS CHECKING.**
+`11_delete_account.test.sql` warned in its own comment that "a per-table
+assertion would silently miss a table added later without a cascade" — and then
+named six tables. Sixteen migrations later nothing was checking notifications,
+push tokens, daily entries, tournament entries, rooms or the queue.
+`23_account_lifecycle.test.sql` asks the CATALOGUE for every cascading reference
+to the account instead, so a table added tomorrow fails it with no edit.
+
+**A FILTER THAT NAMES ONE COLUMN OF A NORMALISED PAIR IS A COIN FLIP.**
+`create_friendship_on_accept` stores `(least(a, b), greatest(a, b))`, so which
+column holds a given player is decided by how two random uuids sort.
+`friendships?user_id_a=eq.X` matched about half the time — and in the half where
+it did not, the "a stranger cannot delete it" assertion passed because it named
+no row, not because a policy stopped it. Reproduced on purpose first: seven
+failures in eight runs. Use `or=(user_id_a.eq.X,user_id_b.eq.X)`.
+
+**A CONTROL THAT REFUSES MUST NAME SOMETHING THE PLAYER CAN DO.** Every online
+mode refuses a second buy-in while a seat is held — right, because one wallet
+must not fund two tables. But the game id reached the client exactly once, in
+the reply to the buy-in, and lived afterwards only in an `expo-router`
+parameter: kill the app mid-hand and Quick Play, Public Tables and Career all
+answered `409 SESSION_ALREADY_ACTIVE` **for ever**, with the buy-in stranded,
+while all three refusals advised the player to "leave that table first". Nothing
+marks a session abandoned, and a solo or career table carries no clocks on
+purpose, so `RESOLVE_TIMEOUT` cannot release the seat either. The data was
+readable the whole time — `game_session_seats` is selectable by its owner — and
+nothing asked. `public.my_active_session()` is the ask, and its predicate is
+`assertNoOtherLiveSeat`'s: the server suite asserts the two AGREE by provoking
+the refusal and checking the lookup names the same table, rather than by
+comparing two copies of a predicate.
+
+**AN IDEMPOTENCY KEY PROTECTS THE THING IT IS ON, AND NOTHING ELSE.** XP has no
+such key. `settleCareerReward`'s paying branch called `stampClaim` and discarded
+the answer, then granted XP unconditionally — safe only because locks in two
+OTHER files serialise the callers. The chips were never at risk: the ledger's
+unique key credits once. Anything alongside a keyed movement has to ride on the
+same marker.
+
+**A REPLAYED COMMAND'S PAYLOAD IS NOT BYTE-IDENTICAL.** It is served from
+`private.game_commands`, where the first result was stored as `jsonb` — and
+jsonb sorts keys by length then bytewise. Same value, different bytes. Assert
+the parsed body.
+
+**`LOCK_BET` CAN SETTLE THE HAND.** A natural, the player's or the dealer's,
+resolves inside the same cascade and lands on HAND_COMPLETE, so a test asserting
+PLAYER_TURNS after locking passes roughly fifteen times in sixteen and fails the
+rest — an intermittent that looks like a phase bug. Deal again rather than
+retrying the assertion; the dealer is fair, which is the whole point.
+
+**`supabase functions serve` ACCUMULATES, and `docker restart` KILLS IT.** Two
+server-suite failures in phase 3 were the local edge runtime, not the product:
+one file failed to COLLECT because the stack guard's 5 s probe landed inside a
+`CPU time soft limit reached` window, and `accepts exactly one of twenty
+simultaneous commands` timed out at 90 s. The failing runs had logged **45 CPU
+soft-limit and 16 hard-limit events**; a freshly restarted `functions serve`
+logged 21 and went green with the same commit. Restart it before a full
+`npm run test:server`, and check `uptime` first. Separately: running
+`docker restart supabase_edge_runtime_arc21` while `functions serve` is up kills
+that process — it prints `container exited gracefully` and the gateway then
+answers **503**, which reads exactly like a broken stack. Restart
+`functions serve` instead.
+
+**`tests/strategy/generated-table.test.ts` IS LOAD-GATED, like Maestro.** Its
+`beforeAll` re-solves the six-deck chart with a 180 s budget. Measured on this
+host: **29.9 s at load 5.8, 149.7 s at load 25** — reproduced by spinning one
+busy loop per core on purpose. Above roughly load 30 it crosses 180 s and the
+file fails with a hook timeout that reads like a solver regression. Check
+`uptime` before believing one, exactly as `CLAUDE.md` already says for Maestro
+and the benchmark.
+
+**A LONG-LIVED METRO CAN SERVE A STALE BUNDLE, AND THE SECOND `expo start` SAYS
+SO IN A LINE NOBODY READS.** A dev server that has been up for hours can stop
+picking up edits, and starting another one does not replace it — `npx expo start`
+finds 8081 taken, cannot ask "Use port 8082 instead?" in a non-interactive shell,
+and prints **`› Skipping dev server`** before exiting quietly. The app then keeps
+loading from the ORIGINAL bundler, so `launchApp` and Fast Refresh both look
+normal and neither carries your change. This cost three device runs and two
+wrong diagnoses in phase 6: fixes with passing unit regressions appeared to have
+no effect, and the intermittent results were the OLD code taking different
+branches. **Before believing any device evidence about a change you just made,
+confirm the bundler that is serving 8081 is one you started after the edit** —
+`lsof -ti:8081` and `ps -o lstart=` on the pid. Restart with `--clear` when in
+doubt. This is the "a step that COMPLETED did not necessarily do anything" rule
+one level up: a build that looks live and is not.
+
+**`Alert.alert` IS FIRE-AND-FORGET, SO A PROMISE WRAPPED AROUND ONE CAN NEVER
+SETTLE.** iOS presents at most one alert, and a second raised while the first is
+still dismissing is DROPPED — no error, no callback. A
+`new Promise(resolve => Alert.alert(…, [{ onPress: () => resolve(…) }]))` then
+has no button left to settle it, and every caller awaiting it hangs for the life
+of the screen. On the online table that combined with the note below into a
+frozen screen, and it is INTERMITTENT: two consecutive runs of the same commit
+gave different answers. A player reaches it by tapping a control twice when the
+first tap appears to do nothing — which is exactly what a refused mid-hand
+cash-out looks like. Make any confirmation single-flight.
+
+**A `beforeRemove` GUARD THAT CANCELS FIRST AND ASKS SECOND CAN CANCEL FOR EVER.**
+The online table's listener protects an open escrow, and it called
+`event.preventDefault()` without checking whether the seat still existed. After a
+settled cash-out there was nothing to protect — but EVERY route away from the
+table fires that listener, so every route away was cancelled: the screen sat on
+its own "You are no longer at this table" notice with the table gone, and
+`arc21://table/lobby` reported **COMPLETED** and changed nothing. Only killing
+the app got the player out. `mayLeaveTable` now takes `holdsSeat` and checks it
+first. The general form: **a guard that protects a resource must ask whether the
+resource is still there** — the same lesson as the account-deletion guard that
+counted seats without asking what a seat's status meant, from the other
+direction. And note how it presents: not as an error, but as a screen that
+ignores you.
+
+**WHEN ONE SCREEN HAS TWO WAYS OUT, A STEP PRESENT IN ONLY ONE OF THEM IS A STEP
+THAT IS MISSING.** The online table has a back-bar control and a `beforeRemove`
+listener (Android back, a stack-resetting deep link), and each carried its own
+copy of the leave sequence. One copy omitted the line that records the screen is
+leaving — so the back bar confirmed, cashed out, and navigated; the listener then
+fired with `alreadyLeaving: false`, cancelled the navigation and **asked a second
+time whether to leave a table already left**, quoting a stack the seat no longer
+held. An `Alert` is modal, so the app was then stuck behind it: a deep link to
+the lobby reported COMPLETED and landed underneath. Both paths now run
+`tableExitSequence()`, which returns the ordered steps so neither caller can drop
+one. Same shape as the three-tables note above — touch one path, check the other.
+
+**A REALTIME TOPIC IS PUBLIC UNTIL A CHANNEL DECLARES ITSELF PRIVATE, AND AN
+EMPTY POLICY SET IS NOT "DENY".** `realtime.messages` had RLS enabled and no
+policy for the whole life of the project, which reads as locked down and means
+the opposite: nothing was private, so Realtime never consulted the table.
+`game:<gameId>` was open in BOTH directions, and both were measured rather than
+reasoned about — a client holding nothing but the ANON KEY subscribed and
+received a live table's whole fan-out (every seat's display name, user id, stack
+and posted bet, going around `game_session_seats`' participant-only RLS), and a
+second account broadcast a forged `state` onto the topic that a seated player's
+client accepted and applied. The second is the worse one: `subscribe()` parses
+whatever arrives and hands it to `applyPushedState`, so that is a client-supplied
+game state rendered as authoritative, which invariant 6 exists to forbid by a
+route the verified-JWT check on a command never sees. The fix needs BOTH ends —
+`client.channel(topic, { config: { private: true } })` and `private: true` on the
+broadcast message — plus policies on `realtime.messages`. **Miss it on the server
+and the broadcast API still answers 202 while delivering to nobody**, so there is
+no failed request to notice. Write the read policy by building the expected topic
+string FROM the row (`realtime.topic() = 'game:' || s.game_session_id::text`)
+rather than parsing the topic: a `substring(...)::uuid` raises on a malformed
+topic and takes the subscription down with an error instead of a refusal.
+
+**A HAND-SIGNED JWT IS NOT A SESSION, AND ON REALTIME THE DIFFERENCE IS INVISIBLE
+UNTIL THE SECOND MESSAGE.** A client built by `createClient` with no session runs
+its own auth listener and sets the socket's token back to the anon key shortly
+after start-up — AFTER an explicit `realtime.setAuth()`. A private channel
+therefore JOINS as the user and is refused as `anon` when Realtime re-checks it in
+order to deliver, so the symptom is `SUBSCRIBED`, then exactly one message, then
+silence — never a subscribe error. This cost most of an afternoon of "the Edge
+Function's broadcast is never delivered", with four plausible and entirely
+irrelevant leads on the way (payload double-encoding, `SET LOCAL realtime.topic`,
+message size, replication-slot lag), each of which was a REAL difference that did
+not matter. What settled it was running the existing integration test, which
+holds a genuine `signInWithPassword` session and passed. `accessToken` alone does
+not fix it either — that is what the SDK uses for PostgREST and it never reaches
+the socket; a non-session test client needs BOTH `accessToken` and
+`realtime.setAuth`. This is the "mirror the real client's auth options" note
+above, one layer down.
+
+**`realtime.send()` CANNOT FAIL.** Its body wraps the insert in
+`EXCEPTION WHEN OTHERS THEN RAISE WARNING`, and `postgres-client.ts` sets
+`onnotice: () => {}` so a NOTICE cannot carry row values into a log. A broken
+call through it returns cleanly, logs nothing and delivers nothing.
+
+**A FIX PLACED BEHIND AN EARLY RETURN IS NOT A FIX, AND THE TEST THAT PROVES IT
+WILL HAVE HAD TO DISARM THE GUARD TO GET THERE.** `restore()` opened with
+`if (get().status.kind === "seated") return;` — "never over a room already in
+hand". It runs on MOUNT, where a `seated` reading is by definition carried over
+from a previous mount, because navigating to the table is what unmounted the
+lobby. So the one case it skipped was the only case that mattered: a player who
+left through the table screen, whose store still said `seated` because
+`CASH_OUT` never touches it. TWO fixes written specifically for that player sat
+below the return and never ran once. The tell was in the test file — the
+regression for the lower branch had to `setState({ status: { kind: "idle" } })`
+by hand before calling `restore()`. **When a test has to step around a guard to
+reach the code it covers, the guard is the bug.** Same family as the
+`beforeRemove` listener that cancelled before asking: a guard has to ask whether
+its premise is still true, not merely whether it was once.
+
+**AN ASYNCHRONOUS CHECK CANNOT DEFEND A SYNCHRONOUS EFFECT, AND CLEARING THE
+VALUE EARLIER DOES NOT HELP.** The lobby verifies `dealt` against the server on
+mount and navigates on it in another mount effect. Both are mount effects, so
+the navigation had already read the stale pointer and dispatched
+`router.replace` by the time the lookup resolved — a player who had cashed out
+was thrown straight back onto a table answering `SESSION_CLOSED`, whose only
+control returns to the lobby, which bounces again. Moving the `set` to the top
+of the async function changes nothing: effects in one commit run against the
+render that scheduled them, so a `set` from the effect above cannot change what
+the one below sees. **The fix is about ORDER: gate the action on "the answer has
+come back", in COMPONENT state.** Anything module-level arrives already true,
+carried over from the mount before, which is the very shape of the bug —
+`mayOpenDealtTable` in `src/features/rooms/lobby-affordance.ts`.
+
+**A FAILURE THAT REPRODUCES IN THE SAME PLACE IS NOT A FLAKE.**
+`two-client-leave` failed four times across two sessions and three of those were
+read as harness trouble — a tap racing the cash-out, a dropped view hierarchy, a
+loaded machine. Two of those were real and were fixed, which is what made the
+survivor so easy to keep mis-reading. Two runs seventeen minutes apart stopped
+at the SAME assertion with the same screenshot, and a timing failure does not
+stop in the same place twice. Compare the failure ARTEFACTS across runs before
+reaching for load. And when a fix does not take, **re-run with only that fix in
+place before adding a second** — that is what separated two defects here that
+looked like one, and it is the only way the first would not have been recorded
+as the fix for something it does not fix.
+
+**AN ACTION IN THE WIRE CONTRACT WITH NO CLIENT CALLER IS A FEATURE THAT DOES
+NOT EXIST, AND IT IS THE ONE SHAPE NOTHING IN THE BUILD NOTICES.**
+`RESET_PRIVATE_STACK` was in `shared/contracts/session-command.ts`, handled by
+`create-session` behind three correct guards, given its own `structured-log`
+status, and covered by a server test asserting its refusal — and no line of
+`src`, `app` or `scripts` had ever sent it. It is the specification's answer to
+a private player running out of chips ("permit a free reset to 5,000 between
+hands"), so a seat that could not cover the 20-chip minimum was sat out by
+`openBetting`, `getLegalActions` answered NO_ACTIONS, and the table screen fell
+through to **"Waiting for the next hand."** for the life of the table. No error,
+no disabled control, no empty state. `tsc` cannot see an action nobody
+dispatches and the server suite reaches the handler directly over HTTP.
+`tests/contracts/every-command-has-a-caller.test.ts` reads the action names out
+of the contract FILE and scans the client for each; its `SERVER_ONLY` allowlist
+exists and is empty, which says more than the test passing does. Two related
+notes: the client half of a mechanism like this is not only the request — the
+reset also had to clear `sittingOut`, because `openBetting` clears it at the
+START of a hand and a refilled seat would otherwise still be sat out of the
+window it was looking at, so a successful reset looked exactly like a failed
+one. And **the specification's own text IS in this repository**, extracted, at
+`.spec-extracted.txt` and `.spec-partB.txt` (gitignored); the phase 6 report
+states it is "not present … anywhere on this machine", which is how that line
+went unread.
+
+**THE CASCADE AFTER BETTING CLOSES STOPS IN THREE PLACES, NOT TWO.** CLAUDE.md
+already records that `LOCK_BET` CAN SETTLE THE HAND; the third destination is
+`INSURANCE_OFFER`, reached whenever the dealer's upcard is an ACE, because the
+cascade returns while any seat's insurance decision is `PENDING`. That is about
+one hand in thirteen, and it was the whole of the `reachPlayerTurns` failure
+phase 6 recorded as "unreproduced, not diagnosed": the helper handled
+PLAYER_TURNS and HAND_COMPLETE, sent `NEXT_HAND` at a table in INSURANCE_OFFER,
+and the server correctly answered WRONG_PHASE. Twenty runs of that file on a
+quiet host: 16 pass, 4 fail; twenty-five after the fix: all pass. The same
+assumption failed a second test in the same session
+(`expected 'INSURANCE_OFFER' to be 'PLAYER_TURNS'` after a betting deadline
+resolved). **Any test that closes betting and then asserts a phase must accept
+all three** — or answer the offer, which is what the absent-player default does
+anyway. And when a helper throws, make it NAME the state it was in: the first
+version of this one did not, which is why the failure was read as a flake.
+
+**A TEST HELPER THAT RETRIES A 5xx HIDES A DETERMINISTIC SERVER FAULT, AND
+`call-function.ts` DID FOR A WHOLE PHASE.** Replaying a lost reply byte for byte
+is right for the retired-worker case that file was written for — but
+`{"status":"rejected","code":"INTERNAL", …}` is OUR HANDLER answering: the reply
+was not lost, the command failed, and replaying it is a second go at something
+that just went wrong. The `CASH_OUT`/`JOIN_PUBLIC_TABLE` lock inversion answered
+exactly that envelope on three runs out of three and the race test **passed all
+three**, because by the time the body was replayed the other transaction had
+committed. The rule now matches the app: `online-table-gateway.ts` reads a
+parseable rejection — INTERNAL included — as `refused` and retries only an
+answer it could not read. A retired worker never reaches the handler, so it
+cannot produce that envelope and the intermittent is untouched.
+
+**LOCK ORDER IS A PROPERTY OF EVERY PATH, NOT OF THE TWO THAT COLLIDED.**
+`JOIN_PUBLIC_TABLE` took rooms → engine → wallet; `CASH_OUT` took engine →
+wallet → rooms, reaching `rooms` only inside `release_room_seat`. Harmless until
+a public table started taking players while running, at which point one player
+leaving as another sits down is ordinary and Postgres answers the loser
+`deadlock detected` — surfaced as HTTP 500 on an ordinary leave. Fix the ORDER,
+not the odds: `lockRoomForSession` first on every path that touches both. Then
+check the paths you did NOT change — `closeRoomForSession` and
+`releaseRoomSeat` are reachable from `game-command`'s `handle` only for `LEAVE`
+(`sessionEnded` is set inside `if (closing)`, and `closing` requires `LEAVE`),
+and from `closeCompetition`, which runs only for modes that have no room.
+`tests/contracts/room-lock-order.test.ts` holds that as an ALLOWLIST so a sixth
+function fails a test rather than a race.
+
+**AND `SPLIT` CAN SETTLE THE HAND TOO, WHICH MAKES THE STACK HOLD BOTH THE
+DEBIT AND THE CREDITS.** Arc Standard deals ONE card to each half of a split
+pair of aces and stands both, so a seat that splits aces while it is the last
+one with a hand to play runs the dealer and settles inside its own `SPLIT`
+command. `two-client-table` asserted the debit alone —
+`stack === stackBefore - wager` — and read `expected 10200 to be 9800` once in a
+`test:server` run whose other 221 tests passed, which looks exactly like a wager
+defect. Reproduced deliberately over a seeded shoe (`AS 10C AD 6H 9S 8S 10D`:
+dealer 16 draws to 26, both split hands win) rather than retried, and pinned in
+`tests/engine/split-settlement.test.ts`. Assert the ACCOUNTING — the debit plus
+whatever the hand returned — rather than the debit, which is both correct in
+each case and stronger than what it replaced.
+
+**A MECHANIC THE SPECIFICATION CALLS "INTENTIONAL" CAN BE ABSENT WITH EVERYTHING
+AROUND IT BUILT.** The Sprint Tournament had its exact configuration, its
+boundaries, its prizes, its button rotation and a twelve-hand server run — and
+betting was SIMULTANEOUS. "Betting is sequential. Earlier committed tournament
+bets become visible. This is intentional because bankroll-position strategy
+matters" was the one line nothing implemented: `activeSeatId` was null for the
+whole betting round, the LAST seat in button order could lock before the first
+(measured, 200 to both), and one seven-second clock covered all four players
+rather than "7 seconds/person". `docs/TEST_PLAN.md` even recorded the area as
+"still open: sequential betting asserted as VISIBLE", which reads as though the
+order were already there. `rules.sequentialBetting` is the flag — a posted table
+property beside the bet band, altering no strategy cell and so not bumping
+`rulesetId@version` — and `isBettingTurn` is the ONE definition, shared by
+`getLegalActions`, the reducer and `assertCommandIsLegal`. When a specification
+sentence says "this is intentional", check that the thing it is defending exists.
+
+**A SETTLEMENT-WINDOW TIMEOUT STARTS THE NEXT HAND, so anything that must happen
+BETWEEN hands cannot be keyed on `NEXT_HAND`.** `game-command` ran
+`resolveHandBoundary` only for that command, while the engine's
+`RESOLVE_TIMEOUT` at HAND_COMPLETE calls `advanceToNextHand`. Measured: hand two
+dealt with `scheduled_hands_played` still 0 — no elimination after hand six, no
+ceiling change at hand nine, no button rotation for that hand, and a tournament
+that could never reach twelve, finalise or pay a prize. It silently broke the
+Daily Challenge's twenty-hand stop and a Career node's stars too. Four players
+watching an eight-second clock is not an edge case; it is what a table looks
+like when somebody puts their phone down. `commandStartsNextHand` is the
+predicate, and **the deadline check is part of it**: `assertCommandIsLegal`
+returns early for `RESOLVE_TIMEOUT` because the engine owns that clock, and the
+boundary runs BEFORE the engine — so without it a boundary that ENDS a
+tournament would be reachable by any client willing to ask early.
+
+**A COMMITMENT THAT SOMEBODY ELSE'S COMMAND TURNS INTO A SEAT IS A SEAT.** A
+paid Sprint entry becomes a live seat when the FOURTH player registers — the
+holder sends nothing. So `REGISTER_SPRINT` refusing a seated player is only half
+of it: `assertNoOtherLiveSeat` must refuse a pending entry as well, or a player
+who registers and then opens a solo table is dealt a second seat by a stranger.
+Measured in the first direction: an account holding a live solo table registered,
+was seated, and `my_active_session()` then named only the tournament — stranding
+the solo buy-in at a game id the player could no longer discover, which is
+exactly the failure phase 7 recorded as "a live seat must be ADDRESSABLE". And a
+refusal must name something the player can do, which is why `WITHDRAW_SPRINT`
+and a thirty-minute server-side expiry exist: an entry whose field never fills is
+refundable through the ledger, per the specification's own error handling.
+
+**A STORE ACTION THAT RELOADS AFTER ITSELF WILL HAVE ITS OWN MESSAGE ERASED BY
+THE RELOAD.** `register` and `withdraw` both finish by calling `load()` — they
+must, because what the player now holds is the server's answer — and `load()`
+ended with `notice: null`. Every message either produced was written and wiped a
+few milliseconds later: the refund sentence, and "You were already entered. No
+second fee was taken." Nothing failed; the Maestro flow tapped the control, it
+COMPLETED, the entry went away and the money came back, and the sentence
+explaining it was never on screen. Set the notice AFTER the reload, and do not
+let a poll clear a message the player has not read. Found only by asserting the
+RESULT on a rendered screen — the fifth time in this project.
+
+**A SHARED PUBLIC TABLE IS NOT YOUR TEST'S TABLE.** One `npm run test:server` in
+four failed on "the active seat X is not one of ours" in
+`public-table.integration.test.ts`. Allocation is global, CI runs two files at
+once, and a public room keeps taking players while it has room — so a seat the
+suite never created is legitimately the one being waited on. Reproduced on
+purpose by seating a stranger into a casual table every 1.5 seconds during the
+run, rather than retried. A helper has to cope with somebody else being there:
+wait the stranger out through the product's own timeout, which a snapshot request
+already sends. Same lesson as `public-seat.ts` one layer up, and as the RLS-scoped
+reads one layer down.
+
+**A DETERMINISTIC SOURCE THAT IS ONLY USED ONCE IS DETERMINISTIC ONLY ONCE.** The
+Daily Challenge's shoe came from the challenge's secret seed at `createShoe` and
+from `serverRandom()` — the CSPRNG — at every command after it, because
+`game-command` passed one source for everything. Randomness reaches the engine at
+exactly two points, and the second is `reshuffle` inside `openBetting`: so an
+attempt that crossed the cut card would have been dealt a shoe nobody else was
+dealt, with **nothing failing anywhere**. Both attempts still play their twenty
+hands; they simply stop being the same challenge. Latent rather than live at the
+shipped twenty (measured over 400 attempts of the most card-hungry legal play:
+worst index 160 of a 234-card cut, zero reshuffles) — and `hand_count` is the
+challenge ROW's, capped only at 100, and at forty hands 385 of 400 reshuffled.
+`dailyShoeSource(seed, shuffleNumber)` keys the stream on the shuffle so shuffle
+two is reproducible AND different from shuffle one, and the source is chosen from
+the SESSION ROW's mode. **When a guarantee holds only because of a number nobody
+is checking, it is not a guarantee.**
+
+**AN ATTEMPT ENDS IN TWO WAYS, AND ONLY ONE WAS CHECKED.** `dailyBoundary` asked
+whether the hand count had been reached and nothing else. A challenge stack can be
+exhausted long before hand twenty — 5,000 chips against a 1,000 ceiling is five
+losing hands — and below the table minimum `getLegalActions` answers with no
+actions, no bounds and no `canStartNextHand`. A Daily Challenge carries NO CLOCKS
+on purpose, so nothing can move a table left there. Measured: `NEXT_HAND` dealt
+hand 2 into BETTING_OPEN with nothing to press, the entry stuck `in_progress` at
+`final_chips = 5000` (a lie), and because `startDailyChallenge` RESUMES an
+in-progress attempt, that account's one ranked run for the day was permanently
+unfinishable. `careerBoundary` has had the branch since career sessions shipped.
+The lesson generalises: when a mode has a stop condition, ask what ELSE stops it.
+
+**A NEW SEAT IS A NEW SEAT IN EVERY MODE.** `START_DAILY_CHALLENGE` did not call
+`assertNoOtherLiveSeat`, and `open`, `joinPublicTable`, `startCareerNode` and
+`registerSprint` all do. Measured: an account holding a solo table with 5,000 in
+escrow was given a SECOND active seat, and `my_active_session()` orders by start
+time — so it named only the challenge and the solo buy-in became unaddressable
+from every screen. Exactly the failure that function exists to close and exactly
+the one phase 8 closed for a Sprint entry, reached through the one mode neither
+had checked. Put the guard BELOW the resume branch: returning to an attempt
+already in progress takes no new seat.
+
+**THE HALF OF A MECHANISM THAT NOBODY CALLS IS THE HALF THAT IS MISSING, AND A
+COLUMN CAN BE THAT HALF.** `daily_challenges.revealed_seed` had a trigger
+refusing an early or mismatched reveal, a place in the client projection, a Zod
+field, a parser and a render branch — and no line in `supabase/functions`, `src`
+or `app` had ever WRITTEN it. So the seed was never published, the render branch
+was dead, and `describeVerification` told the player the hash "can be checked"
+when it could not be, by anybody. `tests/contracts/every-command-has-a-caller.test.ts`
+catches this shape for wire actions; nothing catches it for a column. The fix is
+the same as everywhere else: a producer (`reveal_closed_daily_seeds`, called on
+demand from `ensure_todays_daily_challenge` rather than from a scheduler that can
+fail to run) and a consumer that proves it — the DEVICE recomputes SHA-256 with
+`expo-crypto`, because a server that also answered "yes, it matches" would be
+asking to be believed twice.
+
+**A LEADERBOARD PAGES ON `row_number()`, NEVER ON `rank`.** `rank()` is what a
+player reads — equal XP is equal placing — and it is not a total order, so
+`order by rank offset 25 limit 25` over a tie can put one row on two pages and
+another on none. Compute both over the IDENTICAL window (every window here ends
+in `user_id`) and page on the row number; only the rank is returned. Also:
+`create or replace function f(a int default 100, b int default 0)` does NOT
+replace `f(a int default 100)` — it creates a second function, and `f(100)` then
+fails with "function is not unique". Drop the old arity.
+
+**`deny_client_write` IS THE SECOND LOCK, AND FIVE TABLES WERE RELYING ON THE
+FIRST ALONE.** The first lock is the absence of a client grant, and sixteen
+migrations have added one by accident. `player_daily_xp` — the weekly XP
+leaderboard's entire input — had no trigger: granting `insert` to `authenticated`
+made PostgREST answer **HTTP 201 with `repeatable_xp: 999999`** on the caller's
+own row. `wallet_ledger`, `rooms`, `room_members` and `matchmaking_queue` were
+the same shape. Four of the five were found by asking the CATALOGUE which tables
+lack the trigger rather than by remembering, which is the move
+`23_account_lifecycle.test.sql` already makes about cascades, and
+`20_authorization_surface.test.sql` now asks it on every run.
+
+**AN RLS SWEEP THAT FILTERS BY THE OWNER'S ID PASSES ON AN EMPTY TABLE, AND ONE
+OF THEM DID FOR ITS WHOLE LIFE.** `rls-idor.integration.test.ts` classified
+`tournament_entries` as OWNED — "a stranger must see NONE of it" — and its
+fixture never registered for a tournament, so the assertion was
+`readAs(stranger, "tournament_entries?user_id=eq.<owner>")` against zero rows.
+The policy's third clause was `exists (select 1 from profiles p where p.id =
+user_id)` — written deliberately, to delegate visibility to the profile policies
+so the rule lives in one place — and `profiles.privacy` DEFAULTS to `public`, so
+for an ordinary account it is simply TRUE. Measured: a second account created
+seconds earlier read **152 rows** carrying `user_id`, live `chips`, `placement`
+and `prize_chips`, while `sprint_standings` refused a non-participant the same
+numbers with a 42501. The file's own header warns that "a sweep over empty
+tables passes having proved nothing" and it had one inside it. **The fix that
+generalises is in the test, not the policy: read each owned table with NO FILTER
+and assert RELATIONALLY that every row returned belongs to the caller.** That
+needs no fixture — a stranger legitimately owns their own wallet row, so "zero
+rows" is the wrong assertion — and on a shared local database it is being asked
+against hundreds of other accounts' rows.
+
+**`service_role` IS A ROOT CREDENTIAL, WHICH IS A REASON TO TAKE ITS LAST VERB
+AWAY RATHER THAN TO LEAVE IT.** `20260813120000_foundation.sql` revokes default
+table and sequence privileges from `service_role` in `public` and explains why —
+the server reaches this schema as `postgres`, over the Edge Functions' direct
+`SUPABASE_DB_URL` connection, or through a `SECURITY DEFINER` function owned by
+`postgres`. It never said the same about FUNCTIONS, and one grant survived:
+`apply_wallet_delta`. Measured, one POST to `/rest/v1/rpc/apply_wallet_delta`
+carrying nothing but the key answered **HTTP 200** and moved a wallet from 24,450
+to 1,024,450. Stated as "no function at all" in the gate rather than as an
+allowlist, because the correct number is zero and an allowlist is a place for the
+number to grow. Related: a policy written with no `to` clause applies to
+`PUBLIC`, which includes `anon` — five did, all harmless because `anon` holds no
+grant on those tables, which is the FIRST lock, and sixteen migrations have
+broken the first lock by accident.
+
+**A REFUSED REQUEST BODY MUST BE DRAINED, NOT CANCELLED, AND FIXING THE MEMORY
+FIRST BROKE THE ANSWER.** `readJsonBody` used `await request.arrayBuffer()`, so a
+32 MB body was held in full and then rejected — correct answer, 2.5 s, and an
+allocation a runtime that retires workers on a memory limit should never be
+offered. Reading in chunks and CANCELLING at the cap fixed that and turned the
+same request into a 60-second stall and an **HTTP 504**, because the gateway in
+front buffers the request and cannot deliver a reply into a connection whose
+upstream stopped reading. The version that works counts every byte, retains
+nothing past `MAX_BODY_BYTES`, and reads to the end anyway: same request, HTTP
+400 in 0.7 s. Both numbers were measured, and the middle one is a regression I
+introduced and then had to remove — a unit test over a `Request` object would
+have called it a success.
+
+**A CONFIG PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING.** `expo-audio`
+defaults `recordAudioAndroid` and `enableBackgroundPlayback` to true, so a
+blackjack game that never records asked for the **microphone** on both platforms
+(`NSMicrophoneUsageDescription`, `RECORD_AUDIO`) and declared iOS
+`UIBackgroundModes: [audio]` plus two Android foreground-service permissions —
+while its own `configureAudioSession` sets `shouldPlayInBackground: false`.
+`npx expo config --type public` shows what ships and is where this was found;
+`--type introspect` shows what a prebuild WOULD write and merges over the
+existing `ios/` project, so a stale `Info.plist` key survives a corrected
+`app.json` until it is deleted from the plist itself.
+
+**A STATED CONTROL MUST NOT CLAIM MORE THAN THE COLUMN ENFORCES.** Settings' privacy
+note said it controls "who can see your profile and standings". Measured: a
+`private` profile IS hidden from a direct `profiles` read and its statistics ARE
+nulled by `player_public_profile` — and it is still on `leaderboard_weekly_xp`
+under its display name, and still findable by `search_players`. Both are the
+specification working (a global board of "avatar, display name, value"; "search
+exact or partial username", without which nobody can be sent a friend request),
+so the SENTENCE gave way rather than the boards. "Standings" was the word doing
+the damage. Same family as the `credentials.ts` note about a client-side-only
+password rule: when a control's copy describes a scope, go and measure the scope.
+
+**A TEST THAT ASSERTS A FAILURE MESSAGE ASSERTS THE FORMATTER.** The lost-reply
+regression first checked that the reported message named 18 and 20, and passed
+three times before failing on the fourth: Vitest renders `[ …(18) ]` when the
+leading array elements differ and `[ 'd5-4H,…', …(17) ]` when they agree, so the
+numbers in the sentence depend on the shoe. Assert the lengths, which are stable,
+and record the rendering in a comment.
+
+**FIXING A CEILING CAN REMOVE ONE NOBODY KNEW WAS THERE.** `JOIN_PUBLIC_TABLE`
+appended every arrival to the engine's seat list and removed nothing — harmless
+only because the `max(seat_index) + 1` defect answered the EIGHTH arrival HTTP
+500 first. With that fixed, ten ordinary arrivals and departures at a five-seat
+casual table left **twelve seats** in the state persisted under lock on every
+command, the snapshot grew from 2,040 to 6,442 bytes, and each departed player
+was drawn on every remaining player's screen with their name, a zero stack and
+"Disconnected — their clock keeps running." A newcomer takes a VACATED SLOT now,
+exactly as they take the seat INDEX a departure freed. `isVacatedSeat` is the
+predicate and it needs all five conditions: no chips, no wager, no insurance, no
+hand, AND `connected: false` — a player who leaves MID-HAND is disconnected while
+their committed hand is still resolving, and a tournament seat eliminated with
+chips on it is a record rather than a free slot. **When you remove the thing that
+was refusing, ask what it was accidentally bounding.**
+
+**A DEPARTURE MUST END THE RESERVATION THAT PRODUCED THE SEAT.**
+`release_room_seat` set `room_members` to `left` and left `matchmaking_queue`
+reading `matched` at the room just left; `join_matchmaking` returns a live entry
+rather than enrolling again — correctly, because that is how a reconnect finds
+the room it was already given. So a player who left a public table and searched
+again was shown "Seat found" for a table they were no longer a member of, and the
+buy-in came back **HTTP 403 NOT_A_PARTICIPANT** with the "Take the seat" control
+still on screen, over and over, until `expire_stale_queue_entries` retired the
+reservation TWO MINUTES later. Closed at both ends, because they answer different
+questions: where the reservation is spent, and where it is read back.
+
+**`findSeat` ANSWERS WITH THE LATEST SEAT WHATEVER ITS STATUS, SO EVERY CALLER
+MUST SAY WHETHER IT WANTS A LIVE ONE.** That is deliberate — the command that
+closes a table also ends the seat and has to find its own idempotency record on a
+retry — and `joinPublicTable` did not say, so a returning player was handed their
+departed row: `status = 'left'`, stack 0, HTTP 200, and their next command
+refused `SESSION_CLOSED` on a table screen with nothing on it. The buy-in key had
+to move with the fix: keyed `public_buy_in:<game>:<userId>`, the second visit
+found the FIRST visit's ledger row and skipped the debit, which is a funded seat
+nobody paid for. It is `<game>:<seatId>` now — the same shape as
+`cashOutKey(gameId, seatId)`, and a retry still lands on the same live seat and
+therefore the same key.
+
+**`npm audit` IS ONE ROUTE TO THE ADVISORY DATA, NOT THE DATA.** Its
+`POST /-/npm/v1/security/advisories/bulk` endpoint can hang up while
+`registry.npmjs.org` itself answers 200 for package metadata — reproducibly, on
+this machine — and Dependabot alerts are disabled for this repository. The
+**GitHub Global Advisory Database** holds the same GHSA records, is reachable
+through `gh api /advisories?ecosystem=npm&affects=<name>@<version>`, and its
+`affects` filter accepts a comma-separated batch, so all 926 `name@version` pairs
+in `package-lock.json` can be asked about in a couple of minutes. Doing that found
+**four advisories nobody had looked at**, two of them high, on top of the one the
+phase-10 note is about.
+
+**AND A SOURCE MAP ANSWERS "IS IT IN THE APP" — THE DEPENDENCY TREE DOES NOT.**
+`image-size`, `@xmldom/xmldom` and `uuid@7` are all in the production dependency
+tree and none of them is in the bundle: they belong to `metro` (the bundler) and
+`@expo/config-plugins` (which runs at `expo prebuild`). `npx expo export
+--source-maps external` writes a `.map` whose `sources` array is every module
+Metro actually included — 2,641 of them — so reachability becomes a lookup rather
+than an argument. Grepping the Hermes `.hbc` for strings does NOT substitute: the
+attempt here found "heif" in a bundle containing no `image-size` at all. Keep a
+positive control in the check — `decode-uri-component` and `query-string` DO ship
+(bundled and dead), and a sweep that returns zero hits for everything has proved
+nothing.
+
+**A GATE THAT RESOLVES `@latest` AT RUN TIME CAN TURN A GREEN COMMIT RED WITH NO
+REPOSITORY CHANGE.** CI runs `npx expo-doctor@latest`, which fetches both the
+tool and the SDK's expected package versions when it runs. A commit that changed
+two `.sql` files failed it 20/21 on `expo ~57.0.20 found 57.0.19` — and the run
+two hours earlier, on the same `package.json`, had passed 21/21. The three
+patches had been published upstream in between (07:46, 07:47 and 08:05 UTC, all
+readable from `npm view <pkg> time`). Check the PUBLISH TIMES before reading such
+a failure as something you did. The fix is `npx expo install --fix`, which
+installs the versions the SDK itself expects — patch-level, inside the `~` ranges
+`package.json` already declares, and not a force upgrade; the tool's other
+suggestion, `expo.install.exclude`, makes the check green by making it blind. And
+re-measure whatever a dependency change could invalidate rather than assuming:
+here that was the advisory sweep over the lockfile (identical) and Metro's source
+map for the shipped bundle (2,641 modules, identical), both of which this
+phase's report leans on.
+
+**AN ADVISORY LOCK EXCLUDES THE CALLERS THAT TAKE IT, AND NOTHING ELSE.**
+`poll_matchmaking` serialises allocation on
+`pg_advisory_xact_lock(hashtext('matchmaking:' || tier))` and took no lock on the
+room it handed out. `release_room_seat` takes the room ROW `for update` and
+closes a room it counts no `joined` member in. Two different locks, so neither
+excluded the other: a poller read a room the leaver had already emptied, inserted
+a membership and committed, and the leaver then closed it — leaving a live
+`joined` member of a CLOSED room with a `matched` queue entry naming it. Every
+buy-in is then `409 SESSION_CLOSED`, the same entry is handed back each time, and
+it lasts the two minutes `expire_stale_queue_entries` takes. Reachable only
+because a public table now KEEPS TAKING PLAYERS while it runs, which is the same
+change that made the `JOIN_PUBLIC_TABLE`/`CASH_OUT` deadlock reachable — one
+player leaving as another sits down stopped being an edge case and nobody
+re-asked what else assumed it was. **Confirm the row you are about to hand out
+while holding ITS lock, not merely while holding a lock.** And note how it was
+found: on a commit that changed TWO MARKDOWN FILES, for the third time in this
+project's life — `six matched public rooms and none could be sat at` is not a
+shared-table coincidence, because six refusals in a row is one room handed back
+six times.
+
+**A TAP GUARDED BY `when` IS TWO READS OF THE SCREEN, NOT ONE.** A
+`repeat` around `runFlow when: visible X → tapOn X` looks self-limiting: the tap
+that lands navigates away, so later iterations skip. They skip only if the `when`
+is evaluated AFTER the transition. `practice-hand.yaml` failed on a Release build
+at load 5.6 with `Element not found: home-practice` and a failure screenshot
+showing the Practice table already open — the `when` saw Home, the tap found
+nothing. `optional: true` on the tap is the fix, and it weakens nothing, because
+what the block proves is the assertion that follows it. The two-client flows
+already carried it; four others did not.
+
+**A GENERATED TYPE FILE THAT `exclude` REMOVES FROM THE PROGRAM IS A GATE THAT
+CHECKS NOTHING, AND `experiments.typedRoutes` WAS ONE FOR THE LIFE OF THIS
+PROJECT.** `app.json` sets it, expo writes `.expo/types/router.d.ts`, and that
+file's module augmentation is the ONLY thing that makes `router.push("/nowhere")`
+a type error. `tsconfig.json` listed it under `include` AND listed `.expo` under
+`exclude` — and `exclude` filters `include`. Three Quick Play controls therefore
+shipped pointing at `/game` (the route is `/game/practice`) and `/auth/sign-up`
+(it is `/(auth)/create-account`), and one of them is the specification's own
+recovery path for a player who cannot afford their tier, so an empty balance
+ended on expo-router's unmatched-route screen. Restoring the include fixes it
+locally and NOT in CI, because the file is generated and gitignored — a checkout
+without it typechecks clean with no route checking at all, which is the "a
+coverage threshold that matches no files reads as enforcement" shape again. The
+gate is `tests/contracts/every-route-target-exists.test.ts`, which reads the
+route tree off disk and the targets out of the source and needs nothing
+generated.
+
+**AND WITHOUT `app/+not-found.tsx`, EVERY BAD `arc21://` LINK IS A DEAD END.**
+expo-router falls back to its own `Unmatched` page — light-themed, developer
+copy, and its one control is `<Link href={pathname} replace>`, which navigates to
+the SAME unmatched path. A cold start from a deep link has nothing behind it
+either, so a stale invitation left the player with no way into the app at all.
+Any process on the device can open an `arc21://` URL; this is a screen the
+product owes people, not a developer convenience.
+
+**`connected: false` MEANS DEPARTED, AND ONLY ONE OF THE THREE WAYS LEAVES A
+CLOCK RUNNING.** The table screen rendered "Disconnected — their clock keeps
+running." for every seat with `connected` false, and "Yet to bet" beside it —
+both untrue of somebody who cashed out, and this engine has no transient
+disconnection at all (the reducer says so: "`connected` is only ever cleared by
+LEAVE, by a table closure or by a tournament elimination, and nothing sets it
+back"). Photographed at a two-seat private table after the host left: `0 · Yet
+to bet · Disconnected — their clock keeps running.`, for the life of the table.
+`isVacatedSeat` does not help — it exists so a NEWCOMER can reuse a slot at a
+public table, and nobody new ever joins a private room. The one true case is a
+player who leaves MID-HAND, whose committed hand is still resolving.
+`src/features/table/seat-presence.ts` tells them apart, and renders `sittingOut`
+as well, which was never shown at all.
+
+**A CONFIG PLUGIN'S DEFAULTS ARE PERMISSIONS YOU ARE SHIPPING — SECOND
+INSTANCE.** After `expo-audio`'s microphone came `expo-secure-store`'s
+`NSFaceIDUsageDescription`, written by default although the app never passes
+`requireAuthentication`, and React Native's `SYSTEM_ALERT_WINDOW` in the Android
+MAIN manifest, which is for the dev overlay. `faceIDPermission: false` and
+`android.blockedPermissions` remove them. Check the BUILT `Info.plist` and the
+generated `AndroidManifest.xml`, never `app.json`.
+
+**EXPO'S PRIVACY MANIFEST TEMPLATE DECLARES THAT THE APP COLLECTS NOTHING, AND
+THAT IS A CLAIM.** `NSPrivacyCollectedDataTypes` ships as an empty array while
+Arc 21 collects an email address, a user id, gameplay records, profile content
+and a push token. `ios.privacyManifests` in `app.json` declares them; the plugin
+MERGES with the file on disk, so the required-reason API entries survive. The
+App Store Connect questionnaire is the authoritative declaration and must agree
+with it.
+
+**`ios.supportsTablet` IS A PROMISE ABOUT A LAYOUT, AND iPadOS 26 MADE IT A
+BIGGER ONE.** `UIRequiresFullScreen` is now IGNORED and an iPad app is expected
+to support every orientation and dynamic resizing, so an iPad-native declaration
+can no longer be narrowed with a plist key. Arc 21's design target is phone
+portrait, no tablet layout exists, and Apple additionally requires a 13-inch iPad
+screenshot set from any app that declares iPad support. Measured on a 13-inch
+iPad Pro first — portrait renders correctly, landscape has never been looked at —
+and then set to `false`. The app still runs on iPad, in the one layout that has
+been designed and tested.
+
+**A HELPER THAT DRIVES A HAND MUST ANSWER `INSURANCE_OFFER` FOR SOMEBODY ELSE'S
+SEAT — FOURTH INSTANCE.** After `reachPlayerTurns`, `dealAHand` and
+`standToSettlement` came `scripts/e2e-account.ts`, whose whole purpose is to stop
+an abandoned table stranding the account. It answered the phase with
+`DECLINE_INSURANCE` from its own seat, which is correctly REFUSED when that seat
+has already decided and an absent player's PENDING decision is what is holding
+the table — the normal state of a tournament with three empty chairs. It threw,
+the account stayed seated, and the next flow was told "You are already seated at
+a table", which is the product working and reads as a matchmaking regression.
+Only `RESOLVE_TIMEOUT`, and waiting for the deadline, moves that table.
+
+**A FLOW THAT REACHES THE AUTH SCREEN BY DEEP LINK NEVER COMPLETES ONBOARDING.**
+`onboarding:completion` is written by the onboarding BUTTONS, and `app/index.tsx`
+reads it on every launch — so `mc-sign-in.yaml`, which deep-linked to
+`arc21://sign-in` "because onboarding is not shown to an app that has been used
+before", signed in and left the flag absent on any device
+`scripts/e2e-fresh-app.ts` had reset. Every later flow beginning `launchApp` +
+`assertVisible: header-chips` then photographed the carousel.
+`two-client-public-leave` failed exactly that way, and the device's own SQLite
+store settled it: `auth:guest:v1`, `practice:session`, `practice:stats` and no
+onboarding record, while the other simulator had all four. **The app is right to
+re-show it** — the flag records that the 18+ disclosure has been SEEN, and
+somebody who arrived by deep link has not seen it.
+
+**`npm audit` WORKS ON THIS MACHINE AGAIN.** Phases 10 and 11 both recorded that
+its bulk advisory endpoint hung up reproducibly and that the GitHub Global
+Advisory Database was the only route to the data. That is no longer true, and the
+two now agree exactly — five distinct advisories, four of them in packages the
+shipped bundle does not contain. Re-measure an environmental claim rather than
+inheriting it; this one had been true twice and was written down as if permanent.
+
+**A REFUSAL RETURNED BEFORE THE REQUEST BODY IS READ CAN BE LOST, AND IT LOOKS
+LIKE A FLAKY SUITE.** All three functions refuse an unidentified caller before
+`readJsonBody` — the right order — and edge runtime v1.74.3 can drop a reply
+returned while it is still writing the request body into the function: it logs
+`error in user worker connection: user body write aborted` and the caller waits
+for ever. In CI that was `rejects a request with no token` timing out at 30 s and
+the stack guard's 5 s probe failing, a few runs in ten, on code from BEFORE Astra
+Refresh A as well as after it — settled by a controlled experiment on the
+checkpoint's parent, not by reruns. Locally, 147 of 200 unauthenticated 64 KB
+requests were lost against 0 of 200 when the same function drained first.
+`withUnreadBodyDrained` wraps every `Deno.serve` handler and drains through the
+capped reader after the handler answers, so nothing about which reply is sent
+changes. **The CI job log never showed any of this**: `functions serve &` is
+captured only for its own step, so the runtime's own line was invisible until a
+diagnostic step printed `docker logs supabase_edge_runtime_arc21`. Read the
+runtime log before calling a hang load.
+
 ---
 
 ## Product rules that are easy to get wrong
@@ -437,12 +1492,32 @@ exit code says.
   the 500 entry fee out, and a prize or the daily reward back in — each through
   `apply_wallet_delta` under a key derived from the tournament/challenge and the
   player, never from a client request id.
+- **A Sprint entry is refundable until the cards are out, and only until then.**
+  A player whose three companions never arrive can take the 500 chips back
+  (`WITHDRAW_SPRINT`), and a `registering` tournament older than thirty minutes
+  is cancelled and refunded by the server — the specification's "if a committed
+  tournament is cancelled server-side, refund through ledger". Once the field
+  fills the withdrawal is refused `SESSION_BUSY`, because nobody buys out of a
+  tournament they are losing.
+- **Tournament betting is SEQUENTIAL and every bet is visible.** One seat at a
+  time in button order, seven seconds each, and the seats that have not bet yet
+  can see what the seats before them committed. It is the only table in Arc 21
+  that works this way; `rules.sequentialBetting` is false everywhere else.
 - **A full sprint is a net SOURCE of 1,500 chips** (2,000 of fees in, 3,500 of
   prizes out), straight from the specification's figures. Deliberate: chips have
   no value and the opening grant is already 25,000.
 - One ranked daily attempt per UTC date. A replay is playable and writes **no
   entry row at all**, which is how an unranked run cannot overwrite a ranked
   score — enforced by never writing rather than by comparing.
+- **A daily attempt ends at the hand count OR when its stack cannot cover the
+  table minimum**, whichever comes first, and `attemptCompletion` is the single
+  definition. The mode carries no clocks, so an attempt left below the minimum
+  can never be moved by anybody.
+- **The seed of a CLOSED challenge is published**, by
+  `reveal_closed_daily_seeds()` running from `ensure_todays_daily_challenge` —
+  on demand, not on a schedule. `latest_verifiable_daily_challenge()` returns the
+  seed and the commitment and no verdict; the device recomputes SHA-256 itself.
+  Today's seed is never among them.
 - Timeouts are predictable and stated: stand, decline insurance. Never silently
   play basic strategy for an absent player.
 - Empty states say **why** a surface is empty and never render sample data.

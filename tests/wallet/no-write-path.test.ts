@@ -4,7 +4,9 @@
  * The database already guarantees this four ways: `authenticated` holds `SELECT`
  * and nothing else on `wallets` and `wallet_ledger`, neither table has an
  * INSERT/UPDATE/DELETE policy, a guard trigger refuses client writes underneath,
- * and `apply_wallet_delta` is executable by `service_role` only.
+ * and `apply_wallet_delta` is executable by NO API role at all — phase 10 took
+ * the last grant, `service_role`, away after measuring the key mint a million
+ * chips through `/rest/v1/rpc/` in one request.
  *
  * So why test the client at all? Because those are the controls that stop an
  * attack, and this is the control that stops an *accident*. The realistic
@@ -24,9 +26,22 @@ import { describe, expect, it } from "vitest";
 
 const ROOT = new URL("../../", import.meta.url).pathname;
 
+/*
+ * `src/features/settings` was NOT in this list, and that was a hole.
+ *
+ * `profile-privacy.ts` has written `profiles.privacy` since phase 3 and this
+ * scan never saw it, because the write lives in a fourth directory. Same shape
+ * as the pgTAP lesson in CLAUDE.md — "a test that names the tables it checks
+ * stops checking" — one layer up: a scan that names its directories stops
+ * scanning as soon as code moves.
+ *
+ * Adding it here is what makes the allowlist below meaningful rather than
+ * decorative: both client writes to `profiles` are now inside the scan.
+ */
 const SCANNED = [
   "src/features/wallet",
   "src/features/auth",
+  "src/features/settings",
   "src/lib/supabase",
 ];
 
@@ -66,12 +81,49 @@ const FILES = SCANNED.flatMap(sourceFiles);
  */
 const ALLOWED_RPCS = ["claim_recovery_grant", "delete_own_account"];
 
+/**
+ * The only table a client may write, and the only verb it may use.
+ *
+ * `profiles` is a player's own identity row and nothing on it is economic.
+ * Every rule about what may go in it is enforced server-side by triggers,
+ * a unique key, two rate-limit policies and a column-level grant — see
+ * `tests/server/profile-rename.integration.test.ts`, which drives each of them
+ * over HTTP.
+ *
+ * `wallets` and `wallet_ledger` are absent, permanently, and asserted again
+ * below under every spelling.
+ */
+const ALLOWED_TABLE_WRITES: Record<string, string[]> = {
+  profiles: ["update"],
+};
+
+/**
+ * Exactly `grant update (…) on public.profiles to authenticated`.
+ *
+ * Kept in step by hand rather than read from the migration, and that is a
+ * deliberate trade: a copy that drifts is caught by the integration test, which
+ * makes the real request against the real grant. What this list adds is a
+ * failure at the moment somebody writes a NEW column here, rather than at the
+ * moment somebody runs the server suite.
+ */
+const CLIENT_WRITABLE_PROFILE_COLUMNS = [
+  "username",
+  "display_name",
+  "bio",
+  "avatar_url",
+  "country_code",
+  "privacy",
+];
+
 describe("the scan itself", () => {
   it("actually found the source", () => {
     // A scan over an empty file list passes vacuously and proves nothing, which
     // is exactly how this kind of test rots.
     expect(FILES.length).toBeGreaterThan(10);
     expect(FILES.some((path) => path.endsWith("wallet-gateway.ts"))).toBe(true);
+    // The directory that used to be missed, and the two files in it that write.
+    expect(FILES.some((path) => path.endsWith("profile-privacy.ts"))).toBe(true);
+    expect(FILES.some((path) => path.endsWith("account-profile-store.ts"))).toBe(true);
   });
 });
 
@@ -81,7 +133,7 @@ describe("no client write reaches the database", () => {
 
     expect(source, `${file} calls .insert()`).not.toMatch(/\.insert\s*\(/);
     expect(source, `${file} calls .upsert()`).not.toMatch(/\.upsert\s*\(/);
-    // `apply_wallet_delta` is executable by service_role only, so naming it
+    // `apply_wallet_delta` is reachable only as `postgres`, so naming it
     // here could only ever be a mistake.
     expect(source, `${file} names apply_wallet_delta`).not.toContain("apply_wallet_delta");
 
@@ -104,14 +156,75 @@ describe("no client write reaches the database", () => {
     }
   });
 
-  it.each(FILES)("%s only ever selects from a table", (file) => {
+  it.each(FILES)("%s only selects, except where a write is explicitly allowed", (file) => {
     const source = code(readFileSync(file, "utf8"));
 
-    // Every `from("table")` must be followed immediately by `.select(`.
     for (const match of source.matchAll(/\.from\((["'`])(\w+)\1\)\s*\.(\w+)\s*\(/g)) {
-      expect(match[3], `${file}: .from("${match[2] ?? ""}") followed by .${match[3] ?? ""}()`).toBe(
-        "select",
-      );
+      const table = match[2] ?? "";
+      const verb = match[3] ?? "";
+      if (verb === "select") continue;
+
+      /*
+       * The rule this file exists to enforce is not "the client never writes".
+       * It is **the client never writes anything that decides chips**. A
+       * blanket select-only ban read as the first for years and was in fact
+       * the second, enforced by accident: the two writes the product genuinely
+       * needs — "who can see my statistics", and changing your own name — both
+       * happened to sit outside the scanned directories.
+       *
+       * So the ban is now specific. Exactly one table accepts exactly one
+       * write verb from client code, and the columns are named below.
+       */
+      expect(
+        ALLOWED_TABLE_WRITES[table] ?? [],
+        `${file}: .from("${table}").${verb}() is not an allowed client write`,
+      ).toContain(verb);
+    }
+  });
+
+  it.each(FILES)("%s writes no profile column outside the allowlist", (file) => {
+    const source = code(readFileSync(file, "utf8"));
+
+    for (const match of source.matchAll(
+      /\.from\((["'`])profiles\1\)\s*\.update\s*\(([\s\S]*?)\)\s*\.eq/g,
+    )) {
+      const argument = match[2] ?? "";
+
+      /*
+       * Two shapes are accepted, and nothing else:
+       *
+       *   an object literal   `{ privacy }` — every key must be allowlisted
+       *   a named variable    `patch` — which must be DECLARED in this file as
+       *                       a typed `Partial<Pick<ProfileRow, …>>`, so tsc
+       *                       rejects a column the schema does not have and
+       *                       this test rejects a column the grant does not
+       *                       cover
+       *
+       * `grant update (…) on public.profiles` is the real control — a SET list
+       * touching anything else is refused by the privilege system before RLS is
+       * consulted. This is the control that stops the accident, exactly as the
+       * header says of the balance.
+       */
+      const literal = argument.trim().startsWith("{");
+      if (literal) {
+        const keys = [...argument.matchAll(/(\w+)\s*[,:}]/g)].map((entry) => entry[1] ?? "");
+        for (const key of keys) {
+          expect(CLIENT_WRITABLE_PROFILE_COLUMNS, `${file} writes profiles.${key}`).toContain(key);
+        }
+        continue;
+      }
+
+      const declaration = new RegExp(
+        `(const|let)\\s+${argument.trim()}\\s*:\\s*Partial<Pick<ProfileRow,([^>]*)>>`,
+      ).exec(source);
+      expect(declaration, `${file}: .update(${argument.trim()}) is not a typed profile patch`)
+        .not.toBeNull();
+
+      for (const column of (declaration?.[2] ?? "").split("|")) {
+        const name = column.replace(/["'\s]/g, "");
+        if (name === "") continue;
+        expect(CLIENT_WRITABLE_PROFILE_COLUMNS, `${file} writes profiles.${name}`).toContain(name);
+      }
     }
   });
 

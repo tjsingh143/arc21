@@ -80,6 +80,16 @@ interface CareerSessionStore {
   /** Standard nodes only. */
   game: EngineState | null;
   stagedBet: number;
+  /**
+   * The last wager this session locked, for the Repeat control.
+   *
+   * `app/career/play/[slug].tsx` passed `lastBet={0}` and an empty `onRepeat`,
+   * so Repeat was drawn permanently disabled at every career node — the same
+   * defect the online table carried, in the second of the three tables that
+   * deal cards. A career node is ten to twenty hands at one stake, which is
+   * exactly where repeating a bet earns its place.
+   */
+  lastBet: number;
 
   /** Drill nodes only. */
   scenarios: DrillScenario[];
@@ -97,6 +107,8 @@ interface CareerSessionStore {
 
   addChip: (amount: number) => void;
   clearBet: () => void;
+  /** Stage the previous wager again. Staged, never committed — the player still deals. */
+  repeatBet: () => void;
   lockBet: () => void;
   act: (action: PlayerActionType) => void;
   declineInsurance: () => void;
@@ -210,6 +222,7 @@ export const useCareerSessionStore = create<CareerSessionStore>((set, get) => {
     node: null,
     game: null,
     stagedBet: 0,
+    lastBet: 0,
     scenarios: [],
     scenarioIndex: 0,
     drillFeedback: null,
@@ -256,6 +269,8 @@ export const useCareerSessionStore = create<CareerSessionStore>((set, get) => {
         node,
         game: startSession(created, context()).state,
         stagedBet: 0,
+        // A new node is a new bankroll and a new bet range; nothing carries over.
+        lastBet: 0,
         scenarios: [],
         scenarioIndex: 0,
         drillFeedback: null,
@@ -278,6 +293,7 @@ export const useCareerSessionStore = create<CareerSessionStore>((set, get) => {
         evaluation: null,
         error: null,
         stagedBet: 0,
+        lastBet: 0,
       });
     },
 
@@ -308,11 +324,35 @@ export const useCareerSessionStore = create<CareerSessionStore>((set, get) => {
       );
     },
 
+    repeatBet: () => {
+      const previous = get().lastBet;
+      if (previous <= 0) return;
+      // Cleared first, then staged through `addChip`, so the node's own ceiling
+      // — `maxWagerForNode` — is applied in exactly one place. A bankroll that
+      // shrank since simply stages less rather than staging the impossible.
+      get().clearBet();
+      get().addChip(previous);
+    },
+
     lockBet: () => {
-      if (get().stagedBet <= 0) return;
+      const staged = get().stagedBet;
+      if (staged <= 0) return;
+
       dispatch((current) =>
         applyCommand(current, { type: "LOCK_BET", seatId: CAREER_SEAT_ID }, context()),
       );
+
+      /*
+       * Recorded AFTER the engine accepted it, and only then.
+       *
+       * `dispatch` swallows an `EngineError` into `error` and leaves `game`
+       * untouched, so setting `lastBet` before the call would remember a bet
+       * that was never locked — and Repeat would then offer an amount the
+       * engine had just refused. Same principle as the online store, which
+       * records the amount the SERVER accepted rather than the one that was
+       * staged.
+       */
+      if (get().error === null) set({ lastBet: staged });
     },
 
     act: (action) => {

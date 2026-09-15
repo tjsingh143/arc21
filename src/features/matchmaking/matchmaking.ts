@@ -18,6 +18,15 @@ export const queueRowSchema = z.object({
   room_code: z.string().nullable(),
   waiting_since: z.string(),
   queued_at_tier: z.number().int().nonnegative(),
+  /**
+   * How many OTHER players are queueing for these stakes.
+   *
+   * Optional because it is newer than the rest of the row, and a client that
+   * refused to parse a queue without it would strand a player mid-search on the
+   * one deploy where the two halves disagree. Absent reads as zero, which is
+   * what the screen said unconditionally before the server was asked.
+   */
+  others_waiting: z.number().int().nonnegative().optional(),
 });
 
 export interface QueuePlace {
@@ -26,6 +35,8 @@ export interface QueuePlace {
   readonly roomId: string | null;
   /** How many were already seated when this player was placed. */
   readonly seatedBefore: number;
+  /** Other players queueing at these stakes right now. */
+  readonly othersWaiting: number;
   readonly waitingSince: Date;
 }
 
@@ -40,6 +51,7 @@ export function toQueuePlace(value: unknown): QueuePlace | null {
     tier: parsed.data.tier,
     roomId: parsed.data.room_id,
     seatedBefore: parsed.data.queued_at_tier,
+    othersWaiting: parsed.data.others_waiting ?? 0,
     // An unparseable timestamp becomes epoch, which reads as "waiting a long
     // time" and offers the player a way out — the safe direction to be wrong in.
     waitingSince: Number.isFinite(since) ? new Date(since) : new Date(0),
@@ -52,10 +64,29 @@ export function toQueuePlace(value: unknown): QueuePlace | null {
  * The specification asks for Keep Waiting / Play Solo / Cancel after about
  * twenty seconds — not because anything failed, but because a player who has
  * waited that long deserves to be told so and offered something else.
+ *
+ * THIS WAS UNREACHABLE UNTIL PHASE 7. `poll_matchmaking` opened a table for a
+ * lone player on their very first poll and answered `matched`, so `waiting` was
+ * observable for a few milliseconds at most and nobody ever saw the offer this
+ * predicate gates. A room is now opened only when there is somebody to share it
+ * with, which is what makes waiting — and therefore this — real.
  */
 export const OFFER_ALTERNATIVES_AFTER_MS = 20_000;
 
-export function shouldOfferAlternatives(waitingSince: Date, now: Date): boolean {
+/**
+ * `snoozedUntil` is what "Keep waiting" does.
+ *
+ * The wait itself is the server's `enqueued_at` and never resets, so without a
+ * local acknowledgement the three controls would reappear on the very next tick
+ * and the button would look broken. Passed in rather than read from a module,
+ * like every other input here, so the rule stays testable.
+ */
+export function shouldOfferAlternatives(
+  waitingSince: Date,
+  now: Date,
+  snoozedUntil: Date | null = null,
+): boolean {
+  if (snoozedUntil !== null && now.getTime() < snoozedUntil.getTime()) return false;
   return now.getTime() - waitingSince.getTime() >= OFFER_ALTERNATIVES_AFTER_MS;
 }
 
@@ -73,4 +104,22 @@ export function describeWait(place: QueuePlace, now: Date): string {
   const seconds = Math.max(0, Math.floor((now.getTime() - place.waitingSince.getTime()) / 1000));
   if (seconds < 10) return "Looking for a table…";
   return `Still looking — ${seconds}s.`;
+}
+
+/**
+ * Who else is out there, from the server rather than from an assumption.
+ *
+ * The waiting card used to state "Nobody else is queueing for these stakes
+ * right now" whenever it offered a way out — which was a guess, and the wrong
+ * one exactly when it mattered: two players both waiting is the case where
+ * holding on for another few seconds is worth doing. `poll_matchmaking` now
+ * counts them.
+ */
+export function describeOthersWaiting(place: QueuePlace): string {
+  if (place.othersWaiting <= 0) {
+    return "Nobody else is queueing for these stakes right now.";
+  }
+  return place.othersWaiting === 1
+    ? "One other player is queueing for these stakes."
+    : `${place.othersWaiting} other players are queueing for these stakes.`;
 }

@@ -43,6 +43,13 @@ export interface SessionRow {
   escrowChips: number;
   rulesetId: string;
   tier: string | null;
+  /**
+   * How much help this table shows. Chosen once at OPEN and never revisable by
+   * a client, because it decides whether the session's decisions count towards
+   * the strategy leaderboard AND whether advice is sent with the snapshot.
+   * Everything except Quick Play is `play`.
+   */
+  assistance: string;
 }
 
 export interface SeatRow {
@@ -85,6 +92,28 @@ export async function lockEngineState(tx: Tx, gameId: string): Promise<LockedEng
   };
 }
 
+/**
+ * The secret seed behind a Daily Challenge session's shoe.
+ *
+ * SERVER ONLY, and never logged. It is as dangerous as the shoe itself: with it
+ * every remaining card of a live challenge is computable. It is read here so
+ * that a reshuffle mid-attempt comes from the challenge's own deterministic
+ * stream rather than the CSPRNG — see `dailyShoeSource`.
+ *
+ * Returns null for any session that is not a daily challenge, so the caller's
+ * "which source" decision is made from the session row rather than from a flag
+ * a client could influence.
+ */
+export async function findDailyShoeSeed(tx: Tx, gameId: string): Promise<string | null> {
+  const rows = await tx<{ seed_secret: string }[]>`
+    select c.seed_secret
+    from public.game_sessions s
+    join public.daily_challenges c on c.id = s.daily_challenge_id
+    where s.id = ${gameId}::uuid and s.mode = 'daily_challenge'
+  `;
+  return rows[0]?.seed_secret ?? null;
+}
+
 export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | null> {
   const rows = await tx<
     {
@@ -95,9 +124,10 @@ export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | 
       escrow_chips: unknown;
       ruleset_id: string;
       tier: string | null;
+      assistance: string;
     }[]
   >`
-    select id, mode, status, version, escrow_chips, ruleset_id, tier
+    select id, mode, status, version, escrow_chips, ruleset_id, tier, assistance
     from public.game_sessions
     where id = ${gameId}::uuid
   `;
@@ -111,6 +141,7 @@ export async function loadSession(tx: Tx, gameId: string): Promise<SessionRow | 
     escrowChips: toInteger(row.escrow_chips, "game_sessions.escrow_chips"),
     rulesetId: row.ruleset_id,
     tier: row.tier,
+    assistance: row.assistance,
   };
 }
 
@@ -275,6 +306,94 @@ export async function syncSessionRow(
   `;
 }
 
+/**
+ * Retires the room a finished session was played in.
+ *
+ * A ROOM WAS NEVER CLOSED WHEN ITS GAME ENDED, and `leave_room` — reachable
+ * only from the lobby — is the sole other thing in the schema that ever writes
+ * `status = 'closed'`. Once the host deals, every client is on
+ * `/table/[gameId]` and leaving there sends `CASH_OUT`, which settles the seat
+ * and ends the session without touching the room. So a played-out private table
+ * sat at `active` for ever, holding its six-character code, and its host was
+ * refused every subsequent `create_private_room` with "you already have a table
+ * open" — permanently. Measured against the running stack before this existed.
+ *
+ * Called in the SAME transaction as the settlement that ended the session, so a
+ * rolled-back closure cannot retire a room that is still being played in. The
+ * `expire_stale_rooms()` sweep is the backstop for the sessions that end by some
+ * other route; this is the prompt answer that releases the code immediately.
+ *
+ * Deliberately keyed on `game_session_id` rather than taking a room id: a
+ * tournament and a daily challenge have no room at all, so this updates nothing
+ * for them and needs no caller to know which modes do.
+ */
+export async function closeRoomForSession(tx: Tx, gameId: string): Promise<void> {
+  await tx`
+    update public.rooms
+    set status = 'closed'
+    where game_session_id = ${gameId}::uuid
+      and status <> 'closed'
+  `;
+}
+
+/**
+ * Takes the ROOM row's lock for a table, before anything else does.
+ *
+ * THE DEADLOCK THIS REMOVES, caught by the join-races-leave test and confirmed
+ * in the runtime log as `PostgresError: deadlock detected`:
+ *
+ *   JOIN_PUBLIC_TABLE   locks `rooms` (`for update` on the id it was given),
+ *                       then the engine state, then the wallet
+ *   CASH_OUT            locked the engine state, then the wallet, and only
+ *                       reached `rooms` at the end, inside `release_room_seat`
+ *
+ * A classic lock-order inversion, and it became reachable the moment a public
+ * table started taking players while it was running: one player leaving as
+ * another sits down is now an ordinary thing to happen rather than an
+ * impossible one. Postgres picks a victim and aborts it, so nothing is
+ * corrupted and no chips move — but the player who lost the toss is answered
+ * HTTP 500 "Something went wrong" for an ordinary leave.
+ *
+ * The fix is an ORDER, not a retry: every path that will end up touching both
+ * rows takes the room first. Solo, career, tournament and daily tables have no
+ * room at all, so this is a no-op for them.
+ */
+export async function lockRoomForSession(tx: Tx, gameId: string): Promise<void> {
+  await tx`
+    select id from public.rooms
+    where game_session_id = ${gameId}::uuid
+    for update
+  `;
+}
+
+/**
+ * Ends this player's membership of the room the table is being played in.
+ *
+ * LEAVING A TABLE THAT HAS DEALT DOES NOT GO THROUGH THE LOBBY. "Leave table"
+ * sends `CASH_OUT`, which settled the seat and returned the stack and never
+ * touched `room_members` — so a departed player stayed a `joined` member and,
+ * if they were the host, stayed the host. Measured: after a host cashed out of
+ * a three-seat table the other two kept playing, the app's own restore query
+ * still returned that room to the departed host, and `create_private_room`
+ * answered them "you already have a table open" for as long as strangers kept
+ * playing.
+ *
+ * `public.release_room_seat` is `leave_room`'s body with the identity as a
+ * parameter, so host migration has ONE implementation rather than a copy here.
+ * It is server-only for the obvious reason: an argument naming whose seat to
+ * release must never be client-callable.
+ *
+ * Keyed on `game_session_id`, so it does nothing at all for a mode with no room
+ * — solo, career, the daily challenge and a tournament all reach this path.
+ */
+export async function releaseRoomSeat(tx: Tx, gameId: string, userId: string): Promise<void> {
+  await tx`
+    select public.release_room_seat(r.id, ${userId}::uuid)
+    from public.rooms r
+    where r.game_session_id = ${gameId}::uuid
+  `;
+}
+
 export interface SeatPatch {
   status?: SeatRow["status"];
   leftAt?: string | null;
@@ -371,12 +490,37 @@ export async function recordAppliedCommand(
 // Money
 // ---------------------------------------------------------------------------
 
+/**
+ * Every label of the database's `public.ledger_reason` enum.
+ *
+ * Exhaustive rather than "the ones this file happens to use". The narrower list
+ * omitted `tournament_entry` and `daily_challenge_reward` — both of which are
+ * passed by real call sites — so the type said those calls were wrong while the
+ * database accepted them happily. Nobody saw it, because
+ * `supabase/functions` is excluded from `tsconfig.json` and `deno check` had
+ * never been run on this directory.
+ *
+ * The three at the bottom are written by database functions rather than from
+ * here; they are listed because this type describes the COLUMN, and a type that
+ * describes only half a column is the thing that hid the defect.
+ */
 export type LedgerReason =
   | "table_buy_in"
   | "table_cash_out"
   | "career_reward"
+  | "tournament_entry"
   | "tournament_prize"
-  | "correction";
+  // A cancelled or withdrawn sprint entry, given back. Kept distinct from a
+  // negative `tournament_entry` so a refund reads as a refund in the ledger a
+  // player can see, rather than as an entry fee with the sign flipped.
+  | "tournament_refund"
+  | "daily_challenge_reward"
+  | "daily_top_up"
+  | "correction"
+  // Server-side only: written by `apply_wallet_delta`'s callers in SQL.
+  | "initial_grant"
+  | "level_up_reward"
+  | "recovery_grant";
 
 export interface LedgerEntry {
   id: string;
@@ -557,6 +701,45 @@ export async function recordDecisions(
  * Keyed by the session, so an unranked replay — which has no entry row at all —
  * writes nothing without anything here having to know that it was a replay.
  */
+/**
+ * The running decision counters for a live career attempt.
+ *
+ * The same reasoning as the daily attempt's counters, one mode along: an
+ * attempt's accuracy is a fact about that attempt, and `player_decision_periods`
+ * mixes in every ranked decision of the week. `evaluateStars` needs the
+ * attempt's own numbers, so the attempt carries them.
+ *
+ * `unaided` is derived from the NODE, not from anything a client said — a
+ * "learn" node shows the recommended play before the choice, so its decisions
+ * measure recall of nothing. See `career-session-store.ts`, which draws the
+ * same line for the offline runner.
+ *
+ * Written straight to the row rather than through a function because there is
+ * no client role that could ever call either: `career_attempts` carries
+ * `deny_client_write` and no INSERT/UPDATE grant at all.
+ */
+export async function recordCareerAttemptDecisions(
+  tx: Tx,
+  params: {
+    gameId: string;
+    total: number;
+    optimal: number;
+    unaided: boolean;
+    evLostMicros: number;
+  },
+): Promise<void> {
+  if (params.total <= 0) return;
+  await tx`
+    update public.career_attempts
+    set decisions_total   = decisions_total + ${params.total}::int,
+        decisions_optimal = decisions_optimal + ${params.optimal}::int,
+        unaided_total     = unaided_total + ${params.unaided ? params.total : 0}::int,
+        unaided_optimal   = unaided_optimal + ${params.unaided ? params.optimal : 0}::int,
+        ev_lost_micros    = ev_lost_micros + ${params.evLostMicros}::bigint
+    where game_session_id = ${params.gameId}::uuid and status = 'in_progress'
+  `;
+}
+
 export async function recordDailyAttemptDecisions(
   tx: Tx,
   params: { gameId: string; total: number; optimal: number; evLostMicros: number },

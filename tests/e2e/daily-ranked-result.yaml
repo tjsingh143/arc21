@@ -1,0 +1,24 @@
+# Signed-in fixture with no ranked entry today. No local/server state seeding.
+appId: com.arc21.app
+---
+- openLink: arc21://daily
+- scrollUntilVisible:
+    element:
+      id: daily-start
+    direction: DOWN
+    timeout: 30000
+- assertVisible: "This is your one ranked attempt today."
+- tapOn:
+    id: daily-start
+- runFlow: complete-ranked-session.yaml
+# Daily replaces its entry route with the table. Reopen to read the result.
+- openLink: arc21://daily
+- scrollUntilVisible:
+    element:
+      id: daily-score
+    direction: DOWN
+    timeout: 30000
+- assertVisible: ".*after 20 hands"
+- assertVisible: "Your ranked attempt is finished. A replay is practice and scores nothing."
+- assertVisible: "Replay unranked"
+- takeScreenshot: daily-twenty-hand-result

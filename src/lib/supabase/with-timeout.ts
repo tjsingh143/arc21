@@ -14,7 +14,15 @@
  * Every remote call in `src/features/auth` and `src/features/wallet` goes
  * through this, so "the server is unreachable" is always a state the UI can
  * render rather than a spinner with no end.
+ *
+ * And because every remote call goes through it, this is also the one place
+ * that knows whether the SERVER is reachable — so it reports. That is where the
+ * app's offline signal comes from: not from a radio-state library, which would
+ * answer "is there a network interface" and say ONLINE on a captive-portal wifi
+ * that cannot reach Arc 21 at all. See `src/lib/connectivity`.
  */
+
+import { reportReachability } from "../connectivity/connectivity-store.js";
 
 /** Long enough for a cold Edge Function, short enough to still feel like an app. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
@@ -35,12 +43,25 @@ export async function withTimeout<T>(
 ): Promise<T | TimedOut> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
+    const value = await Promise.race([
       promise,
       new Promise<TimedOut>((resolve) => {
         timer = setTimeout(() => resolve(TIMED_OUT), ms);
       }),
     ]);
+    /*
+     * A RESOLVED value means the server answered, whatever it said. A 403, a
+     * 409, a rate limit — all of those are the server being reachable, and
+     * treating a refusal as an outage would put "you are offline" in front of a
+     * player who is plainly not.
+     */
+    reportReachability(!isTimedOut(value));
+    return value;
+  } catch (error) {
+    // A rejected fetch is a transport failure far more often than anything
+    // else, and the caller's own catch still sees it.
+    reportReachability(false);
+    throw error;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }

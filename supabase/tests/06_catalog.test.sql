@@ -12,7 +12,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 set search_path to public, extensions, pg_catalog;
 
-select plan(22);
+select plan(26);
 
 -- -----------------------------------------------------------------------------
 -- The Arc Standard ruleset
@@ -191,6 +191,55 @@ select is(
 );
 
 reset role;
+
+-- ---------------------------------------------------------------------------
+-- The catalogue is the one the app plays
+-- ---------------------------------------------------------------------------
+-- There were two career catalogues: eighteen nodes in `shared/career/nodes.ts`
+-- that the app renders and grades, and eighteen DIFFERENT ones in the seed that
+-- `career_progress` and every career-gated cosmetic were keyed to. The
+-- migration is generated from the module now; these assert the relationships a
+-- generator cannot, because they are about rows OTHER migrations may add.
+
+select is(
+  (select count(*)::int from public.career_nodes where code = 'first-deal'),
+  1,
+  'the catalogue holds the module''s codes, not the seed''s placeholder ones'
+);
+
+select is(
+  (select count(*)::int from public.career_nodes where code like 'foundations-%'),
+  0,
+  'and none of the placeholder codes survive beside them'
+);
+
+-- A cosmetic gated on a code no node carries is a reward nobody can ever earn,
+-- and nothing else in the system would ever say so.
+select is(
+  (select count(*)::int
+   from public.cosmetics c
+   where c.unlock_type = 'career_node'
+     and not exists (
+       select 1 from public.career_nodes n
+       where n.code = c.unlock_config ->> 'careerNodeCode'
+     )),
+  0,
+  'every career_node cosmetic gate names a node that exists'
+);
+
+-- The same for the chapter gates: a chapter with no nodes is vacuously
+-- complete, which would hand out three table themes on sign-up.
+select is(
+  (select count(*)::int
+   from public.cosmetics c
+   where c.unlock_type = 'career_chapter'
+     and not exists (
+       select 1 from public.career_nodes n
+       where n.chapter::text = c.unlock_config ->> 'chapter'
+     )),
+  0,
+  'every career_chapter cosmetic gate names a chapter that has nodes'
+);
 
 select * from finish();
 

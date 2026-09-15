@@ -29,6 +29,7 @@ const PUBLIC_MESSAGES: Record<CommandRejectionCode, string> = {
   SESSION_BUSY: "Finish the current hand before leaving the table.",
   SESSION_ALREADY_ACTIVE: "You are already seated at a table.",
   TABLE_LOCKED: "This table is not available at your level yet.",
+  TABLE_FULL: "That table just filled up. Nothing has been charged.",
 
   WRONG_PHASE: "That action is not available right now.",
   UNKNOWN_SEAT: "You do not hold a seat at this table.",
@@ -56,6 +57,7 @@ const HTTP_STATUS: Record<CommandRejectionCode, number> = {
   SESSION_BUSY: 409,
   SESSION_ALREADY_ACTIVE: 409,
   TABLE_LOCKED: 403,
+  TABLE_FULL: 409,
 
   WRONG_PHASE: 422,
   UNKNOWN_SEAT: 403,

@@ -375,7 +375,7 @@ describe("last seen", () => {
 
 describe("refusals", () => {
   it("says a player was not found, and never that they blocked you", () => {
-    const message = describeRpcFailure({ message: "no such player", code: "P0002" });
+    const message = describeRpcFailure({ message: "no such player", code: "PT404" });
 
     expect(message).toBe("That player could not be found.");
     expect(message.toLowerCase()).not.toContain("block");

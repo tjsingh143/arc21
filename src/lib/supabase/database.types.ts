@@ -38,6 +38,37 @@ type ReadOnly<TRow extends Record<string, unknown>> = {
   Relationships: [];
 };
 
+/**
+ * Readable in full, writable in exactly the columns the schema grants.
+ *
+ * `profiles` was declared `ReadOnly` under the comment above, and the comment
+ * was wrong about it: `20260813120100_profiles.sql` carries a column-level
+ * `grant update (username, display_name, bio, avatar_url, country_code,
+ * privacy)` for `authenticated`, which the live database confirms.
+ *
+ * That mislabelling had a consequence, not just an inaccuracy. Because every
+ * write to `profiles` was a compile error, nothing ever wrote
+ * `profiles.privacy` — so the Settings screen's "Statistics visibility" control
+ * stored the player's choice locally and never told the server, and every
+ * account stayed at the column default of `public`. The row policy that
+ * enforces it, `profiles_select_visible`, was correct the whole time; it was
+ * simply never given an answer.
+ *
+ * The narrowing this file exists for is kept, and tightened: `Update` is the
+ * granted columns and nothing else, so `update({ level: 99 })` is still a
+ * compile error rather than a runtime rejection. `Insert` stays closed —
+ * a profile row is created by a trigger on sign-up, never by a client.
+ */
+type WritableColumns<
+  TRow extends Record<string, unknown>,
+  TColumn extends keyof TRow,
+> = {
+  Row: TRow;
+  Insert: Record<string, never>;
+  Update: Partial<Pick<TRow, TColumn>>;
+  Relationships: [];
+};
+
 /** Mirrors `public.ledger_reason` in `20260813120000_foundation.sql`. */
 export type LedgerReason =
   | "initial_grant"
@@ -106,7 +137,10 @@ export interface Database {
     Tables: {
       wallets: ReadOnly<WalletRow>;
       wallet_ledger: ReadOnly<WalletLedgerRow>;
-      profiles: ReadOnly<ProfileRow>;
+      profiles: WritableColumns<
+        ProfileRow,
+        "username" | "display_name" | "bio" | "avatar_url" | "country_code" | "privacy"
+      >;
     };
     Views: Record<string, never>;
     Functions: {
@@ -152,6 +186,15 @@ export interface Database {
        */
       list_blocked: { Args: Record<string, never>; Returns: unknown };
       /**
+       * Stamps the caller's own `profiles.last_seen_at`, and no argument names
+       * whose. The fallback beneath ephemeral presence: `list_friends` and
+       * `player_public_profile` both return that column and the app renders it
+       * through `describeLastSeen`, and until this existed nothing had ever
+       * written it after signup — so "last seen" was the account's creation
+       * date, for ever.
+       */
+      touch_last_seen: { Args: Record<string, never>; Returns: string };
+      /**
        * Public matchmaking. These allocate a SEAT and never a chip — the buy-in
        * is debited by the session function through `apply_wallet_delta`, which
        * is the only path that may move money.
@@ -164,6 +207,13 @@ export interface Database {
       get_room_state: { Args: { p_room_id: string }; Returns: unknown };
       leave_room: { Args: { p_room_id: string }; Returns: void };
       set_room_ready: { Args: { p_room_id: string; p_ready: boolean }; Returns: void };
+      /**
+       * The host removing somebody from the LOBBY. It returns a boolean rather
+       * than raising, because every refusal — not the host, the table is
+       * already playing, no such room — has to be the same answer: a non-host
+       * must not learn from the difference whether the room exists.
+       */
+      remove_room_member: { Args: { p_room_id: string; p_user_id: string }; Returns: boolean };
       delete_own_account: {
         Args: Record<string, never>;
         Returns: void;
@@ -182,6 +232,65 @@ export interface Database {
         Returns: unknown;
       };
       my_daily_entry: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
+       * The most recent challenge whose seed has been PUBLISHED, for the
+       * fairness view. Only ever a CLOSED one: the column is written by
+       * `reveal_closed_daily_seeds` after `closes_at`, and the table's own
+       * trigger refuses an earlier write however it is reached. The server
+       * returns the seed and the commitment and no verdict — the device
+       * recomputes the hash, which is the entire point of a commitment.
+       */
+      latest_verifiable_daily_challenge: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
+       * The caller's own career progress, keyed by node CODE — which is the same
+       * string as `CareerNode.slug`, so the client never needs a second lookup
+       * table to translate a uuid.
+       *
+       * Read-only, like everything else here. Starting a reward-bearing attempt
+       * is an economic command and goes through the session Edge Function, where
+       * the shoe, the grading and the reward commit together or not at all.
+       */
+      my_career_progress: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
+       * The caller's own tournament and daily-challenge totals. Derived from
+       * `auth.uid()`; returns no identifier and nothing about any other player.
+       */
+      /**
+       * One OTHER player's profile, as this caller may see it.
+       *
+       * The only read in this file that names somebody else and returns their
+       * numbers, so the rule it follows is worth stating here as well as in the
+       * migration: identity comes back for anybody not blocked — `search_players`
+       * already discloses username, display name and level, so withholding them
+       * here would conceal nothing — while every NUMBER is governed by
+       * `profiles.privacy`, and a block in either direction returns no row at
+       * all rather than an empty one.
+       */
+      player_public_profile: {
+        Args: { p_user_id: string };
+        Returns: unknown;
+      };
+      my_competition_record: {
+        Args: Record<string, never>;
+        Returns: unknown;
+      };
+      /**
+       * Where the caller's own live seat is — a game id, a seat id and what kind
+       * of table it is. Argument-free like the wallet functions: the seat comes
+       * from `auth.uid()`, so there is no spelling of this that asks about
+       * anybody else. It names an address, never a stack or a card, which is why
+       * it can be a plain read rather than an Edge Function.
+       */
+      my_active_session: {
         Args: Record<string, never>;
         Returns: unknown;
       };
@@ -211,11 +320,18 @@ export interface Database {
        * Leaderboards. Each returns a display name, an avatar asset key and a
        * number — never a user id and never an email. The projection is the
        * server's, so there is no field here a client could render by mistake.
+       *
+       * PAGED: every board takes a limit and an offset, and orders on a total
+       * key rather than on `rank` — two players sharing a rank would otherwise
+       * be able to appear on two pages, or on none.
        */
-      leaderboard_weekly_xp: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_tournament_wins: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_strategy_accuracy: { Args: { p_limit?: number }; Returns: unknown };
-      leaderboard_daily_challenge: { Args: { p_date?: string; p_limit?: number }; Returns: unknown };
+      leaderboard_weekly_xp: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_tournament_wins: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_strategy_accuracy: { Args: { p_limit?: number; p_offset?: number }; Returns: unknown };
+      leaderboard_daily_challenge: {
+        Args: { p_date?: string | null; p_limit?: number; p_offset?: number };
+        Returns: unknown;
+      };
       /** The caller's own place, derived from the same ordering the board uses. */
       my_leaderboard_position: { Args: { p_category: string }; Returns: unknown };
       /** Qualification progress, for someone not yet on the accuracy board. */

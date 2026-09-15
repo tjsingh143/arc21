@@ -42,6 +42,14 @@ export const COMMAND_REJECTION_CODES = [
   "SESSION_ALREADY_ACTIVE",
   /** The table tier is above the caller's level. */
   "TABLE_LOCKED",
+  /**
+   * Every seat at that table is taken.
+   *
+   * Distinct from `NOT_A_PARTICIPANT` on purpose: a full table is a table the
+   * player may well be able to join in a minute, and telling them they hold no
+   * seat there would send them looking for a fault that is not theirs.
+   */
+  "TABLE_FULL",
 
   // --- mapped one-for-one from EngineErrorCode -----------------------------
   "WRONG_PHASE",

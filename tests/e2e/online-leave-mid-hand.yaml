@@ -1,0 +1,212 @@
+# Arc 21 — LEAVING DURING A LIVE HAND, and being taken off the table when the
+# server finally lets go.
+#
+# THE DEFECT THIS PINS, found on two simulators sharing a public table and then
+# reproduced with one:
+#
+#   A cash-out is refused while a hand is live — correctly, because "leaving is
+#   never a way to escape a committed wager". The request is HELD
+#   (`leavingWhenSafe`) and the store's poll completes it at the first boundary
+#   where `canCloseSeat` agrees. That path settles the seat, returns the chips
+#   and calls `forgetTable()`. It does not navigate, because navigation belongs
+#   to the screen — and `finishLeaving` was only ever called by the two
+#   INTERACTIVE paths, of which a poll is neither.
+#
+#   So the table screen re-rendered into its "Reading the table…" branch and
+#   stayed there. The wallet was correct throughout, the seat was closed, and the
+#   only control on screen was "Leave table" — which cashes out an already
+#   settled seat and navigates nowhere. The app had to be force-quit.
+#
+# Nothing else in the build could see it: `tests/server` posts CASH_OUT over HTTP
+# and never renders, the store's own tests call `leaveTable` directly, and
+# `online-table.yaml` leaves BETWEEN hands, which is the path that works.
+#
+# Quick Play is used because it is the one server table a single account can
+# play alone, and it carries no clocks — so the hand advances only when this
+# flow acts, which makes the refusal reproducible rather than a race.
+#
+# BEFORE RUNNING:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/online-leave-mid-hand.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# A Debug build over Metro takes twenty-odd seconds to read the stored session
+# back, and shows ONBOARDING until it has — asserting sooner photographs that.
+- extendedWaitUntil:
+    visible:
+      id: "header-chips"
+    timeout: 90000
+
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "quick-tier-casual"
+    timeout: 45000
+- tapOn:
+    id: "quick-tier-casual"
+- tapOn:
+    id: "quick-assistance-play"
+- scrollUntilVisible:
+    element:
+      id: "quick-deal"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "quick-deal"
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+
+# --- A live hand ------------------------------------------------------------
+# THE HAND MUST STILL BE LIVE WHEN THE LEAVE IS ASKED, and the cascade after
+# betting closes stops in THREE places, not one: PLAYER_TURNS; INSURANCE_OFFER
+# whenever the dealer's upcard is an ACE, about one hand in thirteen; and
+# HAND_COMPLETE when either side is dealt a natural. CLAUDE.md records that
+# assumption failing two server tests. This file made it too — it bet, waited
+# for cards and tapped "Leave table" — and a run whose dealer showed an ace
+# failed there with `insurance-decline` and `insurance-take` the only controls
+# in the hierarchy.
+#
+# So each state is answered at the TOP level of an iteration, the shape
+# `career-node.yaml` was restructured into for the same reason: bet when the
+# betting bar is up, decline when an ace is showing, take the next hand when a
+# natural settled it before anybody could act. Nothing here taps an action
+# control, so once the hand IS live every branch skips and the loop parks it
+# exactly where the refusal below needs it.
+- extendedWaitUntil:
+    visible:
+      id: "chip-50"
+    timeout: 45000
+- repeat:
+    times: 8
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-50"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      # Declining is what the server does for an absent player anyway, so this
+      # changes nothing about the hand that follows.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "next-hand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "next-hand"
+
+# The hand is live and it is the player's turn — stand is always legal there.
+# Asserting it is what makes the refusal below a REFUSAL rather than an ordinary
+# leave that happened to be asked between hands.
+- extendedWaitUntil:
+    visible:
+      id: "action-stand"
+    timeout: 45000
+
+# --- Ask to leave, and be refused -------------------------------------------
+- tapOn: "Leave table"
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 20000
+- tapOn:
+    text: "Leave table"
+    index: 1
+
+# STILL HERE, and told why. The refusal is the correct answer and the screen
+# says so rather than walking the player away from a committed wager. This
+# sentence is `LEAVING_AT_BOUNDARY_NOTICE`, rendered from the store rather than
+# from `notice`, because a poll clears the notice three seconds later.
+- extendedWaitUntil:
+    visible: ".*Leaving when this hand ends.*"
+    timeout: 30000
+
+# --- Settle the hand, and be let go -----------------------------------------
+# The hand has to end for the hold to be honoured; a solo table has no clocks,
+# so nothing but this flow can end it.
+- repeat:
+    times: 10
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "action-stand"
+
+# THE ASSERTION THIS FILE EXISTS FOR.
+#
+# Nobody taps anything here. The poll completes the held cash-out at the hand
+# boundary and the screen takes the player home by itself. Before the fix this
+# is where it sat on "Reading the table…" until the app was killed.
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 90000
+
+# And the seat really is gone: the setup screen would refuse a second buy-in
+# with "You are already seated at a table" if it were not.
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "quick-tier-casual"
+    timeout: 45000

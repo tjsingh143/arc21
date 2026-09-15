@@ -109,9 +109,11 @@ set local request.jwt.claims to
 
 -- The blocked party is told the same thing a missing account would produce.
 -- Saying "you are blocked" confirms the account exists and who blocked them.
+-- PT404, not P0002: PostgREST maps `PTnnn` to HTTP nnn and renders everything
+-- else as 500, so a deliberate refusal used to answer as a server fault.
 select throws_ok(
   $$ select public.send_friend_request('bbbbbbbb-0000-4000-8000-000000000002') $$,
-  'P0002', null,
+  'PT404', null,
   'the blocked party cannot re-add, and is not told why'
 );
 

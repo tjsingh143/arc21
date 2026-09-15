@@ -92,3 +92,9 @@ export {
 } from "./conversion.js";
 
 export { createSupabaseAuthAdapter } from "./supabase-auth-adapter.js";
+
+export {
+  useAccountProfileStore,
+  type AccountProfile,
+  type AccountProfileState,
+} from "./account-profile-store.js";

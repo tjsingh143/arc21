@@ -10,30 +10,47 @@
  * rather than shrinking four hands into unreadability.
  */
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { describeHandValue, evaluatePlayerHand } from "../../shared/blackjack/hand-value.js";
+import { rankName } from "../../shared/blackjack/cards.js";
 import { getLegalActions } from "../../shared/blackjack/legal-actions.js";
-import type { PlayerHand } from "../../shared/blackjack/types.js";
+import { isVisibleCard } from "../../shared/blackjack/types.js";
 import { ActionDock } from "../../src/components/table/ActionDock";
 import { BettingBar } from "../../src/components/table/BettingBar";
 import { HandCards } from "../../src/components/table/HandCards";
+import { HandSelector } from "../../src/components/table/HandSelector";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { InsuranceSheet } from "../../src/components/table/InsuranceSheet";
 import { AppText } from "../../src/components/ui/AppText";
 import { Button } from "../../src/components/ui/Button";
-import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { useTableTextVariant } from "../../src/design/accessibility";
+import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
+import { MAX_FIXED_CONTROL_FONT_SCALE } from "../../src/design/type-metrics";
 import { formatChipDelta, formatChips } from "../../src/design/typography";
+import { announce } from "../../src/lib/accessibility/announce";
+import { describeDealerUpCardForAnnouncement } from "../../src/features/table/outcome-announcement.js";
+import {
+  describeSplitHands,
+  splitHandFromEngineHand,
+} from "../../src/features/table/split-hands";
 import {
   AssistanceModeSelector,
   ChallengeFeedback,
   StrategyPanel,
 } from "../../src/components/table/StrategyPanel";
 import { TableSurface } from "../../src/features/cosmetics/art";
-import { actionLabel, computeAdvice, NO_ADVICE } from "../../src/features/practice/advice";
+import {
+  actionLabel,
+  adviceDiagnosticKey,
+  computeAdvice,
+  NO_ADVICE,
+  recordAdviceDiagnostic,
+} from "../../src/features/practice/advice";
+import { ReviewSheet } from "../../src/components/table/ReviewSheet";
+import { reviewLabelFor, showsChallengeFeedback } from "../../src/features/practice/assistance";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
 import { usePersistOnBackground } from "../../src/features/practice/use-persist-on-background";
 import {
@@ -65,6 +82,9 @@ export default function PracticeTableScreen() {
   const feedback = usePracticeStore((state) => state.feedback);
   const dismissFeedback = usePracticeStore((state) => state.dismissFeedback);
   const stats = usePracticeStore((state) => state.stats);
+  const decisionLog = usePracticeStore((state) => state.decisionLog);
+  const handHistory = usePracticeStore((state) => state.handHistory);
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   /**
    * Legality is DERIVED from the subscribed game state, never fetched by calling
@@ -81,6 +101,22 @@ export default function PracticeTableScreen() {
     [game],
   );
 
+  /*
+   * The split chip row, derived from the same subscribed state as legality.
+   * `describeSplitHands` returns an empty array for one hand, so an ordinary
+   * hand renders no row.
+   */
+  const splitHands = useMemo(() => {
+    const current = game?.seats.find((candidate) => candidate.seatId === PRACTICE_SEAT_ID);
+    if (!game || !current) return [];
+    return describeSplitHands({
+      hands: current.hands.map((hand) =>
+        splitHandFromEngineHand(hand, game.rules.splitAceTwentyOneIsBlackjack),
+      ),
+      activeHandId: current.hands[game.activeHandIndex ?? current.currentHandIndex]?.id ?? null,
+    });
+  }, [game]);
+
   /**
    * Advice is derived from the same subscribed state as legality, for the same
    * reason: a store getter called during render does not subscribe and, under
@@ -92,6 +128,23 @@ export default function PracticeTableScreen() {
     if (!current) return NO_ADVICE;
     return computeAdvice(game, current, legal.actions);
   }, [game, legal]);
+
+  /*
+   * A MISSING RECOMMENDATION LEAVES EVIDENCE.
+   *
+   * `computeAdvice` stays pure so it can live in a memo; recording is an effect,
+   * keyed on the diagnostic's identity so a re-render that leaves the same hole
+   * in place — expanding the panel, placing a chip — does not record it twice,
+   * while genuinely arriving at it again does. The table records in EVERY mode:
+   * Play hides the hint, but a hole in the tables is still a hole.
+   */
+  const diagnosticKey = adviceDiagnosticKey(advice);
+  useEffect(() => {
+    if (diagnosticKey !== null) recordAdviceDiagnostic(advice);
+    // `advice` is intentionally not a dependency: the identity string is what
+    // decides whether this is the same hole, and the object is new every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [diagnosticKey]);
 
   // Restore the saved session before showing a table. Starting a fresh shoe and
   // swapping it out a moment later would flash a hand the player never played.
@@ -105,6 +158,21 @@ export default function PracticeTableScreen() {
 
   // Force the save to land before iOS suspends or kills the app.
   usePersistOnBackground();
+
+  const overlineVariant = useTableTextVariant("overline");
+
+  // "Dealer shows six." Keyed on the up-card's own id, not the card object or
+  // `game` as a whole, so a re-render that leaves the same up-card in place —
+  // placing a bet, opening the strategy panel — does not re-announce it.
+  const dealerUpCard = game?.dealer.cards[0];
+  const dealerUpCardId = dealerUpCard && isVisibleCard(dealerUpCard) ? dealerUpCard.id : null;
+  const dealerUpCardAnnouncement =
+    dealerUpCard && isVisibleCard(dealerUpCard)
+      ? describeDealerUpCardForAnnouncement(rankName(dealerUpCard.rank))
+      : null;
+  useEffect(() => {
+    if (dealerUpCardAnnouncement) announce(dealerUpCardAnnouncement);
+  }, [dealerUpCardId, dealerUpCardAnnouncement]);
 
   if (!game) {
     return (
@@ -148,14 +216,31 @@ export default function PracticeTableScreen() {
           accessibilityLabel="Leave practice table"
           style={styles.headerButton}
         >
-          <AppText color="textSecondary">Close</AppText>
+          {/*
+            The three-column table header is fixed geometry: Close and Reset
+            keep their place either side of the title, so it cannot reflow.
+            Uncapped, at the largest Dynamic Type size "PRACTICE" wrapped two
+            letters to a line and the block still overlapped Close.
+          */}
+          <AppText color="textSecondary" maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}>
+            Close
+          </AppText>
         </Pressable>
 
         <View style={styles.headerCenter}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText
+            variant={overlineVariant}
+            color="textSecondary"
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             Practice
           </AppText>
-          <AppText variant="caption" color="textDisabled" numeric>
+          <AppText
+            variant="caption"
+            color="textDisabled"
+            numeric
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
             {`Hand ${game.handNumber} · Shoe ${game.shoe.shuffleNumber}`}
           </AppText>
         </View>
@@ -167,17 +252,22 @@ export default function PracticeTableScreen() {
           accessibilityLabel="Reset practice bankroll"
           style={[styles.headerButton, !isBetting ? styles.headerButtonDisabled : null]}
         >
-          <AppText color={isBetting ? "textSecondary" : "textDisabled"}>Reset</AppText>
+          <AppText
+            color={isBetting ? "textSecondary" : "textDisabled"}
+            maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+          >
+            Reset
+          </AppText>
         </Pressable>
       </View>
 
       <ScrollView contentContainerStyle={styles.felt} showsVerticalScrollIndicator={false}>
         <View style={styles.dealerArea}>
-          <AppText variant="overline" color="textSecondary">
+          <AppText variant={overlineVariant} color="textSecondary">
             Dealer
           </AppText>
           {dealerCards.length > 0 ? (
-            <HandCards cards={[...dealerCards]} size="medium" />
+            <HandCards cards={[...dealerCards]} size="medium" testID="dealer-hand-value" />
           ) : (
             <AppText variant="caption" color="textDisabled">
               Waiting for bets
@@ -194,19 +284,15 @@ export default function PracticeTableScreen() {
             </AppText>
           ) : (
             <>
-              {seat.hands.length > 1 ? (
-                <View style={styles.handSelector}>
-                  {seat.hands.map((hand, index) => (
-                    <HandChip
-                      key={hand.id}
-                      hand={hand}
-                      index={index}
-                      active={index === activeHandIndex}
-                      splitAceTwentyOneIsBlackjack={game.rules.splitAceTwentyOneIsBlackjack}
-                    />
-                  ))}
-                </View>
-              ) : null}
+              {/*
+                The chip row, now from `src/components/table/HandSelector.tsx`.
+
+                It was a `HandChip` local to this file, which is why NEITHER of
+                the other two tables had one — the career table showed the
+                active hand alone and the online table showed four hero hands
+                stacked. One implementation, three tables.
+              */}
+              <HandSelector hands={splitHands} testID="practice-hand-selector" />
 
               {seat.hands.map((hand, index) => {
                 const isActive = index === activeHandIndex;
@@ -220,6 +306,13 @@ export default function PracticeTableScreen() {
                       size="hero"
                       detail={`Bet ${formatChips(hand.wager)}`}
                       focused={seat.hands.length > 1}
+                      /*
+                       * Only the ACTIVE hand is rendered at hero size, so this
+                       * id is unique at any moment and names the hand being
+                       * acted on — which is exactly the thing the kill/resume
+                       * flow needs to compare across a relaunch.
+                       */
+                      testID="player-hand-value"
                     />
                     {hand.outcome ? (
                       <OutcomeBadge kind={hand.outcome.kind} net={hand.outcome.net} />
@@ -255,11 +348,37 @@ export default function PracticeTableScreen() {
           </View>
         ) : null}
 
+        {/*
+          What each mode offers AFTER the decision. Play gets the hand history
+          and nothing else — the specification's "optional hand history only" —
+          and Analysis gets the full decision log. Between hands, never during
+          one: a log open mid-decision is a hint in Play and Challenge.
+        */}
+        {(isBetting || isComplete) && (handHistory.length > 0 || decisionLog.length > 0) ? (
+          <Pressable
+            onPress={() => setReviewOpen(true)}
+            accessibilityRole="button"
+            accessibilityLabel={reviewLabelFor(mode)}
+            accessibilityHint="Review the hands you have played on this device"
+            testID="open-review"
+            style={styles.reviewButton}
+          >
+            <AppText
+              variant="caption"
+              color="textSecondary"
+              align="center"
+              maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+            >
+              {reviewLabelFor(mode)}
+            </AppText>
+          </Pressable>
+        ) : null}
+
         {/* Learn and Analysis surface the recommendation before the decision. */}
         {!isBetting && !isComplete ? <StrategyPanel mode={mode} advice={advice} /> : null}
 
         {/* Challenge grades it immediately afterwards, without blocking play. */}
-        {feedback && mode === "challenge" ? (
+        {feedback && showsChallengeFeedback(mode) ? (
           <ChallengeFeedback
             correct={feedback.correct}
             recommended={actionLabel(feedback.recommended)}
@@ -302,6 +421,15 @@ export default function PracticeTableScreen() {
         props ("Insurance costs 0 chips") because the stake is only defined
         while the offer is live. Unmounting is unambiguous on every platform.
       */}
+      {reviewOpen ? (
+        <ReviewSheet
+          mode={mode}
+          handHistory={handHistory}
+          decisionLog={decisionLog}
+          onClose={() => setReviewOpen(false)}
+        />
+      ) : null}
+
       {game.phase === "INSURANCE_OFFER" ? (
         <InsuranceSheet
           visible
@@ -317,35 +445,6 @@ export default function PracticeTableScreen() {
 }
 
 /** Compact representation of one split hand in the selector. */
-function HandChip({
-  hand,
-  index,
-  active,
-  splitAceTwentyOneIsBlackjack,
-}: {
-  hand: PlayerHand;
-  index: number;
-  active: boolean;
-  splitAceTwentyOneIsBlackjack: boolean;
-}) {
-  const value = evaluatePlayerHand(hand, splitAceTwentyOneIsBlackjack);
-  const done = hand.status !== "ACTIVE";
-
-  return (
-    <View
-      style={[styles.handChip, active ? styles.handChipActive : null]}
-      accessible
-      accessibilityLabel={`Hand ${index + 1}, ${done ? hand.status.toLowerCase() : describeHandValue(value)}${
-        active ? ", active" : ""
-      }`}
-    >
-      <AppText variant="caption" color={active ? "textPrimary" : "textSecondary"} numeric>
-        {`Hand ${index + 1} · ${done && hand.status === "BUSTED" ? "Bust" : value.bestTotal}`}
-      </AppText>
-    </View>
-  );
-}
-
 const styles = StyleSheet.create({
   screen: {
     flex: 1,
@@ -365,13 +464,18 @@ const styles = StyleSheet.create({
   },
   headerButton: {
     minWidth: 64,
-    minHeight: 44,
+    minHeight: MIN_TOUCH_TARGET,
     justifyContent: "center",
   },
   headerButtonDisabled: {
     opacity: 0.4,
   },
   headerCenter: {
+    // `flex: 1` so the title block is bounded by the row rather than sized to
+    // its content: without it, "Practice" and "Hand 1 · Shoe 1" grew past the
+    // screen edge at the largest Dynamic Type size and overlapped the Close
+    // control. Bounded, the text wraps instead.
+    flex: 1,
     alignItems: "center",
     gap: 2,
   },
@@ -405,24 +509,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.md,
   },
-  handSelector: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.sm,
-    justifyContent: "center",
-  },
-  handChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: radius.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  handChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: colors.surfaceRaised,
-  },
   outcomeBadge: {
     alignItems: "center",
     gap: 2,
@@ -448,6 +534,13 @@ const styles = StyleSheet.create({
   },
   completeDock: {
     gap: spacing.md,
+  },
+  reviewButton: {
+    minHeight: MIN_TOUCH_TARGET,
+    justifyContent: "center",
+    borderRadius: radius.small,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   resultSummary: {
     alignItems: "center",

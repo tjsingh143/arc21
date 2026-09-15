@@ -1,0 +1,101 @@
+# Arc 21 — TWO CLIENTS, step 7: leaving, and what happens to the room.
+#
+#   maestro test --device <A> tests/e2e/two-client-leave.yaml
+#
+# "Leave table" sends `CASH_OUT`, which is the only economic command a single
+# mis-tap can fire — hence the confirmation, which reads
+# `AppSettings.confirmLeavingOnlineGame`.
+#
+# WHAT THIS PROVES BEYOND THE TAP. Leaving a table that has DEALT never went
+# through the lobby, so nothing ended the player's room membership: a departed
+# host stayed the host, the app's restore query kept handing them back a table
+# they had cashed out of, and `create_private_room` refused them "you already
+# have a table open" for as long as strangers kept playing. The lobby coming
+# back with the create/join screen — rather than the seated lobby — is that
+# fixed, on a device.
+#
+# TWO REASONS THIS IS A LOOP RATHER THAN A SEQUENCE.
+#
+#   * The server REFUSES a mid-hand cash-out (SESSION_BUSY): a committed wager
+#     is not escapable by leaving, which is the rule, so the tap only takes at a
+#     safe phase. A table running on its timers cycles through one every minute.
+#   * "Leave table" is on screen TWICE while the dialog is up — the back bar
+#     behind it and the destructive button in it. The first run tapped the back
+#     bar again, reported COMPLETED, and left the dialog exactly where it was.
+#     A step that COMPLETED did not necessarily do anything.
+
+appId: com.arc21.app
+---
+- repeat:
+    times: 10
+    while:
+      visible:
+        id: "table-countdown"
+    commands:
+      # The dialog, answered by its OWN button. `index: 1` is the second match
+      # in the tree — the first is the back bar underneath.
+      - runFlow:
+          when:
+            visible: "Leave this table?"
+          commands:
+            - tapOn:
+                text: "Leave table"
+                index: 1
+                # OPTIONAL, because `when` and the tap are not atomic: the
+                # cash-out can land between them and take the control off screen.
+                optional: true
+      # Not asking yet: ask. Refused mid-hand, which is correct, and the next
+      # iteration asks again at a phase where it is allowed.
+      #
+      # GUARDED ON THE COUNTDOWN AS WELL, not just on the dialog. Once the
+      # cash-out lands the screen navigates to Home, and the `while` above is
+      # evaluated at the TOP of the iteration — so the last pass could find the
+      # countdown, lose the table while the branch ran, and fail on a "Leave
+      # table" that no longer exists. That is the flow racing the fix, not the
+      # app: the same condition on the branch makes the tap conditional on still
+      # being at a table.
+      - runFlow:
+          when:
+            visible:
+              id: "table-countdown"
+            notVisible: "Leave this table?"
+          commands:
+            - tapOn:
+                text: "Leave table"
+                # Same race, same reason — see the note on the branch above.
+                optional: true
+
+# THE TABLE IS BEHIND THEM, and the loop above exits on either of the two
+# endings this can have. The ordinary one is that the cash-out's reply arrived,
+# the store dropped the table and the screen navigated away. The other is that
+# the reply was LOST while the command committed — the screen then meets
+# `SESSION_CLOSED` on its next command and says "You are no longer at this
+# table", which used to be rendered as an ordinary notice beside a DEAD TABLE
+# still showing somebody else's cards and a countdown for a hand this player was
+# not in.
+#
+# NAVIGATING AT ALL IS THE OTHER HALF. Leaving replays the cancelled GO_BACK,
+# and this route is often the bottom of the stack — `router.replace` from the
+# lobby, `arc21://table/...`, a notification, the resume card on a cold launch.
+# With nothing beneath it that action is not handled by any navigator, and the
+# player was stranded on "Reading the table…" with the only control being a
+# Leave button that dispatched the same unhandled action again.
+
+# And the lobby offers a NEW table rather than putting them back into the one
+# they just left. Before this phase their room membership survived the cash-out,
+# so `restore()` handed them the same table back and `create_private_room`
+# refused them "you already have a table open" until strangers stopped playing.
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "room-create"
+    timeout: 45000
+- assertVisible: "Join with a code"

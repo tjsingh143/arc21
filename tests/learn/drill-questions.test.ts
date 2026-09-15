@@ -278,3 +278,79 @@ describe("grading and explanations", () => {
 function sorted(actions: readonly string[]): string[] {
   return [...actions].sort();
 }
+
+// ---------------------------------------------------------------------------
+
+describe("the special cases the specification names are actually askable", () => {
+  const questions = buildDrillQuestions();
+  const answerFor = (key: string) => questions.find((question) => question.key === key)?.answer;
+
+  it("asks the surrender cells, and expects surrender in them", () => {
+    /*
+     * Surrender is the one action a drill can quietly lose without anything
+     * looking wrong: the button is offered on every two-card question, so
+     * `drillLegalActions` is satisfied even if no cell ever ANSWERS surrender.
+     * A ruleset with late surrender that never asks the player to use it has a
+     * hole exactly where the rule is.
+     *
+     * Under six decks, S17, DAS and late surrender the answer is surrender in
+     * precisely four places. They are named rather than counted, so a table that
+     * moved one still fails here instead of matching a total.
+     */
+    const surrendering = questions.filter((question) => question.answer === "SURRENDER");
+    expect(surrendering.map((question) => question.key).sort()).toEqual([
+      "hard:15:10",
+      "hard:16:10",
+      "hard:16:11",
+      "hard:16:9",
+    ]);
+
+    // Every one of them offers the button it expects to be pressed.
+    for (const question of surrendering) {
+      expect(question.actions, question.key).toContain("SURRENDER");
+    }
+  });
+
+  it("asks the pair cells whose answer turns on doubling after a split", () => {
+    // 4,4 and 2,2/3,3 against a low upcard are the cells DAS moves. If the drill
+    // could not pose them, the ruleset's most commonly varied rule would be
+    // untestable by a player.
+    expect(answerFor("pair:4:5")).toBe("SPLIT");
+    expect(answerFor("pair:2:2")).toBe("SPLIT");
+    expect(answerFor("pair:3:2")).toBe("SPLIT");
+  });
+
+  it("asks the two pairs with an unconditional answer", () => {
+    // The first thing anybody learns, and the first thing a broken pair row
+    // would get wrong: always split aces and eights, never split tens or fives.
+    for (const upcard of [2, 6, 7, 10, 11]) {
+      expect(answerFor(`pair:11:${upcard}`), `A,A vs ${upcard}`).toBe("SPLIT");
+      expect(answerFor(`pair:8:${upcard}`), `8,8 vs ${upcard}`).toBe("SPLIT");
+      expect(answerFor(`pair:10:${upcard}`), `10,10 vs ${upcard}`).toBe("STAND");
+      expect(answerFor(`pair:5:${upcard}`), `5,5 vs ${upcard}`).not.toBe("SPLIT");
+    }
+  });
+
+  it("asks soft doubles, the hands the category blurb says people misplay", () => {
+    // A,7 against a 3 is the classic: double if you can, stand if you cannot —
+    // and the question carries both halves, because the fallback is data on the
+    // cell rather than a rule the drill invents.
+    const soft18 = questions.find((question) => question.key === "soft:18:3");
+    expect(soft18?.answer).toBe("DOUBLE");
+    expect(soft18?.decision.fallbackAction).toBe("STAND");
+    expect(answerFor("soft:17:5")).toBe("DOUBLE");
+  });
+
+  it("prices a wrong answer in every question it asks", () => {
+    // "Mistake magnitude where valid" — for this bank it is valid everywhere,
+    // and a silent null would turn a graded drill into an ungraded one.
+    for (const question of questions) {
+      for (const action of question.actions) {
+        if (action === question.answer) continue;
+        const verdict = gradeDrillAnswer(question, action);
+        expect(verdict.evLost, `${question.key} → ${action}`).not.toBeNull();
+        expect(verdict.evLost!, `${question.key} → ${action}`).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+});

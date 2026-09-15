@@ -17,6 +17,29 @@ export default defineConfig({
      * indistinguishable from normal operation.
      */
     /**
+     * WHY `tests/server/**` NO LONGER RUNS BESIDE THE UNIT SUITE AT ALL.
+     *
+     * `npm test` used to be one `vitest run` over everything, and on a loaded
+     * machine it failed roughly one run in three — always in one of the two
+     * places that hold a real clock or a real race open:
+     *
+     *   × accepts exactly one of twenty simultaneous commands   90065ms  (timeout)
+     *   × sends the recommendation on a Learn table            120082ms  (timeout)
+     *
+     * Neither is a product defect and both pass alone in seconds. The cause is
+     * that `tests/server/**` drives ONE local Edge-runtime container over HTTP:
+     * ten files at full parallelism queue behind a single Deno instance, and a
+     * test that fires twenty simultaneous commands at it while nine other files
+     * are mid-command exceeds any budget you give it. Reproduced deliberately —
+     * three consecutive `npm test` runs with three background unit suites
+     * loading the host, one failed — rather than retried until it passed.
+     *
+     * So `npm test` is now the two halves in SEQUENCE, and the server half runs
+     * `--maxWorkers=2`. Everything still runs exactly once, nothing is skipped,
+     * and the run stopped depending on how busy the machine happens to be. CI
+     * always split them across two jobs; this makes a local run match.
+     */
+    /**
      * `tests/server/**` is excluded from the COVERAGE run for the same reason,
      * arrived at by measurement rather than by preference.
      *
@@ -45,7 +68,15 @@ export default defineConfig({
       "**/node_modules/**",
       "**/dist/**",
       ...(process.env.COVERAGE === "1"
-        ? ["tests/strategy/solver.test.ts", "tests/server/**"]
+        ? [
+            "tests/strategy/solver.test.ts",
+            // Same reason and the same cost: it solves the whole six-deck chart
+            // exactly, to prove the committed table is byte-for-byte what the
+            // solver emits. Thirty seconds under instrumentation buys nothing —
+            // the module it exercises is `scripts/`, which no gate measures.
+            "tests/strategy/generated-table.test.ts",
+            "tests/server/**",
+          ]
         : []),
     ],
     environment: "node",
@@ -81,10 +112,38 @@ export default defineConfig({
        * and the decision grader, all of which decide a placement, a prize or a
        * leaderboard standing.
        */
-      include: ["shared/**/*.ts", "supabase/functions/_shared/**/*.ts"],
+      /*
+       * `src/features/practice` is measured because the Practice logic is a
+       * product surface in its own right, not a thin client over the engine. It
+       * decides what a player is told their accuracy is, what survives being
+       * killed mid-hand, and whether a hole in the strategy tables leaves any
+       * evidence at all — and none of those has a server to check it.
+       *
+       * Adding it paid for itself immediately: `strategy-diagnostics.ts`, the
+       * module whose entire job is to make a silent failure visible, measured
+       * 9.09% statements and 0% functions. Its cap, its de-duplication and its
+       * eviction order were all unexercised, and it is the last place a fault
+       * would announce itself from.
+       */
+      include: [
+        "shared/**/*.ts",
+        "supabase/functions/_shared/**/*.ts",
+        "src/features/practice/*.ts",
+      ],
       exclude: [
         "shared/**/index.ts",
         "supabase/functions/_shared/**/index.ts",
+        /*
+         * The two React hooks in that directory, and only those two. They import
+         * React Native, which cannot be parsed under Node — `typography.ts`
+         * calling `Platform.select` at module load is the wall this repository
+         * already has four modules working around — so they score zero and would
+         * drag an otherwise honest bar down to meaninglessness. Everything else
+         * under `features/practice` is deliberately runtime-neutral and is
+         * measured.
+         */
+        "src/features/practice/use-persist-on-background.ts",
+        "src/features/practice/use-table-feedback.ts",
         // Generated data, not logic: a 453-line lookup table emitted by the EV
         // solver. `tests/strategy/` asserts its CONTENTS cell by cell, which is
         // the thing worth checking about it.
@@ -172,11 +231,58 @@ export default defineConfig({
           functions: 95,
           lines: 95,
         },
-        "shared/career/**": {
+        /*
+         * THE CAREER LOGIC, at the path where it actually lives.
+         *
+         * This gate used to read `shared/career/**` and it MEASURED NOTHING.
+         * The career module was MOVED to `supabase/functions/_shared/career/`
+         * so the Edge runtime could resolve it, and `shared/career/*.ts` is now
+         * five seven-line `export *` shims plus an `index.ts` that
+         * `coverage.exclude` skips. A re-export has no executable statements, so
+         * v8 reports nothing for it and a threshold over it passes whatever the
+         * number is.
+         *
+         * Proved rather than reasoned: setting this bar to 100/100/100/100 at
+         * the old path still exits 0 with no error. Eighteen career nodes, the
+         * star evaluation and the progression record were behind a gate that
+         * could not fail.
+         *
+         * CLAUDE.md already records this exact trap for `shared/strategy` — "a
+         * coverage threshold that matches no files reads as enforcement" — and
+         * it had happened a second time, to the module moved in the same
+         * commit, without anybody noticing. When you move code, check the gate
+         * still points at it.
+         *
+         * The numbers are the old ones, unchanged: they were chosen as the
+         * honest bar for this module and they sit just under what it measures
+         * (72.61 / 63.51 / 79.24 / 79.12), so the gate ratchets rather than
+         * aspires. It just applies to the code now.
+         */
+        "supabase/functions/_shared/career/**": {
           statements: 70,
           branches: 60,
           functions: 75,
           lines: 75,
+        },
+        /*
+         * THE PRACTICE LOGIC.
+         *
+         * Not at the 90/90 engine bar, because it is not the engine: it cannot
+         * mis-settle a wager, and Practice chips have no value. But it decides
+         * every number on the Statistics screen and everything that survives a
+         * kill, so it sits well above the career bar.
+         *
+         * The figures are the measured ones rounded down (94.01 / 82.56 / 95.91
+         * / 97.80), so this ratchets rather than aspires — it fails when
+         * coverage drops, not before somebody has earned it. Proved to fail by
+         * breaching it deliberately, rather than assumed to work: see the phase
+         * 2 report.
+         */
+        "src/features/practice/**": {
+          statements: 92,
+          branches: 80,
+          functions: 94,
+          lines: 96,
         },
         /*
          * Progression sits at the engine bar rather than the career one. XP is

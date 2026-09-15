@@ -1,0 +1,58 @@
+# Arc 21 — TWO CLIENTS, step 1: the host opens a private table.
+#
+# The five `two-client-*` flows are one scenario run across TWO SIMULATORS with
+# TWO REAL ACCOUNTS, sequentially, because two Maestro drivers on one machine at
+# once is the load condition that has cost this project several runs. Each flow
+# leaves its device in the state the next one expects, and the room code is
+# carried between them by `scripts/two-client-code.ts`, which reads it from the
+# database as the host's own account — not scraped off a screenshot.
+#
+#   npx tsx scripts/e2e-account.ts --udid <A> --email e2e-lobby@arc21.test
+#   maestro test --device <A> -e EMAIL=e2e-lobby@arc21.test tests/e2e/mc-sign-in.yaml
+#   maestro test --device <A> tests/e2e/two-client-host-open.yaml
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# A deep link, not the tab bar: several runs have been lost to selectors that
+# "COMPLETED" while the app sat on the wrong tab.
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "room-seats-2"
+    timeout: 45000
+
+# Two seats: the specification's minimum, and the size this scenario fills.
+- tapOn:
+    id: "room-seats-2"
+- tapOn:
+    id: "room-create"
+
+- extendedWaitUntil:
+    visible:
+      id: "room-code"
+    timeout: 45000
+- assertVisible:
+    id: "room-code"
+    text: "[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{6}"
+- assertVisible: "1 of 2 seated"

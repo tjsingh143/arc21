@@ -12,17 +12,28 @@
  */
 
 import { useState } from "react";
-import { Modal, Pressable, StyleSheet, View } from "react-native";
+import { Modal, Pressable, StyleSheet, useWindowDimensions, View } from "react-native";
 
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
+import {
+  MAX_FIXED_CONTROL_FONT_SCALE,
+  rowStacksAtFontScale,
+} from "../../design/type-metrics";
 import { AppText } from "../ui/AppText";
 import {
   actionLabel,
   explainRecommendation,
   format,
   formatMagnitude,
+  formatProbability,
   type TableAdvice,
 } from "../../features/practice/advice";
+import {
+  ASSISTANCE_MODES,
+  assistanceMode,
+  showsProbabilities,
+  showsStrategyPanel,
+} from "../../features/practice/assistance";
 import type { AssistanceMode } from "../../features/practice/practice-store";
 
 export interface StrategyPanelProps {
@@ -33,13 +44,21 @@ export interface StrategyPanelProps {
 export function StrategyPanel({ mode, advice }: StrategyPanelProps) {
   const [expanded, setExpanded] = useState(false);
 
-  // Play and Challenge withhold the answer during the decision. Challenge shows
-  // its feedback afterwards through a separate component.
-  if (mode === "play" || mode === "challenge") return null;
+  /*
+   * ONE PREDICATE, TESTED DIRECTLY.
+   *
+   * `showsStrategyPanel` folds both reasons for silence together: the MODE
+   * withholds the answer (Play and Challenge, which must be identical during a
+   * decision), or the TABLES have none to give. It lives in
+   * `features/practice/assistance.ts` so the product's teaching contract can be
+   * asserted without rendering anything — the lesson this repository learned
+   * from a correct `lockBet` wired to a button nobody could press.
+   */
+  if (!showsStrategyPanel(mode, advice)) return null;
   if (!advice.recommendation) return null;
 
   const action = advice.recommendation.action;
-  const isAnalysis = mode === "analysis";
+  const isAnalysis = assistanceMode(mode).showsExpectedValues;
 
   return (
     <View style={styles.container}>
@@ -73,17 +92,40 @@ export function StrategyPanel({ mode, advice }: StrategyPanelProps) {
       */}
       {expanded && isAnalysis ? (
         <Modal visible transparent animationType="slide" onRequestClose={() => setExpanded(false)}>
-          <Pressable
-            style={styles.scrim}
-            accessibilityRole="button"
-            accessibilityLabel="Close analysis"
-            onPress={() => setExpanded(false)}
-          >
-            <Pressable style={styles.sheet} onPress={(event) => event.stopPropagation()}>
+          {/*
+            THE DISMISS TARGET IS A SIBLING OF THE SHEET, NOT ITS PARENT.
+
+            It used to wrap it: a `Pressable` carrying
+            `accessibilityLabel="Close analysis"` with the sheet inside. On iOS a
+            label on a pressable REPLACES the text of everything within it, so
+            the entire analysis — the EV table, both probabilities, the ruleset
+            caption — collapsed into the single word "Close analysis" in the
+            accessibility tree. The screen looked perfect and a VoiceOver user
+            was told nothing at all, which is a strange failure for the mode
+            whose whole purpose is explaining a decision.
+
+            Found by asserting on the RESULT rather than on the tap: a Maestro
+            probe could not see "Bust if you hit" on a screenshot that plainly
+            showed it. This repository has been caught by the same rule twice
+            before, on the Home card and on the accessibility switches.
+
+            An absolutely-filled Pressable behind the sheet keeps
+            tap-outside-to-dismiss working, and the sheet's own content is no
+            longer inside anything that speaks for it — so it no longer needs to
+            stop propagation either.
+          */}
+          <View style={styles.scrim}>
+            <Pressable
+              style={styles.scrimTap}
+              accessibilityRole="button"
+              accessibilityLabel="Close analysis"
+              onPress={() => setExpanded(false)}
+            />
+            <View style={styles.sheet}>
               <View style={styles.sheetHandle} />
               {renderDetail()}
-            </Pressable>
-          </Pressable>
+            </View>
+          </View>
         </Modal>
       ) : null}
 
@@ -133,6 +175,57 @@ export function StrategyPanel({ mode, advice }: StrategyPanelProps) {
                   </View>
                 );
               })}
+            </View>
+          ) : null}
+
+          {/*
+            THE TWO PROBABILITIES, AND ONLY WHERE THE SOLVER PRODUCED THEM.
+
+            Rendered from `advice.probabilities`, which is null when the table
+            being served does not carry them — in which case this whole block is
+            absent rather than filled with a number computed somewhere else. A
+            probability estimated here would sit beside solver-exact EVs looking
+            exactly like one of them.
+
+            Both are properties of the POSITION rather than of any one action,
+            which is why they sit apart from the EV table rather than as extra
+            columns in it.
+          */}
+          {showsProbabilities(mode, advice) && advice.probabilities !== null ? (
+            <View style={styles.evTable}>
+              <AppText variant="overline" color="textSecondary">
+                This position
+              </AppText>
+              <View style={styles.evRow}>
+                <AppText variant="body" color="textSecondary">
+                  Bust if you hit
+                </AppText>
+                <AppText
+                  variant="body"
+                  color="textPrimary"
+                  numeric
+                  accessibilityLabel={`Chance of busting on one more card, ${formatProbability(
+                    advice.probabilities.bustIfHit,
+                  )}`}
+                >
+                  {formatProbability(advice.probabilities.bustIfHit)}
+                </AppText>
+              </View>
+              <View style={styles.evRow}>
+                <AppText variant="body" color="textSecondary">
+                  Dealer busts
+                </AppText>
+                <AppText
+                  variant="body"
+                  color="textPrimary"
+                  numeric
+                  accessibilityLabel={`Chance the dealer busts, ${formatProbability(
+                    advice.probabilities.dealerBust,
+                  )}`}
+                >
+                  {formatProbability(advice.probabilities.dealerBust)}
+                </AppText>
+              </View>
             </View>
           ) : null}
 
@@ -188,12 +281,8 @@ export function ChallengeFeedback({
   );
 }
 
-const MODES: { id: AssistanceMode; label: string; hint: string }[] = [
-  { id: "play", label: "Play", hint: "No assistance" },
-  { id: "learn", label: "Learn", hint: "Shows the recommended play" },
-  { id: "analysis", label: "Analysis", hint: "Shows expected value for every action" },
-  { id: "challenge", label: "Challenge", hint: "Grades each decision after you make it" },
-];
+/** The selector renders the contract, rather than a second copy of its labels. */
+const MODES = ASSISTANCE_MODES.map(assistanceMode);
 
 export function AssistanceModeSelector({
   mode,
@@ -202,6 +291,33 @@ export function AssistanceModeSelector({
   mode: AssistanceMode;
   onChange: (mode: AssistanceMode) => void;
 }) {
+  /*
+   * FOUR ACROSS, OR TWO BY TWO — decided by the text size, not fixed.
+   *
+   * Four `flex: 1` pills each get a quarter of the screen, about 91pt on a
+   * 440pt device. At iOS's largest accessibility size the 13pt label is set at
+   * roughly 40pt, so "Challenge" needs about 200pt: measured on the simulator
+   * at `accessibility-extra-extra-extra-large`, the labels broke mid-word AND
+   * spilled outside the pill outlines — "Lear/n", "Anal/ysis", "Chal/leng/e"
+   * drawn over the borders, because `alignItems: "center"` leaves a child at
+   * its intrinsic width and a React Native view does not clip by default.
+   *
+   * `flexWrap` alone cannot fix it, for the reason `app/profile/index.tsx`
+   * writes down at length: a `flex: 1` child has a flex-basis of 0, so it never
+   * overflows its line and never wraps — it only shrinks further. The row COUNT
+   * is what has to change, so the basis becomes half the row above the
+   * threshold and the pills reflow to two rows of two.
+   *
+   * The label is capped as well. Two columns is about 193pt, and an uncapped
+   * "Challenge" at 200pt would still break — and a single word cannot wrap
+   * except mid-word, which is the thing being fixed. At
+   * `MAX_FIXED_CONTROL_FONT_SCALE` it sets at roughly 103pt and fits with room
+   * to spare. This row is chrome that cannot grow, so it is capped rather than
+   * wrapped, exactly as the action dock is.
+   */
+  const { fontScale } = useWindowDimensions();
+  const stacked = rowStacksAtFontScale(fontScale);
+
   return (
     <View style={styles.modeRow} accessibilityRole="radiogroup">
       {MODES.map((entry) => {
@@ -216,11 +332,17 @@ export function AssistanceModeSelector({
             accessibilityHint={entry.hint}
             style={({ pressed }) => [
               styles.modeChip,
+              stacked ? styles.modeChipStacked : styles.modeChipAcross,
               active ? styles.modeChipActive : null,
               pressed ? styles.pressed : null,
             ]}
           >
-            <AppText variant="caption" color={active ? "textPrimary" : "textSecondary"}>
+            <AppText
+              variant="caption"
+              color={active ? "textPrimary" : "textSecondary"}
+              align="center"
+              maxFontSizeMultiplier={MAX_FIXED_CONTROL_FONT_SCALE}
+            >
               {entry.label}
             </AppText>
           </Pressable>
@@ -258,6 +380,17 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.scrim,
     justifyContent: "flex-end",
+  },
+  /*
+   * The dismiss target is exactly the VISIBLE scrim — the space above the
+   * sheet — rather than the whole screen behind it. An `absoluteFill` sibling
+   * works for a pointer and for VoiceOver, but its centre lies under the sheet,
+   * so anything that activates a control by its coordinates (a UI test, an
+   * accessibility switch scanner) aims at the middle of the screen and hits the
+   * sheet instead. A hit area should be where the control looks like it is.
+   */
+  scrimTap: {
+    flex: 1,
   },
   sheet: {
     backgroundColor: colors.surface,
@@ -307,17 +440,32 @@ const styles = StyleSheet.create({
   },
   modeRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: spacing.xs,
   },
   modeChip: {
-    flex: 1,
-    minHeight: 36,
+    minHeight: MIN_TOUCH_TARGET,
+    paddingHorizontal: spacing.xs,
     alignItems: "center",
     justifyContent: "center",
     borderRadius: radius.pill,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
+  },
+  /*
+   * A basis, not `flex: 1`. The basis is what decides whether a line has room
+   * for the next pill; a basis of 0 never wraps. `flexGrow` then spends the
+   * few points the gaps leave over, so four across still look like equal
+   * quarters and two-by-two like equal halves.
+   */
+  modeChipAcross: {
+    flexGrow: 1,
+    flexBasis: "22%",
+  },
+  modeChipStacked: {
+    flexGrow: 1,
+    flexBasis: "45%",
   },
   modeChipActive: {
     borderColor: colors.accent,

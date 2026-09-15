@@ -449,6 +449,10 @@ describe("rules edited without a version bump fail safe", () => {
       minBet: "irrelevant", // table tiers differ only in stakes
       maxBet: "irrelevant",
       betIncrement: "irrelevant",
+      // Who may stake chips at a given MOMENT. The Sprint Tournament bets one
+      // seat at a time so earlier bets are visible; that changes no cell of the
+      // chart, which is why it does not bump `version`.
+      sequentialBetting: "irrelevant",
     };
 
     expect(Object.keys(CLASSIFICATION).sort()).toEqual(Object.keys(ARC_STANDARD_RULES).sort());

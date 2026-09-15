@@ -4,7 +4,23 @@
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.
 
-Last updated: 2026-08-21 (phase 14, session 3)
+Last updated: 2026-09-04 (phase 12 — migration counts corrected; see the pointer below)
+
+> **This file predates the launch sequence and does not track it.**
+> **`docs/FINAL_RELEASE_REPORT.md` is the document to read first now** — the
+> launch sequence finished with phase 12, and that report carries the MVP
+> requirement matrix item by item, every command and its result, the device
+> evidence and the ten external owner actions. `docs/LAUNCH_STATE.md` remains the
+> index of the architecture facts a change must not rediscover, the current
+> migration head and the verification history. Per-phase evidence is in
+> `docs/phase-reports/`. What is below remains accurate about the areas it
+> describes; it is simply not the whole picture any more.
+> (Pointer added 2026-09-02, end of phase 9; updated 2026-09-04, end of phase 12.)
+>
+> **Superseded again by Astra Refresh A (PASS, 2026-09-14 PDT).** The current
+> release index is `docs/LAUNCH_STATE.md`, and the current software evidence is
+> `docs/astra-refresh/baseline-audit.md`; the phase 12 report above is now
+> historical too. (Pointer added 2026-09-14.)
 
 ---
 
@@ -130,7 +146,7 @@ run:
 | `npm run test:coverage` | 1,363 across 65 files, all per-area gates met |
 | `supabase test db` | **422** assertions across 23 files, from a clean reset |
 | `npx vitest run tests/server` | **52** running, not skipped |
-| `supabase db reset` | applies all 32 migrations clean from empty |
+| `supabase db reset` | applies all 58 migrations clean from empty |
 | Maestro `every-screen.yaml` | exit 0, 84 steps |
 | Maestro `practice-hand.yaml` | exit 0 |
 | Maestro `career-node.yaml` | exit 0, all 20 hand iterations, stars progressed |
@@ -212,7 +228,7 @@ Measured this session:
 | `supabase test db` | **422** assertions across 23 files |
 | `npx vitest run tests/server` | **50** running, not skipped |
 | `npm run test:coverage` | 1,339 across 63 files, all gates met, deterministic |
-| `supabase db reset` | applies all 32 migrations clean from empty |
+| `supabase db reset` | applies all 58 migrations clean from empty |
 
 ---
 
@@ -312,15 +328,36 @@ recording a success it did not have.
 
 **Performance review, measured rather than claimed:**
 
+Re-measured in phase 14 s4 by `npm run benchmark` — a COMMITTED script
+(`scripts/benchmark.ts`), where the phase-13 figures came from an ad-hoc one
+that was never checked in and so could not be re-derived.
+
 ```
-Engine hot path    5,000 hands · 19,874 commands in 3,883 ms
-                   776 µs per hand · 195 µs per command
+Engine hot path    5,000 hands · 19,961 commands per run
+                   752–808 µs per hand · 188–202 µs per command
+                   (five runs, load ~5; reproduces the 776/195 quoted since
+                    phase 13, so nothing has regressed)
                    — about 1% of a 60 fps frame budget per command
+
+Memory             50 hands adds +10 KB of settled Node heap
+                   (GC forced either side; a leak would show as unbounded
+                    growth, because the engine returns new state per command)
 
 iOS export         5.9 MB Hermes bytecode
                    224 KB assets total, of which 103 KB is the sound palette
                    32 bundled assets: 23 PNGs from expo-router, 9 WAVs of ours
 ```
+
+**Quote the range, not one run.** A single cold run on the same commit measured
+1,242 µs per hand — 1.6× the steady figure. Check `uptime` and re-run before
+believing a regression, for the same reason Maestro needs an idle machine.
+
+**The 60 fps claim is a BUDGET, not a measurement.** A four-card deal staggers
+at 60 ms with each cue running 200 ms, so the last card starts at 180 ms and the
+deal completes at 380 ms — 23 frames at 60 Hz. That is arithmetic over the
+constants in `src/design/motion-timing.ts`. **No frame was measured**: native
+frame profiling needs Instruments driving a release build, which cannot be
+automated from this environment.
 
 The nine cues appear in the export's `metadata.json`, which is how "the audio
 ships" is known rather than assumed.
@@ -395,7 +432,9 @@ Six-deck configurable engine; full state machine; S17 (H17 configurable); 3:2
 naturals; peek; insurance and even money; late surrender; double and DAS; split,
 resplit and split-ace restrictions; integer chip math; 75% penetration with
 between-hands-only reshuffles; transactional shoe-exhaustion abort; predictable
-timeout defaults; sequential multi-seat turn order; typed errors that leave state
+timeout defaults; sequential multi-seat turn order (and, for the Sprint
+Tournament alone, sequential BETTING — one seat at a time with a clock each,
+`rules.sequentialBetting`); typed errors that leave state
 untouched; monotonic versioning; and a sanitisation boundary with automated
 leak assertions.
 
@@ -638,6 +677,7 @@ The three items left behind when this phase was first marked done:
 | **Recovery Grant** | Done. `claim_recovery_grant()` restores a wallet under 2,000 **to** 5,000, once per 12 hours, deciding everything server-side from a locked balance |
 | **XP / levels** | Done. Awarded in the settlement transaction, under the 300/day UTC cap |
 | **Delete account** | Done. `delete_own_account()` plus a two-step confirmation in Settings → Account |
+| **Reconnectable active game** | Done, in phase 4. `public.my_active_session()` names the caller's own live seat — game id, seat id, mode, tier, start time — and a "Return to your table" card renders on Play and Quick Play. Before it, a killed app meant every online mode answered `SESSION_ALREADY_ACTIVE` for ever with the buy-in stranded |
 
 **XP is deliberately inert.** `shared/progression/` implements the curve
 (`100 + 25 × (L-1)`, cap 50, 300/day repeatable cap) at 98% coverage, but no

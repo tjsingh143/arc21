@@ -15,7 +15,16 @@
  * because "100%" from two decisions is not mastery, and no percentage is drawn
  * from a zero denominator — an unattempted category shows an em dash, never 0%.
  *
- * Competition is server-owned, so it says so rather than showing zeros.
+ * Competition is server-owned, so it is READ from the server. It used to say
+ * "requires an account" to everybody, including players who had one: the call
+ * was `competitionState({ hasAccount: false, online: false })` with both values
+ * written as literals, and nothing anywhere fetched a record. That is the same
+ * defect the Profile screen carried, and its header documents the shape —
+ * `hasAccount` was written when there genuinely was no sign-in and never
+ * revisited once accounts shipped.
+ *
+ * Practice statistics stay local and stay available to everyone. Only the
+ * Competition section needs an account, and it is the only part that says so.
  */
 
 import { useEffect, useState } from "react";
@@ -33,7 +42,6 @@ import { formatChipDelta, formatChips } from "../../src/design/typography";
 import { AccuracyRing, RateBar, Sparkline, StatRow } from "../../src/features/stats/charts";
 import {
   buildPracticeStatistics,
-  HAND_RESULTS_UNAVAILABLE,
   type MistakePattern,
 } from "../../src/features/stats/aggregate";
 import {
@@ -42,10 +50,19 @@ import {
 } from "../../src/features/stats/competition";
 import { hasLocalData, STATS_MODES, statsMode, type StatsMode } from "../../src/features/stats/modes";
 import {
+  describeOwedRewards,
+  hasCareerRecord,
+  presentCareerRecord,
+  summariseCareerRecord,
+} from "../../src/features/stats/career-record";
+import { useCareerProgress } from "../../src/features/career/use-career-progress";
+import type { CareerProgress } from "../../shared/career/index.js";
+import {
   describeSample,
   formatDecimal,
   formatPercent,
   sampleCaveat,
+  type Rate,
 } from "../../src/features/stats/rate";
 import { sessionChips } from "../../src/features/stats/session";
 import { hasRoute } from "../../src/features/home/route-availability";
@@ -56,6 +73,9 @@ import {
   PRACTICE_STARTING_BANKROLL,
   usePracticeStore,
 } from "../../src/features/practice/practice-store";
+import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
+import { useAuthStore } from "../../src/features/auth";
+import { useCompetitionStore } from "../../src/features/stats/competition-store";
 
 export default function StatsScreen() {
   const stats = usePracticeStore((state) => state.stats);
@@ -70,6 +90,36 @@ export default function StatsScreen() {
   useEffect(() => {
     if (!hydrated) void hydrate();
   }, [hydrated, hydrate]);
+
+  /*
+   * The Competition section's three inputs, all read rather than asserted.
+   *
+   * `session !== null` is the whole fix for `hasAccount`. `online` is what the
+   * last fetch actually managed, not a guess: a store that reported "offline"
+   * after a server REFUSED a call would put an offline message in front of a
+   * player who is plainly not offline.
+   */
+  const session = useAuthStore((state) => state.session);
+  const authHydrated = useAuthStore((state) => state.hydrated);
+  const hydrateAuth = useAuthStore((state) => state.hydrate);
+  const competitionRecord = useCompetitionStore((state) => state.record);
+  const competitionLoading = useCompetitionStore((state) => state.loading);
+  const competitionOnline = useCompetitionStore((state) => state.online);
+  const loadCompetition = useCompetitionStore((state) => state.load);
+
+  useEffect(() => {
+    if (!authHydrated) void hydrateAuth();
+  }, [authHydrated, hydrateAuth]);
+
+  // Re-read on every change of session: signing out must empty this section,
+  // and signing in must fill it without a relaunch.
+  useEffect(() => {
+    if (!authHydrated) return;
+    void loadCompetition();
+  }, [authHydrated, session?.account.userId, loadCompetition]);
+
+  // Loaded on first use by the hook itself, exactly as Career's own screens do.
+  const { progress: careerProgress, ready: careerReady } = useCareerProgress();
 
   const [mode, setMode] = useState<StatsMode>("all");
   const selected = statsMode(mode);
@@ -90,7 +140,12 @@ export default function StatsScreen() {
   });
 
   const { mastery, play, behaviour, streaks, trend } = statistics;
-  const competition = competitionState({ hasAccount: false, online: false });
+  const competition = competitionState({
+    hasAccount: session !== null,
+    online: competitionOnline,
+    cached: competitionRecord,
+    loading: competitionLoading,
+  });
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -101,12 +156,20 @@ export default function StatsScreen() {
         <ScreenHeader
           title="Statistics"
           subtitle="Everything recorded on this device."
-          balance={null}
         />
 
         <ModeFilter selected={mode} onSelect={setMode} />
 
-        {!hasLocalData(mode) ? (
+        {mode === "career" ? (
+          /*
+           * Career has its own record and always did. This branch was an
+           * `UnavailableNote` reading "recorded on the server and needs an
+           * account", which was false twice over: the stars are on this device,
+           * and only the REWARD needs a server. Showing nothing turned a
+           * shipped feature into an apparently missing one.
+           */
+          <CareerSection progress={careerProgress} ready={careerReady} hasAccount={session !== null} />
+        ) : !hasLocalData(mode) ? (
           <SurfaceCard>
             <AppText variant="sectionTitle">{selected.label}</AppText>
             <UnavailableNote>{selected.description}</UnavailableNote>
@@ -218,12 +281,57 @@ export default function StatsScreen() {
 
               <SurfaceCard>
                 <StatRow label="Hands played" value={formatChips(play.handsPlayed)} />
+                <StatRow
+                  label="Hands settled"
+                  value={formatChips(play.handsSettled)}
+                  detail="A split round settles two or more"
+                />
                 <StatRow label="Decisions graded" value={formatChips(play.decisions)} />
                 <StatRow
                   label="Decisions per hand"
                   value={play.decisionsPerHand === null ? "—" : formatDecimal(play.decisionsPerHand)}
                   detail="Splits and doubles push this above one"
                 />
+
+                <View style={styles.divider} />
+
+                {/*
+                  Wins, losses, pushes and blackjacks, tallied from the engine's
+                  own settlement events — every one of them a `HAND_SETTLED` the
+                  engine authored, never reconstructed from the bankroll.
+
+                  This card used to carry a note saying these could not be shown
+                  because the device did not record them. It did not record them
+                  because the store threw the events away; the note described the
+                  store, not the product. Nothing here is the headline: the
+                  headline is Mastery, at the top of this screen.
+                */}
+                <StatRow
+                  label="Won"
+                  value={`${formatChips(play.handsWon)}${percentSuffix(play.winRate)}`}
+                  detail={
+                    play.blackjacks > 0
+                      ? `Including ${describeSample(play.blackjacks, "blackjack")}`
+                      : undefined
+                  }
+                  tone="success"
+                />
+                <StatRow
+                  label="Lost"
+                  value={formatChips(play.handsLost)}
+                  detail={play.busts > 0 ? `${formatChips(play.busts)} by busting` : undefined}
+                />
+                <StatRow
+                  label="Pushed"
+                  value={`${formatChips(play.handsPushed)}${percentSuffix(play.pushRate)}`}
+                />
+                {play.handsSurrendered > 0 ? (
+                  <StatRow
+                    label="Surrendered"
+                    value={formatChips(play.handsSurrendered)}
+                    detail="Neither a win nor a loss — half the wager came back"
+                  />
+                ) : null}
 
                 <View style={styles.divider} />
 
@@ -247,13 +355,28 @@ export default function StatsScreen() {
                   }
                 />
 
-                {/*
-                  Wins, losses, pushes and blackjacks are deliberately absent.
-                  This device records hands, decisions and chips — not the result
-                  of each hand — so those counters cannot be derived from
-                  anything here. Zeros would read as "you have won nothing".
-                */}
-                <UnavailableNote>{HAND_RESULTS_UNAVAILABLE}</UnavailableNote>
+                <StatRow
+                  label="Average bet"
+                  value={play.averageBet === null ? "—" : formatChips(Math.round(play.averageBet))}
+                  detail={`${formatChips(play.chipsWagered)} wagered in total`}
+                />
+                <StatRow
+                  label="Best bankroll"
+                  value={play.maxBankroll === 0 ? "—" : formatChips(play.maxBankroll)}
+                  detail="The most you have held here, chips on the felt included"
+                />
+                <StatRow
+                  label="Lifetime net"
+                  value={formatChipDelta(play.lifetimeNetChips)}
+                  detail="Across every hand ever settled here, resets included"
+                  tone={
+                    play.lifetimeNetChips === 0
+                      ? "textPrimary"
+                      : play.lifetimeNetChips > 0
+                        ? "success"
+                        : "danger"
+                  }
+                />
               </SurfaceCard>
             </View>
 
@@ -271,6 +394,33 @@ export default function StatsScreen() {
                 <ActionLine label="Doubles" tally={behaviour.byAction.DOUBLE} />
                 <ActionLine label="Splits" tally={behaviour.byAction.SPLIT} />
                 <ActionLine label="Surrenders" tally={behaviour.byAction.SURRENDER} />
+
+                <View style={styles.divider} />
+
+                {/*
+                  The lines above are windowed by the decision log and answer
+                  "how often did you take the advice". These are lifetime counts
+                  of what was actually played, which is a different question.
+                */}
+                <StatRow
+                  label="Doubles played"
+                  value={formatChips(behaviour.lifetime.doubles)}
+                  detail={
+                    behaviour.lifetime.doubles > 0
+                      ? `${formatChips(behaviour.lifetime.doubleWins)} won${percentSuffix(behaviour.lifetime.doubleWinRate)}`
+                      : undefined
+                  }
+                />
+                <StatRow label="Splits played" value={formatChips(behaviour.lifetime.splits)} />
+                <StatRow
+                  label="Surrenders taken"
+                  value={formatChips(behaviour.lifetime.surrenders)}
+                />
+                <StatRow
+                  label="Insurance taken"
+                  value={formatChips(behaviour.lifetime.insuranceTaken)}
+                  detail="A separate wager, never part of a basic-strategy cell"
+                />
               </SurfaceCard>
 
               <SurfaceCard>
@@ -339,6 +489,28 @@ export default function StatsScreen() {
                 <AppText variant="caption" color="textDisabled" numeric>
                   {`Measured over the last ${describeSample(streaks.window, "decision")}, which is all this device keeps.`}
                 </AppText>
+
+                <View style={styles.divider} />
+
+                {/*
+                  Hand streaks are recorded and shown plainly, and are
+                  deliberately BELOW the decision streaks with no tone, no
+                  celebration and no ring. A run of winning hands is the shoe's
+                  doing, not the player's.
+                */}
+                <StatRow
+                  label="Hands won in a row now"
+                  value={formatChips(streaks.currentRoundWins)}
+                />
+                <StatRow label="Longest run of wins" value={formatChips(streaks.longestRoundWins)} />
+                <StatRow
+                  label="Longest run of losses"
+                  value={formatChips(streaks.longestRoundLosses)}
+                />
+                <AppText variant="caption" color="textDisabled">
+                  Hand streaks are luck, not skill. They are here because they
+                  happened, not because they measure anything.
+                </AppText>
               </SurfaceCard>
             </View>
           </>
@@ -367,11 +539,81 @@ export default function StatsScreen() {
         />
 
         <AppText variant="caption" color="textDisabled" align="center">
-          Simulated card game. Virtual chips have no monetary value and cannot be
-          redeemed for money or prizes.
+          {CHIPS_NOT_MONEY_FOOTER}
         </AppText>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * The Career record, from this device.
+ *
+ * Every figure here was written locally by `career-persistence.ts`. The one
+ * sentence about an account appears only when something is actually owed —
+ * "you have three rewards waiting" is actionable, "sign in for rewards" is an
+ * advert, and this screen does not carry adverts.
+ */
+function CareerSection({
+  progress,
+  ready,
+  hasAccount,
+}: {
+  progress: CareerProgress;
+  ready: boolean;
+  hasAccount: boolean;
+}) {
+  const record = summariseCareerRecord(progress);
+  const owed = describeOwedRewards(record, hasAccount);
+
+  if (!ready) {
+    return (
+      <SurfaceCard>
+        <AppText variant="sectionTitle">Career</AppText>
+        <AppText variant="body" color="textSecondary">
+          Reading your career record…
+        </AppText>
+      </SurfaceCard>
+    );
+  }
+
+  if (!hasCareerRecord(record)) {
+    return (
+      <SurfaceCard>
+        <AppText variant="sectionTitle">No career record yet</AppText>
+        <AppText variant="body" color="textSecondary">
+          Nothing here is pre-filled. Play a node and this fills with your own
+          stars — offline is fine, and every node keeps what it earns.
+        </AppText>
+        <Button
+          label="Open Career"
+          onPress={() => router.push("/career")}
+          style={styles.cta}
+        />
+      </SurfaceCard>
+    );
+  }
+
+  return (
+    <View style={styles.section}>
+      <AppText variant="sectionTitle">Career</AppText>
+      <SurfaceCard>
+        {presentCareerRecord(record).map((row) => (
+          <StatRow key={row.key} label={row.label} value={row.value} detail={row.detail} />
+        ))}
+        {owed !== null ? (
+          <AppText variant="caption" color="textSecondary">
+            {owed}
+          </AppText>
+        ) : null}
+      </SurfaceCard>
+      <Button
+        label="Open Career"
+        variant="secondary"
+        onPress={() => router.push("/career")}
+        style={styles.cta}
+      />
+    </View>
   );
 }
 
@@ -410,6 +652,17 @@ function ModeFilter({
 }
 
 /** Times an action was taken, was the right play, and was left on the table. */
+/**
+ * " (48%)", or nothing at all when the rate has no sample.
+ *
+ * A percentage with no denominator is not 0% — it is "nothing has happened
+ * yet" — so this appends nothing rather than a misleading zero.
+ */
+function percentSuffix(value: Rate): string {
+  const rendered = formatPercent(value, "");
+  return rendered === "" ? "" : ` (${rendered})`;
+}
+
 function ActionLine({
   label,
   tally,

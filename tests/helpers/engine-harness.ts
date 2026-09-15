@@ -17,9 +17,13 @@ import {
   type SeatSeed,
 } from "../../shared/blackjack/reducer.js";
 import { SeededTestRandomSource } from "../../shared/blackjack/rng.js";
-import { createPreorderedShoe } from "../../shared/blackjack/shoe.js";
+import {
+  createPreorderedShoe,
+  needsReshuffle,
+  SAFETY_RESERVE_CARDS,
+} from "../../shared/blackjack/shoe.js";
 import { ARC_STANDARD_RULES, type BlackjackRules } from "../../shared/blackjack/rules.js";
-import type { Card, EngineCommand, EngineEvent } from "../../shared/blackjack/types.js";
+import type { Card, EngineCommand, EngineEvent, Shoe } from "../../shared/blackjack/types.js";
 
 export const TEST_CONTEXT: CommandContext = { random: new SeededTestRandomSource(12345) };
 
@@ -77,6 +81,7 @@ export function harness(options: HarnessOptions): Harness {
     cards(options.shoe),
     options.pad ? cards(options.pad) : cards(defaultPad()),
   );
+  assertFixtureSurvivesTheFirstBettingRound(fixture);
   state = { ...state, shoe: fixture };
 
   const started = startSession(state, TEST_CONTEXT);
@@ -114,6 +119,28 @@ function makeHarness(state: EngineState, events: EngineEvent[]): Harness {
 /** Filler cards that never form a natural, keeping fixtures unambiguous. */
 function defaultPad(): string {
   return Array.from({ length: 60 }, () => "5C 6D 7H 8S 9C").join(" ");
+}
+
+/**
+ * A fixture shorter than the safety reserve is thrown away before it is used.
+ *
+ * `startSession` opens the first betting round, and `openBetting` reshuffles
+ * whenever `needsReshuffle` is true — which it is for ANY shoe holding fewer
+ * than `SAFETY_RESERVE_CARDS`. The fixture is then replaced by a real shuffled
+ * six-deck shoe, and the test carries on against cards nobody chose: it does
+ * not error, it does not skip, it silently stops testing what it says it tests.
+ *
+ * Found by writing a dealer table with a 40-card pad and watching eleven cases
+ * fail against random cards. Cheaper to refuse the fixture than to debug it.
+ */
+function assertFixtureSurvivesTheFirstBettingRound(fixture: Shoe): void {
+  if (!needsReshuffle(fixture)) return;
+  throw new Error(
+    `Fixture shoe of ${fixture.cards.length} cards would be reshuffled away before the ` +
+      `first hand: openBetting reshuffles below the ${SAFETY_RESERVE_CARDS}-card safety ` +
+      `reserve, replacing it with a random six-deck shoe. Lengthen \`pad\` past ` +
+      `${SAFETY_RESERVE_CARDS} cards, or omit it to use the default.`,
+  );
 }
 
 /** Places and locks a bet for every seat, cascading into the deal. */

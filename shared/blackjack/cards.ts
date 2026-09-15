@@ -131,6 +131,11 @@ export function cardAccessibilityLabel(card: Card): string {
   return `${RANK_NAMES[card.rank]} of ${SUIT_NAMES[card.suit]}`;
 }
 
+/** The spoken rank alone, e.g. "Six", for announcements like "Dealer shows six." */
+export function rankName(rank: Rank): string {
+  return RANK_NAMES[rank];
+}
+
 /** Compact debug/log form, e.g. "AS". Not for user-facing display. */
 export function cardShorthand(card: Card): string {
   return `${card.rank}${card.suit}`;

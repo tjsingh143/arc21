@@ -42,6 +42,9 @@ describe("closed economies", () => {
     expect(chipsCameFromWallet("tournament")).toBe(false);
     expect(chipsCameFromWallet("daily_challenge")).toBe(false);
     expect(chipsCameFromWallet("practice")).toBe(false);
+    // A career node starts on 2,000 chips that came from nowhere and vanish
+    // with the session. Crediting them would mint 2,000 per attempt.
+    expect(chipsCameFromWallet("career")).toBe(false);
   });
 
   it("would have refused the private table that minted 5,000 chips", () => {
@@ -53,8 +56,9 @@ describe("closed economies", () => {
 describe("every mode is classified", () => {
   it("covers the whole database enum", () => {
     // `supabase/tests/16_sprint_and_daily.test.sql` holds the database's
-    // `game_mode` enum to this exact list, so a seventh mode fails the suite until
-    // it is placed on one side of the line or the other.
+    // `game_mode` enum to this exact list, so a new mode fails the suite until
+    // it is placed on one side of the line or the other. `career` was added in
+    // the closure mission and failed here and there, as intended.
     expect([...ALL_SESSION_MODES]).toEqual([
       "practice",
       "solo",
@@ -62,6 +66,7 @@ describe("every mode is classified", () => {
       "public_table",
       "tournament",
       "daily_challenge",
+      "career",
     ]);
   });
 

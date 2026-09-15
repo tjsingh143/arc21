@@ -1,0 +1,51 @@
+# Use a local audit account. Inspect its server profile after this flow, then
+# restore the original display name through the same UI. The handle is untouched.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 30000
+- tapOn:
+    id: profile-edit-name
+- tapOn:
+    id: profile-display-name
+- eraseText
+- inputText: ${DISPLAY_NAME}
+- hideKeyboard
+- tapOn:
+    id: profile-save-name
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 30000
+- assertNotVisible:
+    id: profile-display-name
+- assertVisible: ${DISPLAY_NAME}
+- takeScreenshot: profile-name-saved-editor-closed
+- stopApp
+- launchApp:
+    clearState: false
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 30000
+- assertNotVisible:
+    id: profile-display-name
+- assertVisible: ${DISPLAY_NAME}
+- takeScreenshot: profile-name-cold-persisted

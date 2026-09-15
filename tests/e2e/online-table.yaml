@@ -1,0 +1,262 @@
+# Arc 21 — a hand PLAYED at a server table, against a real server.
+#
+# THE GAP THIS FILLS, and it is the one that has cost this project most.
+#
+# CLAUDE.md records that `BettingBar` disabled Deal unless `legal.canLockBet`,
+# which asks whether the ENGINE already holds a bet. Practice satisfies it,
+# because `addChip` applies PLACE_BET locally on every tap; a server table never
+# does, because the bet is not sent until Deal is pressed. So **no online table
+# could take a wager in any mode**, and `lockBet` — written, unit-tested and
+# correct — was wired to a button that could not be pressed.
+#
+# Nothing caught it. `tests/server/*` send commands directly. The store's
+# `lockBet` is tested by CALLING it. And no E2E flow had ever played an online
+# table: `private-lobby.yaml` reaches a lobby and stops at the room code,
+# because dealing a private table needs a second human.
+#
+# QUICK PLAY IS THE ONE SERVER TABLE ONE ACCOUNT CAN PLAY ALONE. That is why
+# this flow uses it, and it is the whole reason it can exist.
+#
+# WHAT IT PROVES, in order:
+#   * the buy-in leaves the wallet when the table opens — asserted on the
+#     BALANCE, before and after, not on the tap;
+#   * a chip can be staged and DEAL CAN BE PRESSED at a server table;
+#   * the server dealt: cards are on the table and the hand reaches a decision
+#     or a settlement;
+#   * the hand can be played to completion and the NEXT one started — the
+#     command that did not exist until a green suite proved every online table
+#     stopped after hand one;
+#   * leaving cashes out, and the remainder comes back to the wallet.
+#
+# BEFORE RUNNING — the same three as `private-lobby.yaml`:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro test tests/e2e/online-table.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# --- Sign in ---------------------------------------------------------------
+# A subflow, because the three states the app can start in are the same for
+# every server-configured flow and getting them wrong costs a run. See
+# `sign-in.yaml`: `clearState: true` does not clear the iOS keychain, so a
+# relaunch can restore the session and land on Home without ever showing the
+# auth screen.
+- runFlow: sign-in.yaml
+
+# --- Quick Play setup ------------------------------------------------------
+# A deep link, rather than the tab bar: several runs have been lost to selectors
+# that "COMPLETED" while the app sat on the wrong tab.
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+- runFlow:
+    when:
+      visible: "Save Password?"
+    commands:
+      - tapOn: "Not Now"
+
+- extendedWaitUntil:
+    visible:
+      id: "quick-tier-casual"
+    timeout: 30000
+
+# The balance is READ FROM THE SERVER. A build with no server shows "—", so
+# this assertion is also the proof that this flow is running against a
+# configured one — the thing every other flow in this repository is not.
+- assertVisible:
+    id: "quick-balance"
+    text: "[0-9,]+"
+
+# Casual: 2,000 buy-in, bets 20-500. The cheapest table, so the flow does not
+# depend on how much this account has left from an earlier run.
+- tapOn:
+    id: "quick-tier-casual"
+# `play` assistance, so the hand COUNTS towards strategy accuracy. Learn and
+# Analysis are excluded from the board by the server, and a flow that silently
+# used one would be proving the unranked path.
+- tapOn:
+    id: "quick-assistance-play"
+
+# SCROLLED to, not merely tapped. `tapOn` does not scroll, and the Deal button
+# is the last element of a screen that is two viewports tall — the tap would
+# "succeed" against empty space and the flow would carry on against an unchanged
+# screen. Confirmed from the failure screenshot rather than guessed: the balance,
+# the selected tier and the selected assistance were all correct and Deal was
+# simply below the fold.
+- scrollUntilVisible:
+    element:
+      id: "quick-deal"
+    direction: DOWN
+    timeout: 20000
+- tapOn:
+    id: "quick-deal"
+
+# --- The table -------------------------------------------------------------
+# The server opened a session and the client navigated to it.
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 45000
+
+# THE ASSERTION THIS FILE EXISTS FOR.
+#
+# A chip is staged and Deal is pressed at a SERVER table. Before the affordance
+# fix this button was disabled here and only here — Practice enabled it, every
+# unit test called `lockBet` directly, and every server test posted commands
+# over HTTP. This is the only thing in the repository that presses it.
+- extendedWaitUntil:
+    visible:
+      id: "chip-50"
+    timeout: 30000
+- tapOn:
+    id: "chip-50"
+- tapOn:
+    id: "bet-deal"
+
+# The SERVER dealt. Cards on the table, and the seat is now somewhere in a hand
+# rather than still waiting to bet — which is what "No cards yet." would say.
+- extendedWaitUntil:
+    notVisible: "No cards yet."
+    timeout: 45000
+
+# --- Play the hand out -----------------------------------------------------
+# Each state is checked at the TOP level of the iteration, not nested inside one
+# branch. `career-node.yaml` deadlocked for a year of runs because its only
+# progress branch sat inside the betting state, so an iteration that arrived at
+# a settled hand skipped the whole body — and so did every iteration after it.
+- repeat:
+    times: 12
+    commands:
+      # The insurance offer. It was UNREACHABLE at every server table until
+      # phase 14 s5 — the screen had no branch for it, fell through to
+      # "Waiting for the next hand.", and sat there until the deadline expired
+      # and the server declined for the player. This branch is the only thing
+      # that would notice it going missing again.
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                id: "action-stand"
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                id: "table-next-hand"
+
+# A second hand was dealt, which is the thing a green suite once hid: the engine
+# parks at HAND_COMPLETE by design and no client command mapped to advancing it,
+# so every online table stopped after hand one while 1,108 tests passed.
+#
+# Asserted as "the betting bar came back", because that is what the next hand
+# looks like from outside — and it can only come back if NEXT_HAND was applied
+# by the server and its snapshot arrived.
+- extendedWaitUntil:
+    visible:
+      id: "chip-50"
+    timeout: 45000
+
+# --- Leave, and be paid out ------------------------------------------------
+#
+# LEAVING NOW ASKS FIRST, and this flow is what proves the dialog is real.
+#
+# `AppSettings.confirmLeavingOnlineGame` defaults to true and — until phase 5 —
+# was read by nothing at all: declared, defaulted, validated and persisted, with
+# three references in the whole repository, all inside `settings.ts`. It guards
+# the one economic command a mis-tap can fire, because "Leave table" sends
+# `CASH_OUT`, and it sits where a thumb reaches for a back button that
+# `TABLE_SCREEN_OPTIONS` deliberately removed.
+#
+# The title is asserted BEFORE the tap. A `tapOn` that finds nothing fails, but a
+# tap that lands on the wrong thing "COMPLETED" — which is how three taps on the
+# accessibility switches once reported success and moved no switch.
+- tapOn: "Leave table"
+
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 15000
+# The dialog states the amount coming back, from the server's snapshot rather
+# than a local guess. Matched loosely on the digits so a different tier or a
+# different run of cards does not break the flow.
+- assertVisible: ".*chips return to your balance.*"
+
+# The DESTRUCTIVE button, which is deliberately not the cancel one. "Stay" is
+# `style: cancel`; this is `style: destructive`.
+- tapOn:
+    text: "Leave table"
+    index: 1
+
+# HOME, not the setup screen. `quick.tsx` REPLACES itself with the table rather
+# than pushing it, so leaving returns to what was underneath — which is right:
+# a setup screen the player has already acted on is not somewhere to go back to.
+# Home offers "Resume your last setup" instead.
+- extendedWaitUntil:
+    visible:
+      id: "home-practice"
+    timeout: 45000
+
+# THE SEAT WAS ACTUALLY GIVEN UP, and this is the only assertion here that the
+# client cannot fake. `leaveTable()` returning true is the client's opinion;
+# opening the setup screen again asks the SERVER. A seat still live answers
+# "You are already seated at a table, and your chips are there", and the Deal
+# button is refused — which is exactly what a run that ended mid-hand leaves
+# behind, and how one earlier attempt at this flow failed.
+- openLink: arc21://table/quick
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+- extendedWaitUntil:
+    visible:
+      id: "quick-tier-casual"
+    timeout: 30000
+- assertNotVisible: ".*already seated at a table.*"
+# The remainder is back: the balance reads a number, and the table can be opened
+# again — which `create-session` refuses outright while a seat is still live.
+- assertVisible:
+    id: "quick-balance"
+    text: "[0-9,]+"
+- scrollUntilVisible:
+    element:
+      id: "quick-deal"
+    direction: DOWN
+    timeout: 20000
+- assertVisible:
+    id: "quick-deal"

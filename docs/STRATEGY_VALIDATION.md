@@ -2,7 +2,7 @@
 
 **GENERATED FILE — regenerate with `npx tsx scripts/generate-strategy-tables.ts`.**
 
-Ruleset `arc-standard@1` · generated 2026-08-17T15:35:50.467Z
+Ruleset `arc-standard@1` · generated 2026-08-24T23:07:37.949Z
 
 The chart Arc 21 serves is computed by an expected-value solver, not copied from a published chart. This document is the independent check: it compares every cell of the computed chart against the widely published six-deck / S17 / DAS / late-surrender basic strategy chart and lists **every** disagreement, with the solver's own EV numbers for that cell.
 
