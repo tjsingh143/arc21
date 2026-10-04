@@ -77,7 +77,7 @@ export function describeCompetitionUnavailable(
   switch (reason) {
     case "NO_ACCOUNT":
       return {
-        title: "Requires an account",
+        title: "Connect for your record",
         /*
          * THE SECOND SENTENCE USED TO READ "This build has no sign-in yet."
          *
@@ -88,10 +88,8 @@ export function describeCompetitionUnavailable(
          * not exist. A refusal has to name something the player can do.
          */
         body:
-          "Tournament and Daily Challenge records are kept on the server so they " +
-          "cannot be edited from a phone. You are playing as a guest, so there is " +
-          "no record to show — not a record of zero. Create an account and every " +
-          "ranked result from then on is kept here.",
+          "Tournament and Daily Challenge records are kept under your online player identity. " +
+          "Connect to see your record. No email or password is needed, and Practice works offline.",
       };
     case "OFFLINE":
       return {

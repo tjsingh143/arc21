@@ -17,7 +17,7 @@ Docker must be running. Node lives in `/opt/homebrew/bin`.
 export PATH="/opt/homebrew/bin:$PATH"
 cd /Users/tj/arc21
 
-supabase start          # first run pulls images; slow
+npm run db:start        # pins local PostgREST 16.3; then supabase start
 supabase db reset       # drop, re-apply every migration, then seed.sql
 supabase test db        # pgTAP suite
 supabase stop           # when you are done
@@ -36,6 +36,38 @@ deployed environment; local iteration edits freely and resets.
 
 pgTAP is created inside each test's transaction and rolled back with it, so the
 extension is never installed into a deployed database.
+
+---
+
+## Refresh-B forward migration
+
+The current head is `20261004120000_push_registration_intent_order.sql`:
+per-token revisions order push registration and retirement at Postgres, with
+old RPC signatures removed and existing authorization boundaries preserved.
+The closure run passed **32 pgTAP files / 640 assertions**, including 30 for this
+migration. See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026).
+Deploy this migration with or before the client that sends `p_revision`.
+
+`20260915120000_pseudonymous_players.sql` replaces only the current Auth INSERT
+bootstrap function and adds a server-only handle allocator. Existing rows are
+not rewritten. Each anonymous user receives a filtered human-readable unique
+handle; collision retries are protected by `profiles_username_key`. Profile,
+stats, wallet and one opening ledger entry commit atomically with the Auth user.
+Securing changes Auth identities on that same UUID and does not run the INSERT
+trigger. `display_name` remains separate, initialized to the assigned handle.
+Handle moderation and rename limits (one handle change/30 days, five display-name
+changes/hour) are unchanged.
+
+The migration also revokes direct friend-request INSERT, drops the global
+Realtime presence policies, adds `list_friend_presence()` for accepted,
+unblocked friends with server activity in the previous 90 seconds, and updates
+the authorization-surface gate. No client role receives access to private state.
+
+Local Auth enables anonymous users, manual linking and email confirmation, with
+an email-change OTP template. `npm run db:start` writes an ignored service-version
+pin for PostgREST 16.3, whose upstream clock fix prevents genuine fresh Auth JWTs
+being rejected as issued in the future. It changes no hosted project.
+Forward-up preservation and clean-reset evidence: [Refresh B](./astra-refresh/refresh-b.md).
 
 ---
 
@@ -158,7 +190,7 @@ without being updated:
 | Table | Verbs | Notes |
 |-------|-------|-------|
 | `profiles` | `UPDATE` | Only `username`, `display_name`, `bio`, `avatar_url`, `country_code`, `privacy` |
-| `friend_requests` | `INSERT`, `UPDATE` | `UPDATE` restricted to `status` |
+| `friend_requests` | `UPDATE` | Restricted to `status`; creation uses the rate-limited `send_friend_request` RPC |
 | `friendships` | `DELETE` | Unfriending. Creation is server-side |
 | `blocks` | `INSERT`, `DELETE` | |
 | `loadouts` | `INSERT`, `UPDATE` | Slots validated against ownership and kind |
@@ -177,7 +209,8 @@ that privilege is granted by mistake later.
 `wallets` and `wallet_ledger` have **no** client write path at all — `SELECT`
 and nothing else, no `INSERT`/`UPDATE`/`DELETE` policy, and a guard trigger
 underneath. Chips move only through `public.apply_wallet_delta()`, which is
-`SECURITY DEFINER`, executable by `service_role` only, and:
+`SECURITY DEFINER`, revoked from all API roles (including `service_role`), called
+by the server as `postgres`, and:
 
 - locks the wallet row `FOR UPDATE`
 - returns the first committed result when the idempotency key is already present
@@ -384,8 +417,8 @@ suite.
 The specification asks that migrations be "reversible where reasonable or include
 documented recovery". This is the position for every one of them, so that a bad
 deploy is answered by reading rather than by improvising. The count was
-forty-four when this section was written and is **fifty-nine** now. The
-fifteen added since mostly add DDL, replace function bodies, or narrow policies.
+forty-four when this section was written and is **sixty-one** for Refresh B. The
+seventeen added since mostly add DDL, replace function bodies, or narrow policies.
 The Career attempt repair also recomputes a derived aggregate, as described
 below. One index change needs a sentence of its own:
 `20260906120000_seat_index_reuse.sql` DROPS `game_session_seats_unique_index`
@@ -415,7 +448,7 @@ somebody believes in; the recovery below is what would actually be done.
 ### The shape of the history
 
 These classification counts describe the original reviewed subset, rather than
-all 59 current migration files. Later additions are discussed above.
+all 61 current migration files. Later additions are discussed above.
 
 | Class | Count | Reversal |
 |---|---|---|
@@ -481,8 +514,8 @@ bites on three of them, and it is worth naming which:
 
 ### The forward guarantee, which is the one that is actually tested
 
-`supabase db reset` applies all fifty-three from an empty database on every run of
-the test suite, and `20260818120000_authorization_gate.sql` fails the migration
+`supabase db reset` applies all sixty-one from an empty database when the clean-stack
+gate runs, and `20260818120000_authorization_gate.sql` fails the migration
 if the authorization surface is wrong when it finishes. A migration that cannot
 apply cleanly from scratch is caught before it is ever deployed, which is the
 half of this that gets exercised daily.
@@ -529,9 +562,17 @@ supabase/tests/
                                  cascading reference to the account, so a table
                                  added later without a cascade fails it with no
                                  edit
+  24_active_session.test.sql     caller-owned live-seat recovery
+  25_bounded_reads.test.sql      literal search, limits and bounded directories
+  26_seat_index_reuse.test.sql   departed seat indices can be reused
+  27_leaving_clears_the_reservation.test.sql  seat departure releases matchmaking
+  28_a_room_must_not_close_under_a_newcomer.test.sql  room lifecycle races
+  30_career_attempt_counts.test.sql  authoritative attempt counts
+  31_pseudonymous_identity.test.sql  generated handles, one grant, social privacy
+  32_push_intent_order.test.sql  per-token intent ordering and authorization
 ```
 
-**469 assertions across 24 files.** They test authorization by **acting as the
+**Refresh-B closure run: 640 assertions across 32 files.** They test authorization by **acting as the
 attacker** — `SET LOCAL ROLE authenticated` plus a `request.jwt.claims` subject,
 which is exactly the context PostgREST establishes for a real request.
 
@@ -544,12 +585,13 @@ Two things pgTAP cannot reach, both in `tests/server/`:
   `rls-writes.integration.test.ts` writes, with a second real token, across
   every one of the thirteen client write grants.
 
-Two real defects surfaced while writing them, both fixed:
+Two historical defects surfaced while writing the earlier suites, both fixed:
 
 1. **`handle_new_user` could not resolve a username collision.** The derived
    handle was `'p' || substr(id, 1, 12)`, and the collision branch retried the
    same string — so two accounts sharing their first twelve hex digits would
-   deadlock on the unique index instead of falling back. Now suffixed until free.
+   deadlock on the unique index instead of falling back. Refresh B now generates
+   filtered word handles, with a fresh suffixed candidate on collision.
    Two further versions of the same bug have been found since, and both cost a
    player their account: a derived handle that folded into a forbidden word
    could not be repaired by suffixing at all (fixed in

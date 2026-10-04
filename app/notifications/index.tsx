@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Notifications.
  *
@@ -30,6 +31,7 @@ import {
 } from "../../src/features/notifications";
 
 export default function Notifications() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const router = useRouter();
   const status = useNotificationsStore((state) => state.status);
   const unread = useNotificationsStore((state) => state.unread);
@@ -40,7 +42,7 @@ export default function Notifications() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [userId, load]);
 
   // Derived from subscribed state, never by calling a store getter during
   // render — the React Compiler memoises that against the function reference and

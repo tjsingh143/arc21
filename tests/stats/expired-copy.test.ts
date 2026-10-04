@@ -75,26 +75,13 @@ describe("copy that could expire", () => {
   });
 });
 
-describe("the account-shaped refusals", () => {
-  it("name the thing a player can do about it", () => {
-    /*
-     * "A control that refuses must name something the player can do." Both of
-     * these refuse for a reason the player can fix in about a minute, and
-     * neither used to say so.
-     */
-    expect(describeCompetitionUnavailable("NO_ACCOUNT").body).toMatch(/create an account/i);
-    expect(describeProgressionUnavailable("NO_ACCOUNT").body).toMatch(/create an account/i);
-  });
-
-  it("still refuse to invent a record of zero", () => {
-    // The reason these states exist at all. A zero is a value, and a value
-    // nobody earned asserts the app is keeping score of something it is not.
-    expect(describeCompetitionUnavailable("NO_ACCOUNT").body).toMatch(/not a record of zero/i);
-    expect(describeProgressionUnavailable("NO_ACCOUNT").body).toMatch(/inventing one/i);
-  });
-
-  it("says guest, which is what the player actually is", () => {
-    expect(describeCompetitionUnavailable("NO_ACCOUNT").body).toMatch(/guest/i);
-    expect(describeProgressionUnavailable("NO_ACCOUNT").body).toMatch(/guest/i);
+describe("offline identity explanations", () => {
+  it("offers connection without asking the player to register", () => {
+    for (const copy of [describeCompetitionUnavailable("NO_ACCOUNT"), describeProgressionUnavailable("NO_ACCOUNT")]) {
+      expect(copy.body).toMatch(/connect/i);
+      expect(copy.body).toMatch(/without an email or password|No email or password/i);
+      expect(copy.body).not.toMatch(/guest|create an account/i);
+      expect(copy.body).toMatch(/Practice.*offline/i);
+    }
   });
 });

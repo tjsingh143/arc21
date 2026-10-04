@@ -1,387 +1,214 @@
 /**
- * Arc 21 — auth session state.
- *
- * A thin coordinator. It owns no rules: validation lives in `credentials.ts`,
- * every transition goes through `reduceAuthForm`, every remote call goes through
- * an `AuthAdapter`, and error classification lives in `auth-failure.ts`. If you
- * find yourself deciding here whether an email is well formed, you are in the
- * wrong file.
- *
- * Two invariants this file is responsible for:
- *
- *   * **The password is an argument, never a field.** `signIn(password)` hands
- *     it to the adapter and forgets it. It is never assigned into the store, so
- *     it cannot reach a devtools trace, a serialised state dump or a crash
- *     report.
- *   * **Nothing hangs.** Hydration is time-bounded like the practice table's,
- *     and every adapter call is bounded inside the adapter. A build with no
- *     Supabase configuration settles into a stated "not configured" state
- *     immediately rather than waiting on a request it never sent.
- *
- * Guest is the default resting state, not a failure. `mode` starts `unknown`,
- * becomes `guest` when hydration finds no session, and `account` when it finds
- * one. There is no state in which the player has nothing.
+ * Every online player has a Supabase identity, including an unlinked player.
+ * `guest` is retained only as the internal device-local Practice fallback.
+ * Credentials stay in the SDK/keychain; passwords and OTPs are arguments only.
  */
-
 import { create } from "zustand";
-
 import { SqliteKeyValueStore } from "../../lib/persistence/key-value-store.js";
-import { getSupabase, type ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { publishAdoptedPlayer } from "../../lib/supabase/adopted-player.js";
+import { builtSupabaseClient, getSupabase, type ArcSupabaseClient } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
-import {
-  createUnconfiguredAuthAdapter,
-  type AuthAdapter,
-  type AuthSessionSnapshot,
-} from "./auth-adapter.js";
+import { createUnconfiguredAuthAdapter, type AuthAdapter, type AuthResult, type AuthSessionSnapshot } from "./auth-adapter.js";
 import { authFailure, classifyAuthError, type AuthFailure } from "./auth-failure.js";
-import {
-  initialAuthFormState,
-  reduceAuthForm,
-  type AuthFormEvent,
-  type AuthFormMode,
-  type AuthFormState,
-} from "./auth-machine.js";
-import { normaliseUsername } from "./credentials.js";
+import { initialAuthFormState, reduceAuthForm, type AuthFormEvent, type AuthFormMode, type AuthFormState } from "./auth-machine.js";
+import { validateEmail, validatePassword } from "./credentials.js";
 import { GuestIdentityStore, type GuestIdentity } from "./guest.js";
 import { createSupabaseAuthAdapter } from "./supabase-auth-adapter.js";
 
-/** How long hydration waits for local storage before continuing as a guest. */
 export const AUTH_HYDRATE_TIMEOUT_MS = 2_000;
-
 export type AuthMode = "unknown" | "guest" | "account";
-
 export interface AuthStoreState {
-  /** True once hydration has settled — including when it timed out or failed. */
   readonly hydrated: boolean;
   readonly mode: AuthMode;
   readonly session: AuthSessionSnapshot | null;
   readonly guest: GuestIdentity | null;
-  /** False when this build has no usable Supabase configuration. */
   readonly configured: boolean;
-  /** Plain-language reason, when `configured` is false. */
   readonly configurationMessage: string | null;
   readonly form: AuthFormState;
-
+  readonly bootstrapStatus: "idle" | "connecting" | "ready" | "unavailable";
+  readonly bootstrapFailure: AuthFailure | null;
+  /** A deliberate sign-out pauses automatic creation until Connect or relaunch. */
+  readonly automaticBootstrap: boolean;
   hydrate: () => Promise<void>;
+  ensurePlayer: () => Promise<void>;
   dispatch: (event: AuthFormEvent) => void;
   setMode: (mode: AuthFormMode) => void;
-
-  signIn: (password: string) => Promise<void>;
-  signUp: (password: string) => Promise<void>;
+  signIn: (password: string, expectedUserId?: string | null) => Promise<void>;
+  startSecuring: (email: string) => Promise<AuthFailure | null>;
+  verifySecuringEmail: (email: string, code: string) => Promise<AuthFailure | null>;
+  setSecuredPassword: (password: string) => Promise<AuthFailure | null>;
   requestPasswordReset: () => Promise<void>;
-  /**
-   * Completes a reset from the recovery deep link. Deliberately outside
-   * `AuthFormState` — the recovery screen is not the sign-in/sign-up form
-   * and keeps its own local pending/error state, the same way the password
-   * itself is kept local rather than lifted into the store. Returns the
-   * failure to render, or null on success; a successful exchange fires the
-   * adapter's own `onAuthStateChange` and adopts the session exactly as an
-   * ordinary sign-in does.
-   */
-  completePasswordReset: (code: string, newPassword: string) => Promise<AuthFailure | null>;
-  signOut: () => Promise<void>;
-  /** Erases the account, then drops to guest. Irreversible. */
-  deleteAccount: () => Promise<boolean>;
-  /** Leaves the auth screens without signing in. Guest is a real destination. */
+  completePasswordReset: (code: string, newPassword: string, expectedUserId?: string | null) => Promise<AuthFailure | null>;
+  signOut: (expectedUserId?: string | null) => Promise<void>;
+  deleteAccount: (expectedUserId?: string | null) => Promise<boolean>;
   continueAsGuest: () => Promise<void>;
 }
-
-// ---------------------------------------------------------------------------
-// Injectable collaborators
-//
-// Left null until first use so a plain Node test process never reaches for
-// expo-sqlite's or expo-secure-store's native modules — the same arrangement
-// the practice and onboarding stores use.
-// ---------------------------------------------------------------------------
-
 let adapterOverride: AuthAdapter | null = null;
-// The adapter owns the verified, single-use recovery flow across submissions.
-// Its lifetime must match the SDK client, rather than one button press.
 const adapters = new WeakMap<ArcSupabaseClient, AuthAdapter>();
 let guestStore: GuestIdentityStore | null = null;
 let unsubscribe: (() => void) | null = null;
-
-export function setAuthAdapter(next: AuthAdapter | null): void {
-  adapterOverride = next;
-}
-
-export function setGuestIdentityStore(next: GuestIdentityStore | null): void {
-  guestStore = next;
-}
-
-/**
- * Tears down the auth-state subscription. Called by tests between cases; the app
- * keeps one for its lifetime.
- */
+let hydration: Promise<void> | null = null;
+let bootstrap: Promise<void> | null = null;
+export function setAuthAdapter(next: AuthAdapter | null): void { adapterOverride = next; }
+export function setGuestIdentityStore(next: GuestIdentityStore | null): void { guestStore = next; }
 export function disposeAuthSubscription(): void {
-  unsubscribe?.();
-  unsubscribe = null;
+  unsubscribe?.(); unsubscribe = null;
+  hydration = null; bootstrap = null;
 }
-
 export function activeAuthAdapter(): AuthAdapter {
-  if (adapterOverride !== null) return adapterOverride;
-
+  if (adapterOverride) return adapterOverride;
   const availability = getSupabase();
-  if (availability.status !== "ready") {
-    return createUnconfiguredAuthAdapter(
-      authFailure("NOT_CONFIGURED", availability.message),
-    );
-  }
+  if (availability.status !== "ready") return createUnconfiguredAuthAdapter(authFailure("NOT_CONFIGURED", availability.message));
   let adapter = adapters.get(availability.client);
-  if (!adapter) {
-    adapter = createSupabaseAuthAdapter(availability.client);
-    adapters.set(availability.client, adapter);
-  }
+  if (!adapter) { adapter = createSupabaseAuthAdapter(availability.client); adapters.set(availability.client, adapter); }
   return adapter;
 }
-
 function activeGuestStore(): GuestIdentityStore {
-  // The same local database the practice save and the onboarding flag use. One
-  // local store, not three. Tests inject a memory-backed one instead.
   guestStore ??= new GuestIdentityStore(new SqliteKeyValueStore());
   return guestStore;
 }
 
 export const useAuthStore = create<AuthStoreState>((set, get) => {
   function apply(event: AuthFormEvent): AuthFormState {
-    const next = reduceAuthForm(get().form, event);
-    set({ form: next });
-    return next;
+    const next = reduceAuthForm(get().form, event); set({ form: next }); return next;
   }
-
-  function adoptSession(session: AuthSessionSnapshot | null): void {
-    if (session === null) return;
-    set({ session, mode: "account" });
+  function adopt(session: AuthSessionSnapshot | null): void {
+    if (!session) { set({ session: null, mode: "guest", bootstrapStatus: "idle" }); return; }
+    const known = get().session?.account.userId === session.account.userId ? get().session?.account.username : null;
+    set({
+      session: known && !session.account.username ? { ...session, account: { ...session.account, username: known } } : session,
+      mode: "account", bootstrapStatus: "ready", bootstrapFailure: null,
+    });
   }
-
-  async function ensureGuest(): Promise<GuestIdentity | null> {
-    const existing = get().guest;
-    if (existing !== null) return existing;
-
+  async function readHandle(): Promise<void> {
+    const id = get().session?.account.userId;
+    if (!id) return;
+    const username = await activeAuthAdapter().fetchAssignedUsername().catch(() => null);
+    const current = get().session;
+    if (username && current?.account.userId === id) adopt({ ...current, account: { ...current.account, username } });
+  }
+  async function ensureGuest(): Promise<void> {
+    if (get().guest) return;
     const result = await withTimeout(activeGuestStore().ensure(), AUTH_HYDRATE_TIMEOUT_MS);
-    if (isTimedOut(result)) return null;
-    set({ guest: result });
-    return result;
+    if (!isTimedOut(result)) set({ guest: result });
   }
-
+  async function secure(operation: () => Promise<AuthResult>): Promise<AuthFailure | null> {
+    try {
+      const result = await operation();
+      if (!result.ok) return result.failure;
+      if (result.session) adopt(result.session);
+      return null;
+    } catch (cause) { return classifyAuthError(cause); }
+  }
   return {
-    hydrated: false,
-    mode: "unknown",
-    session: null,
-    guest: null,
-    configured: false,
-    configurationMessage: null,
-    form: initialAuthFormState("signIn"),
-
-    hydrate: async () => {
-      if (get().hydrated) return;
-
-      const availability = getSupabase();
-      const configured = availability.status === "ready";
-      set({
-        configured,
-        configurationMessage: configured ? null : availability.message,
-      });
-
-      // A guest identity exists regardless of whether anyone signs in. Doing
-      // this first means the offline product is ready before any network call
-      // is attempted, so a slow or absent server never delays the app opening.
-      await ensureGuest().catch(() => null);
-
-      if (!configured) {
-        set({ hydrated: true, mode: "guest", session: null });
-        return;
-      }
-
-      const adapter = activeAuthAdapter();
-
-      let session: AuthSessionSnapshot | null = null;
-      try {
-        const result = await adapter.getSession();
-        if (result.ok) session = result.session;
-      } catch {
-        // An unreachable auth service must not stop the app from opening as a
-        // guest. Signing in remains available and will report the failure then.
-      }
-
-      if (session !== null) {
-        const username = await adapter.fetchAssignedUsername().catch(() => null);
-        if (username !== null) {
-          session = { ...session, account: { ...session.account, username } };
-        }
-      }
-
-      // One subscription for the app's lifetime. Token refreshes, expiry and a
-      // sign-out performed on another screen all land here rather than being
-      // discovered by a failing request.
-      disposeAuthSubscription();
-      unsubscribe = adapter.onAuthStateChange((next) => {
-        set((current) => {
-          if (next === null) return { session: null, mode: "guest" as const };
-          /*
-           * A refresh event carries a session snapshot with no username on it —
-           * the handle lives on `profiles`, not on the token. Carrying the known
-           * one forward when the account is unchanged stops every token refresh
-           * from blanking the name in the header.
-           */
-          const known =
-            current.session?.account.userId === next.account.userId
-              ? current.session.account.username
-              : null;
-          return {
-            session:
-              known === null ? next : { ...next, account: { ...next.account, username: known } },
-            mode: "account" as const,
-          };
+    hydrated: false, mode: "unknown", session: null, guest: null,
+    configured: false, configurationMessage: null, form: initialAuthFormState("signIn"),
+    bootstrapStatus: "idle", bootstrapFailure: null, automaticBootstrap: true,
+    hydrate: () => {
+      if (get().hydrated) return Promise.resolve();
+      hydration ??= (async () => {
+        const availability = getSupabase();
+        const configured = availability.status === "ready";
+        set({ configured, configurationMessage: configured ? null : availability.message });
+        await ensureGuest().catch(() => undefined);
+        // The app opens before any network authentication. Practice needs no server.
+        set({ hydrated: true, mode: "guest", automaticBootstrap: true });
+        if (!configured) { set({ bootstrapStatus: "unavailable" }); return; }
+        unsubscribe?.();
+        unsubscribe = activeAuthAdapter().onAuthStateChange((session) => {
+          adopt(session);
+          // Do not call another SDK method inside its auth-state callback lock.
+          if (session) setTimeout(() => { void readHandle(); }, 0);
         });
-        if (next === null) void ensureGuest();
-      });
-
-      set({
-        hydrated: true,
-        session,
-        mode: session === null ? "guest" : "account",
-      });
+        await get().ensurePlayer();
+      })().finally(() => { hydration = null; });
+      return hydration;
     },
-
-    dispatch: (event) => {
-      apply(event);
-    },
-
-    setMode: (mode) => {
-      apply({ type: "SET_MODE", mode });
-    },
-
-    signIn: async (password) => {
-      // Validation gates the request: the machine only reaches `submitting`
-      // when every field passed, so nothing is sent for a form the player can
-      // still see a problem with.
-      if (apply({ type: "SUBMIT", password }).status.kind !== "submitting") return;
-
-      const email = get().form.email;
-      try {
-        const result = await activeAuthAdapter().signIn({ email, password });
-        if (!result.ok) {
-          apply({ type: "FAILED", failure: result.failure });
-          return;
+    ensurePlayer: () => {
+      if (!get().hydrated) return get().hydrate();
+      if (bootstrap) return bootstrap;
+      if (!get().configured) { set({ bootstrapStatus: "unavailable", bootstrapFailure: authFailure("NOT_CONFIGURED") }); return Promise.resolve(); }
+      set({ automaticBootstrap: true, bootstrapStatus: "connecting", bootstrapFailure: null });
+      bootstrap = (async () => {
+        try {
+          const result = await activeAuthAdapter().ensurePlayer();
+          if (!result.ok) {
+            set({ bootstrapStatus: get().session ? "ready" : "unavailable", bootstrapFailure: result.failure });
+            return;
+          }
+          adopt(result.session);
+          await readHandle();
+        } catch (cause) {
+          set({ bootstrapStatus: get().session ? "ready" : "unavailable", bootstrapFailure: classifyAuthError(cause) });
         }
-        adoptSession(result.session);
+      })().finally(() => { bootstrap = null; });
+      return bootstrap;
+    },
+    dispatch: (event) => { apply(event); },
+    setMode: (mode) => { apply({ type: "SET_MODE", mode }); },
+    signIn: async (password, expectedUserId = get().session?.account.userId ?? null) => {
+      if (apply({ type: "SUBMIT", password }).status.kind !== "submitting") return;
+      try {
+        const result = await activeAuthAdapter().signIn({ email: get().form.email, password, expectedUserId });
+        if (!result.ok) { apply({ type: "FAILED", failure: result.failure }); return; }
+        adopt(result.session); await readHandle();
         apply({ type: "SUCCEEDED", verificationRequired: result.verificationRequired });
-      } catch (cause) {
-        apply({ type: "FAILED", failure: classifyAuthError(cause) });
-      }
+      } catch (cause) { apply({ type: "FAILED", failure: classifyAuthError(cause) }); }
     },
-
-    signUp: async (password) => {
-      if (apply({ type: "SUBMIT", password }).status.kind !== "submitting") return;
-
-      const { email, username } = get().form;
-      const requested = normaliseUsername(username);
-
-      try {
-        const result = await activeAuthAdapter().signUp({ email, password, username: requested });
-        if (!result.ok) {
-          apply({ type: "FAILED", failure: result.failure });
-          return;
-        }
-
-        adoptSession(result.session);
-
-        if (result.session === null || result.verificationRequired) {
-          // No session yet, so the assigned handle cannot be read. The check
-          // happens on the first successful sign-in instead.
-          apply({ type: "SUCCEEDED", verificationRequired: true });
-          return;
-        }
-
-        /*
-         * `handle_new_user()` substitutes a derived handle when the requested
-         * one is taken, reserved or filtered — it does not fail the sign-up. A
-         * client that did not read the result back would leave the player
-         * believing they own a username they do not, and `profiles` is not
-         * readable by `anon`, so this cannot be checked before submitting.
-         */
-        const assigned = await activeAuthAdapter().fetchAssignedUsername().catch(() => null);
-        if (assigned !== null && assigned !== requested) {
-          apply({ type: "USERNAME_SUBSTITUTED", requested, assigned });
-          return;
-        }
-        apply({ type: "SUCCEEDED", verificationRequired: false });
-      } catch (cause) {
-        apply({ type: "FAILED", failure: classifyAuthError(cause) });
-      }
+    startSecuring: (email) => {
+      const error = validateEmail(email);
+      return error ? Promise.resolve(authFailure("INVALID_EMAIL", error)) : secure(() => activeAuthAdapter().startSecuring(email, get().session?.account.userId ?? null));
     },
-
+    verifySecuringEmail: (email, code) => {
+      if (!/^\d{6}$/.test(code)) return Promise.resolve(authFailure("VERIFICATION_CODE_INVALID"));
+      return secure(() => activeAuthAdapter().verifySecuringEmail(email, code, get().session?.account.userId ?? null));
+    },
+    setSecuredPassword: (password) => {
+      const error = validatePassword(password);
+      return error ? Promise.resolve(authFailure("WEAK_PASSWORD", error)) : secure(() => activeAuthAdapter().setSecuredPassword(password, get().session?.account.userId ?? null));
+    },
     requestPasswordReset: async () => {
       if (apply({ type: "SUBMIT_RESET" }).status.kind !== "submitting") return;
-
-      const email = get().form.email;
       try {
-        const result = await activeAuthAdapter().requestPasswordReset(email);
-        if (!result.ok) {
-          apply({ type: "FAILED", failure: result.failure });
-          return;
-        }
-        apply({ type: "RESET_LINK_SENT" });
-      } catch (cause) {
-        apply({ type: "FAILED", failure: classifyAuthError(cause) });
-      }
+        const result = await activeAuthAdapter().requestPasswordReset(get().form.email);
+        apply(result.ok ? { type: "RESET_LINK_SENT" } : { type: "FAILED", failure: result.failure });
+      } catch (cause) { apply({ type: "FAILED", failure: classifyAuthError(cause) }); }
     },
-
-    completePasswordReset: async (code, newPassword) => {
+    completePasswordReset: async (code, password, expectedUserId = get().session?.account.userId ?? null) => {
       try {
-        const result = await activeAuthAdapter().completePasswordReset(code, newPassword);
+        const result = await activeAuthAdapter().completePasswordReset(code, password, expectedUserId);
         return result.ok ? null : result.failure;
-      } catch (cause) {
-        return classifyAuthError(cause);
-      }
+      } catch (cause) { return classifyAuthError(cause); }
     },
-
-    signOut: async () => {
-      const result = await activeAuthAdapter()
-        .signOut()
-        .catch((cause: unknown) => ({ ok: false, failure: classifyAuthError(cause) }) as const);
-
-      /*
-       * The local session is dropped whatever the server said.
-       *
-       * A sign-out that fails because the network is down and leaves the player
-       * apparently signed in is the wrong failure direction: they asked to
-       * leave, and the refresh token is discarded locally either way.
-       */
-      set({ session: null, mode: "guest", form: initialAuthFormState("signIn") });
-      await ensureGuest();
-
+    signOut: async (expectedUserId = get().session?.account.userId ?? null) => {
+      set({ automaticBootstrap: false });
+      const result = await activeAuthAdapter().signOut(expectedUserId).catch((cause: unknown) => ({ ok: false, failure: classifyAuthError(cause) }) as const);
       if (!result.ok) {
-        // Surfaced, but after the local state has already been cleared.
-        apply({ type: "FAILED", failure: result.failure });
+        // A timed-out operation may still be pending. Never assert that stored
+        // credentials were removed until the SDK confirms it or emits SIGNED_OUT.
+        apply({ type: "FAILED", failure: result.failure }); return;
       }
-    },
-
-    deleteAccount: async () => {
-      const result = await activeAuthAdapter()
-        .deleteAccount()
-        .catch((cause: unknown) => ({ ok: false, failure: classifyAuthError(cause) }) as const);
-
-      if (!result.ok) {
-        /*
-         * The opposite of `signOut`'s failure direction, deliberately. A
-         * sign-out that fails should still end the session locally; a deletion
-         * that fails must NOT, because the account still exists and dropping
-         * the session would hide that from the player.
-         */
-        apply({ type: "FAILED", failure: result.failure });
-        return false;
-      }
-
-      set({ session: null, mode: "guest", form: initialAuthFormState("signIn") });
+      adopt(null); set({ form: initialAuthFormState("signIn") });
       await ensureGuest();
-      return true;
     },
-
-    continueAsGuest: async () => {
-      await ensureGuest();
-      set({ mode: get().session === null ? "guest" : "account" });
+    deleteAccount: async (expectedUserId = get().session?.account.userId ?? null) => {
+      const result = await activeAuthAdapter().deleteAccount(expectedUserId).catch((cause: unknown) => ({ ok: false, failure: classifyAuthError(cause) }) as const);
+      if (!result.ok) { apply({ type: "FAILED", failure: result.failure }); return false; }
+      adopt(null); set({ automaticBootstrap: false, form: initialAuthFormState("signIn") });
+      await ensureGuest(); return true;
     },
+    continueAsGuest: async () => { await ensureGuest(); if (!get().session) set({ mode: "guest" }); },
   };
 });
+
+/*
+ * The player shown here is the ADOPTED player: this store takes one only from
+ * the adapter, which delivers a player only on the auth server's word. Account-
+ * owned work may be done only as that player (`adopted-player.ts`, B-H1), so the
+ * network layer is told on every change, synchronously, whoever set it.
+ */
+function publishAdoption(state: AuthStoreState): void {
+  publishAdoptedPlayer(builtSupabaseClient(), state.session?.account.userId ?? null);
+}
+publishAdoption(useAuthStore.getState());
+useAuthStore.subscribe(publishAdoption);

@@ -40,11 +40,12 @@ import {
   type StatsVisibility,
 } from "../../src/features/settings/settings";
 import { useSettings } from "../../src/features/settings/use-settings";
-import { syncProfilePrivacy } from "../../src/features/settings/profile-privacy";
-import { usePushRegistration } from "../../src/features/notifications";
+import { capturePlayerScope } from "../../src/features/player/player-scope";
+import { preparePlayerDeparture, usePushRegistration } from "../../src/features/notifications/use-push-registration";
 import { applyDailyReminderPreference } from "../../src/lib/notifications/daily-reminder";
 import { hasRoute } from "../../src/features/home/route-availability";
 import { useRouteIndex } from "../../src/features/home/use-route-index";
+import { ConnectPlayerButton } from "../../src/components/ui/ConnectPlayerButton";
 import { usePracticeStore, type AssistanceMode } from "../../src/features/practice/practice-store";
 
 export default function SettingsScreen() {
@@ -72,14 +73,16 @@ export default function SettingsScreen() {
    *
    * It used to be stored only, which meant the control displayed the player's
    * answer back to them while `profiles.privacy` stayed at its default of
-   * `public` for every account ever created. The write is best-effort: a guest
-   * has no row to write, and a preference that blocks on the network is a
-   * control that feels broken. `syncProfilePrivacy` also runs when a session
-   * appears, which is what covers a choice made before signing in.
+   * `public` for every account ever created. The profile write belongs to ONE
+   * owner, `useProfilePrivacySync` at the root, which sees this choice the
+   * moment `update` records it in memory — before the disk save is awaited.
+   * This screen used to sync as well, after that await, and so could write one
+   * player's choice onto whoever was signed in by the time the save finished
+   * (Refresh-B B-F3). The write is best-effort: a guest has no row to write, and
+   * a preference that blocks on the network is a control that feels broken.
    */
-  async function changeVisibility(visibility: StatsVisibility): Promise<void> {
-    await update({ statsVisibility: visibility });
-    await syncProfilePrivacy(visibility);
+  function changeVisibility(visibility: StatsVisibility): void {
+    void update({ statsVisibility: visibility });
   }
 
   function confirmResetStatistics(): void {
@@ -255,9 +258,9 @@ export default function SettingsScreen() {
           <SurfaceCard>
             <AppText variant="bodyStrong">Where your data lives</AppText>
             <AppText variant="body" color="textSecondary">
-              Practice results, settings and career stars stay on this device and
-              are never uploaded. An account adds a chip balance, statistics,
-              friends and leaderboard standing, which are recorded on the server
+              Practice results and settings stay on this device. Online play uses
+              your persistent player identity, with chips, progression, statistics,
+              friends and leaderboard standing recorded on the server
               because they have to be checked rather than trusted.
             </AppText>
             <AppText variant="caption" color="textDisabled">
@@ -275,7 +278,7 @@ export default function SettingsScreen() {
                   label={STATS_VISIBILITY_LABELS[visibility]}
                   size="medium"
                   variant={settings.statsVisibility === visibility ? "primary" : "secondary"}
-                  onPress={() => void changeVisibility(visibility)}
+                  onPress={() => changeVisibility(visibility)}
                   disabled={!ready}
                   style={styles.choice}
                 />
@@ -367,17 +370,19 @@ function AccountSection() {
   const deleteAccount = useAuthStore((state) => state.deleteAccount);
   const signOut = useAuthStore((state) => state.signOut);
   const [busy, setBusy] = useState(false);
+  const [accountError, setAccountError] = useState<string | null>(null);
 
   if (mode !== "account" || session === null) {
     return (
       <SurfaceCard>
-        <AppText variant="bodyStrong">Playing as a guest</AppText>
+        <AppText variant="bodyStrong">Offline player</AppText>
         <AppText variant="body" color="textSecondary">
-          Practice, the strategy guide and drills all work without an account and
-          stay on this device. An account adds a chip balance, career rewards and
-          playing with friends.
+          Practice, the strategy guide and drills stay available on this device.
+          Connect for online play with an automatically assigned player identity.
         </AppText>
-        <Button label="Sign in or create an account" onPress={() => router.push("/(auth)/sign-in")} />
+        {accountError ? <AppText variant="caption" color="danger" accessibilityRole="alert">{accountError}</AppText> : null}
+        <ConnectPlayerButton />
+        <Button label="Recover an existing player" variant="quiet" onPress={() => router.push("/(auth)/sign-in")} />
       </SurfaceCard>
     );
   }
@@ -399,15 +404,23 @@ function AccountSection() {
           style: "destructive",
           onPress: () => {
             setBusy(true);
-            void deleteAccount()
+            void deleteAccount(session.account.userId)
               .then((deleted) => {
                 if (!deleted) {
                   // The store keeps the session when deletion is refused — the
                   // account still exists, and saying otherwise would be a lie.
-                  Alert.alert(
-                    "Account not deleted",
-                    "Nothing was changed. If you are sitting at a table, leave it first and try again.",
-                  );
+                  // A keychain that would not let go of the credential is its
+                  // own case, before OR after the server erased the account,
+                  // so its message — not this title — says which.
+                  const status = useAuthStore.getState().form.status;
+                  if (status.kind === "failed" && status.failure.code === "CREDENTIAL_NOT_REMOVED") {
+                    Alert.alert("Sign-in still on this device", status.failure.message);
+                  } else {
+                    Alert.alert(
+                      "Deletion not confirmed",
+                      "Deletion was not confirmed. Check your connection and player state before retrying. If you are sitting at a table, leave it first.",
+                    );
+                  }
                 }
               })
               .finally(() => setBusy(false));
@@ -419,21 +432,45 @@ function AccountSection() {
 
   return (
     <SurfaceCard>
-      <AppText variant="bodyStrong">Signed in</AppText>
+      <AppText variant="bodyStrong">{session.account.isAnonymous ? "Your player" : "Secured player"}</AppText>
       <AppText variant="body" color="textSecondary">
-        {session.account.email ?? "Your account"}
+        {session.account.email ?? (session.account.username ? `@${session.account.username}` : "Player identity connected")}
       </AppText>
-      {!session.account.emailConfirmed ? (
+      {!session.account.isAnonymous && !session.account.emailConfirmed ? (
         <AppText variant="caption" color="warning">
           Email not confirmed yet.
         </AppText>
       ) : null}
 
+      {session.account.isAnonymous ? <>
+        <AppText variant="caption" color="textSecondary">This player has no recovery credentials. Signing out, clearing credentials, reinstalling or changing devices can make it inaccessible.</AppText>
+        <Button label="Secure your player" onPress={() => router.push("/(auth)/create-account")} />
+      </> : null}
+      {accountError ? <AppText variant="caption" color="danger" accessibilityRole="alert">{accountError}</AppText> : null}
       <Button
         label="Sign out"
         variant="secondary"
         disabled={busy}
-        onPress={() => void signOut()}
+        onPress={() => {
+          const perform = async () => {
+            setBusy(true); setAccountError(null);
+            await preparePlayerDeparture();
+            await signOut(session.account.userId);
+            const status = useAuthStore.getState().form.status;
+            if (status.kind === "failed") {
+              setAccountError(status.failure.message);
+              await usePushRegistration.getState().restore();
+            }
+            setBusy(false);
+          };
+          Alert.alert("Sign out?", session.account.isAnonymous
+            ? "This player has no recovery credentials. Signing out can permanently lose access to its chips, progress and friends. Secure it first to keep it."
+            : "You can return with your email and password. Other devices stay signed in.", [
+              { text: "Cancel", style: "cancel" },
+              ...(session.account.isAnonymous ? [{ text: "Secure first", onPress: () => router.push("/(auth)/create-account") }] : []),
+              { text: "Sign out", style: "destructive", onPress: () => void perform() },
+            ]);
+        }}
       />
       <Button
         label={busy ? "Deleting…" : "Delete account"}
@@ -479,18 +516,22 @@ function NotificationsSection() {
     }
 
     // Ask FIRST, and only record the preference if the OS agreed. A switch that
-    // stays on while the system refuses is a switch that lies.
-    const granted = await enable("settings-toggle", {
-      ...settings,
-      notificationsEnabled: true,
-    });
+    // stays on while the system refuses is a switch that lies. The registration
+    // names only what this switch changes; the rest is read at the write
+    // (B-H2), so no snapshot of these Settings travels across the prompt.
+    const granted = await enable("settings-toggle", { notificationsEnabled: true });
     if (granted) await update({ notificationsEnabled: true });
   };
 
   const setKind = async (patch: Partial<typeof settings>) => {
-    const next = { ...settings, ...patch };
+    // The privacy control's B-F3 shape: a server sync after an awaited save,
+    // bound to the player who moved the switch before the save is awaited. The
+    // sync carries no preferences at all: the registration reads the device's
+    // Settings at its write, so a registration delayed anywhere — the save, the
+    // token request — cannot re-send an older allowlist over a newer one (B-G2).
+    const samePlayer = capturePlayerScope();
     await update(patch);
-    await sync(next);
+    if (samePlayer()) await sync();
     if (patch.notifyDailyChallenge !== undefined) {
       await applyDailyReminderPreference(patch.notifyDailyChallenge);
     }

@@ -89,6 +89,10 @@ const CLASSIFIED: Record<string, string> = {
   "auth:guest:v1": "A guest's local id. Explicitly not a credential; authorises nothing",
   "onboarding:completion": "Whether onboarding has been seen",
   "arc21.quickplay.selection.v1": "Which stake the Quick Play screen last showed",
+  "arc21.session-probe":
+    "A nonce account deletion's pre-flight writes to the keychain, reads back once and deletes; never read as state, authorises nothing",
+  "push:intent-revision:v1":
+    "The last intent revision this device sent with a push registration (B-H4). It orders only this device's own notification-preference writes, compared by the server per token; a lowered or forged value can only get the device's own write refused and re-sent above the row. Grants nothing",
   "hard:11:6": "STRATEGY — a chart lookup in the onboarding showcase, not stored state",
 };
 

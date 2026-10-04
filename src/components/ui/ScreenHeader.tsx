@@ -52,7 +52,8 @@ export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
    * reference and freezes. That bug shipped here once and disabled the Deal
    * button permanently.
    */
-  const signedIn = useAuthStore((state) => state.mode === "account" && state.session !== null);
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
+  const signedIn = userId !== null;
   const walletStatus = useWalletStore((state) => state.status);
   const refreshWallet = useWalletStore((state) => state.refresh);
   const clearWallet = useWalletStore((state) => state.clear);
@@ -63,9 +64,9 @@ export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
    * clears it, so a number never outlives the session that earned it.
    */
   useEffect(() => {
-    if (signedIn) void refreshWallet();
-    else clearWallet();
-  }, [signedIn, refreshWallet, clearWallet]);
+    clearWallet();
+    if (userId !== null) void refreshWallet();
+  }, [userId, refreshWallet, clearWallet]);
 
   const chips = walletStatus.kind === "ready" ? walletStatus.wallet.balance : null;
 
@@ -89,7 +90,7 @@ export function ScreenHeader({ title, subtitle }: ScreenHeaderProps) {
         */}
         <View style={styles.balance}>
           <AppText variant="overline" color="textSecondary">
-            {signedIn ? "Chips" : "Guest"}
+            {signedIn ? "Chips" : "Offline"}
           </AppText>
           {chips !== null ? (
             <AppText variant="bodyStrong" numeric testID="header-chips">

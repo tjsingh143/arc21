@@ -20,12 +20,31 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const invoke = vi.fn();
 const rpc = vi.fn();
+/** The `Authorization` header each RPC was pinned with, in order. */
+const pinned: string[] = [];
+
+/**
+ * An RPC reply shaped like the real PostgREST builder: a thenable with
+ * `setHeader`. The queue pins the player's credential onto every request
+ * (`player-binding.ts`), which a bare promise cannot carry.
+ */
+function reply(result: unknown) {
+  const builder = {
+    setHeader: (name: string, value: string) => {
+      if (name === "Authorization") pinned.push(value);
+      return builder;
+    },
+    then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve(result).then(resolve, reject),
+  };
+  return builder;
+}
 
 vi.mock("../../src/lib/supabase/client.js", () => ({
   getSupabase: () => ({
     status: "ready",
     client: {
-      auth: { getSession: async () => ({ data: { session: { user: { id: "u" } } } }) },
+      auth: { getSession: async () => ({ data: { session: { access_token: "token-u", user: { id: "u" } } } }) },
       rpc,
       functions: { invoke },
     },
@@ -67,6 +86,7 @@ const MATCHED = {
 beforeEach(() => {
   invoke.mockReset();
   rpc.mockReset();
+  pinned.length = 0;
   useMatchmakingStore.setState({ status: { kind: "idle" }, notice: null });
 });
 
@@ -131,10 +151,13 @@ describe("queueing", () => {
     // The COURTESY half. `join_matchmaking` raises rather than enrolling, and
     // the server's own wording is more useful than anything this layer could
     // infer — the same reason the level gate's message is passed through.
-    rpc.mockResolvedValue({ data: null, error: { message: "you are already seated at a table" } });
+    rpc.mockReturnValue(reply({ data: null, error: { message: "you are already seated at a table" } }));
 
     await useMatchmakingStore.getState().queue("casual");
 
     expect(useMatchmakingStore.getState().notice).toMatch(/already seated/i);
+    // Sent as the player who asked, not as whoever holds the client by then.
+    expect(rpc).toHaveBeenCalledWith("join_matchmaking", { p_tier: "casual" });
+    expect(pinned).toEqual(["Bearer token-u"]);
   });
 });

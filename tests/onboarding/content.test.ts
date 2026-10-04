@@ -46,11 +46,10 @@ describe("pages", () => {
     }
   });
 
-  it("qualifies the page that promises what this build cannot do", () => {
-    // Online play needs a server we do not have. Saying so on the page that
-    // promises it beats letting it be discovered on a dead button later.
+  it("explains that online identity needs no conventional credentials", () => {
     const together = ONBOARDING_PAGES.find((page) => page.id === "together");
-    expect(together?.caveat).toMatch(/not available/i);
+    expect(together?.caveat).toMatch(/automatic player identity/i);
+    expect(together?.caveat).toMatch(/No email or password/i);
     expect(ONBOARDING_PAGES.find((page) => page.id === "table")?.caveat).toBeNull();
   });
 });
@@ -97,14 +96,13 @@ describe("account options", () => {
     }
   });
 
-  it("says Practice does not need one", () => {
-    // Guest play is still first and still complete. The buttons are an offer,
-    // not a gate.
-    expect(accountOption("create-account").hint).toMatch(/Practice never needs one/i);
+  it("makes recovery credentials optional", () => {
+    expect(accountOption("create-account").hint).toMatch(/Optional/i);
+    expect(accountOption("create-account").hint).toMatch(/across devices/i);
   });
 
   it("throws on an unknown option rather than rendering undefined", () => {
-    expect(accountOption("sign-in").label).toBe("Sign In");
+    expect(accountOption("sign-in").label).toBe("Recover a player");
     // @ts-expect-error — the union is the point; this is the runtime guard.
     expect(() => accountOption("magic-link")).toThrow();
   });

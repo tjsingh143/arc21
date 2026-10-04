@@ -41,7 +41,7 @@ export const ONBOARDING_PAGES: readonly OnboardingPage[] = [
     body: "Join friends, public tables, tournaments and daily challenges.",
     // Stated up front rather than discovered on a dead button later. Every
     // one of these needs a server this build does not have.
-    caveat: "Online play needs an account. It is not available in this build yet.",
+    caveat: "Online play uses your automatic player identity. No email or password needed.",
   },
 ] as const;
 
@@ -123,15 +123,15 @@ export interface AccountOption {
 export const ACCOUNT_OPTIONS: readonly AccountOption[] = [
   {
     id: "create-account",
-    label: "Create Account",
+    label: "Secure this player",
     route: "/(auth)/create-account",
-    hint: "Adds a chip balance, career rewards, friends and leaderboards. Practice never needs one.",
+    hint: "Optional: add recovery credentials to keep this player across devices.",
   },
   {
     id: "sign-in",
-    label: "Sign In",
+    label: "Recover a player",
     route: "/(auth)/sign-in",
-    hint: "Signs in to an Arc 21 account you already have.",
+    hint: "Sign in to an existing player with email and password.",
   },
 ] as const;
 

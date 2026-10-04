@@ -10,11 +10,17 @@
  * A room code travels in the invite because that is the deep link. It is not
  * authorisation: opening `arc21://room/CODE` re-enters through
  * `join_private_room`, which checks capacity, expiry, status and blocks again.
+ *
+ * Like every other social write, the invite is bound to the player who asked for
+ * it before it is sent — an invite carries a notification to somebody else's
+ * inbox, so it must never be attributed to whoever signed in next. See
+ * `player-binding.ts`.
  */
 
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 
 export interface RoomInvitesState {
@@ -41,18 +47,29 @@ export const useRoomInvites = create<RoomInvitesState>((set, get) => ({
     }
 
     set({ busy: friendId, notice: null });
+    const bound = await bindCurrentPlayer(availability.client);
+    if (!bound.ok || !bound.player.isCurrent()) {
+      // One sentence for every reason the invite did not go: nothing was sent,
+      // and no inbox anywhere gained a row.
+      set({ busy: null, notice: INVITE_FAILED });
+      return;
+    }
+
     const result = await withTimeout(
       Promise.resolve(
-        availability.client.rpc("invite_friend_to_room", {
-          p_room_id: roomId,
-          p_friend: friendId,
-        }),
+        sentAs(
+          availability.client.rpc("invite_friend_to_room", {
+            p_room_id: roomId,
+            p_friend: friendId,
+          }),
+          bound.player,
+        ),
       ),
       undefined,
     );
 
     if (isTimedOut(result) || result.error) {
-      set({ busy: null, notice: "Could not send that invite." });
+      set({ busy: null, notice: INVITE_FAILED });
       return;
     }
 
@@ -68,3 +85,5 @@ export const useRoomInvites = create<RoomInvitesState>((set, get) => ({
 
   reset: () => set({ invited: [], busy: null, notice: null }),
 }));
+
+const INVITE_FAILED = "Could not send that invite.";

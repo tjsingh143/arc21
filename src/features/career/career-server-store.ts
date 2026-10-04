@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Reward-bearing career attempts, which run on the SERVER.
  *
@@ -23,6 +24,7 @@ import { create } from "zustand";
 
 import type { Card, PlayerActionType } from "../../../shared/blackjack/index.js";
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { readRejection } from "../../lib/supabase/rejection.js";
 import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { useActiveSessionStore } from "../table/active-session-store.js";
@@ -93,7 +95,7 @@ export interface CareerServerState {
 }
 
 const UNREACHABLE = "Could not confirm the attempt. Reconnect to check your progress and return to any active table from Play.";
-const SIGNED_OUT = "Ranked career attempts need an account. Practice stays available without one.";
+const SIGNED_OUT = "Connect for ranked Career attempts. Practice stays available offline.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -131,54 +133,65 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
   graded: null,
 
   refresh: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
       // Not an error. An unconfigured build plays career offline, and the map
       // says so rather than showing an empty server record as if it were one.
-      set({ loaded: true });
+      setForPlayer({ loaded: true });
+      return;
+    }
+    // The record is the ADOPTED player's. A restored credential the server has
+    // not confirmed reads nothing (B-H1); the map shows offline progress.
+    const session = await bounded(confirmedSession(availability.client));
+    if (session === null || !session.data.session) {
+      setForPlayer({ loaded: true });
       return;
     }
     const result = await bounded(availability.client.rpc("my_career_progress"));
     if (result === null || result.error) {
-      set({ loaded: true });
+      setForPlayer({ loaded: true });
       return;
     }
-    set({ progress: toProgress(result.data), loaded: true });
+    setForPlayer({ progress: toProgress(result.data), loaded: true });
   },
 
   start: async (nodeSlug) => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().busy) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ notice: availability.message });
+      setForPlayer({ notice: availability.message });
       return null;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
     if (!session.data.session) {
-      set({ notice: SIGNED_OUT });
+      setForPlayer({ notice: SIGNED_OUT });
       return null;
     }
 
-    set({ busy: true, notice: null, graded: null });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ busy: true, notice: null, graded: null });
     const result = await sendSessionIntent(availability.client, {
       action: "START_CAREER_NODE",
       nodeSlug,
     });
-    set({ busy: false });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ busy: false });
 
     if (result.kind === "unknown") {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       await Promise.all([get().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
     if (result.kind === "rejected") {
       const rejection = result.rejection;
-      set({
+      setForPlayer({
         notice:
           rejection?.code === "SESSION_ALREADY_ACTIVE"
             ? "You are already seated at a table. Return to it from Play and leave it there — nothing has been charged for this."
@@ -190,7 +203,7 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
     const data = result.data as Record<string, unknown> | null;
     if (typeof data?.attemptId !== "string" || typeof data.nodeSlug !== "string") {
       await Promise.all([get().refresh(), useActiveSessionStore.getState().refresh()]);
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
 
@@ -205,21 +218,30 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
       bestStars: typeof data.bestStars === "number" ? data.bestStars : 0,
       rewardPaid: data.rewardPaid === true,
     };
-    if (attempt.format === "drill") set({ drill: attempt });
+    if (attempt.format === "drill") setForPlayer({ drill: attempt });
     return attempt;
   },
 
   submitDrill: async (answers) => {
+    const setForPlayer = playerScopedSetter(set);
     const attempt = get().drill;
     if (!attempt) return null;
 
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ notice: availability.message });
+      setForPlayer({ notice: availability.message });
       return null;
     }
 
-    set({ busy: true, notice: null });
+    // Graded and paid as the adopted player who started it, never as a
+    // credential the app has not adopted (B-H1) — pinned as `session-intent.ts`
+    // pins the other economic one-shots.
+    const session = await bounded(confirmedSession(availability.client));
+    if (session === null || !session.data.session || !setForPlayer.isCurrent()) {
+      setForPlayer({ notice: session === null ? UNREACHABLE : SIGNED_OUT });
+      return null;
+    }
+    setForPlayer({ busy: true, notice: null });
     const result = await bounded(
       availability.client.functions.invoke("create-session", {
         body: {
@@ -229,23 +251,25 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
           answers,
           clientSentAt: new Date().toISOString(),
         },
+        headers: { Authorization: `Bearer ${session.data.session.access_token}` },
       }),
     );
-    set({ busy: false });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ busy: false });
 
     if (result === null) {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
     if (result.error) {
       const rejection = await readRejection(result.error);
-      set({ notice: rejection?.message ?? UNREACHABLE });
+      setForPlayer({ notice: rejection?.message ?? UNREACHABLE });
       return null;
     }
 
     const data = result.data as Record<string, unknown> | null;
     if (typeof data?.stars !== "number") {
-      set({ notice: "The drill was graded, but the reply could not be read. Reopen this node." });
+      setForPlayer({ notice: "The drill was graded, but the reply could not be read. Reopen this node." });
       return null;
     }
 
@@ -257,14 +281,14 @@ export const useCareerServerStore = create<CareerServerState>((set, get) => ({
       rewardXp: typeof data.rewardXp === "number" ? data.rewardXp : 0,
       verdicts: Array.isArray(data.verdicts) ? (data.verdicts as DrillVerdictRow[]) : [],
     };
-    set({ graded });
+    setForPlayer({ graded });
 
     // Chips actually moved. The header caches the balance for the life of the
     // session, so without this a player who just earned 350 keeps seeing the
     // old number until the next launch.
     if (graded.rewardChips > 0) void useWalletStore.getState().refresh();
     await get().refresh();
-    return graded;
+    return setForPlayer.isCurrent() ? graded : null;
   },
 
   clearDrill: () => set({ drill: null, graded: null, notice: null }),

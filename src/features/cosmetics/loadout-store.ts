@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The equipped loadout, as client state — the consumer `my_loadout()` never
  * had. Until this existed, equipping a cosmetic changed a database row and
@@ -14,6 +15,7 @@ import { z } from "zod";
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   AVATAR_KEYS,
@@ -92,15 +94,16 @@ export const useLoadoutStore = create<LoadoutStoreState>((set) => ({
   loadout: DEFAULT_LOADOUT,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ loadout: DEFAULT_LOADOUT });
+      setForPlayer({ loadout: DEFAULT_LOADOUT });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null || !session.data.session) {
-      set({ loadout: DEFAULT_LOADOUT });
+      setForPlayer({ loadout: DEFAULT_LOADOUT });
       return;
     }
 
@@ -111,6 +114,6 @@ export const useLoadoutStore = create<LoadoutStoreState>((set) => ({
       return;
     }
 
-    set({ loadout: toLoadout(result.data) });
+    setForPlayer({ loadout: toLoadout(result.data) });
   },
 }));

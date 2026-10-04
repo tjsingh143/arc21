@@ -26,6 +26,30 @@
  * refusing (`RATE_LIMITED` is a rejection, and is not retried). Silence is the
  * only outcome worth repeating, because silence is the only one where the
  * client does not know what happened.
+ *
+ * **AND EVERY CALL IS BOUND TO THE PLAYER WHO ASKED FOR IT.** A command names a
+ * `gameId` and never a player: WHO is acting is read from the verified JWT the
+ * request arrives with, and the SDK attaches whichever session the shared client
+ * holds as the request leaves — not the one the player held when they tapped.
+ * Between those two moments sits the session read below.
+ *
+ * That was argued to be harmless here, on the grounds that a replacement player
+ * has no seat at the named game and the server answers `NOT_A_PARTICIPANT`. The
+ * argument is wrong, and the independent audit reproduced it: **a multiplayer
+ * table has more than one participant.** Player A's held Leave was released
+ * after a real sign-in to player B, who was seated at the SAME game — so the
+ * server found B's seat, passed every membership check, and cashed B out. A
+ * stayed seated, B's stack went to zero, and the store correctly discarded the
+ * reply afterwards, which is precisely why nothing on screen said anything. A
+ * game id is a table, not an identity; and the `gameId:seatId` idempotency key
+ * derived from that request was B's too, so it protected nothing of A's.
+ *
+ * So the credential is chosen ONCE per intent and travels with the request, the
+ * way `session-intent.ts` has always done it for the economic one-shots:
+ * `player-binding.ts` captures the player scope before the session read, refuses
+ * outright if the app has moved on, and pins the verified token onto the
+ * outbound call — including onto every RETRY, so a backoff cannot silently pick
+ * up the replacement player's session between attempts.
  */
 
 import { z } from "zod";
@@ -41,12 +65,24 @@ import type { PublicGameState } from "../../../shared/blackjack/index.js";
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
 import { newClientActionId } from "../../lib/supabase/ids.js";
 import { readRejection } from "../../lib/supabase/rejection.js";
+import { bindCurrentPlayer, type BoundPlayer } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { retryWhile, type BackoffPolicy } from "../../lib/supabase/with-retry.js";
 
 export type TableFailureReason =
   | "not-configured"
   | "signed-out"
+  /**
+   * The app moved to another player while this call was being prepared, so it
+   * was never sent.
+   *
+   * Its own answer rather than a borrowed one. "Signed out" would be false —
+   * somebody IS signed in, just not the player who asked — and "unreachable"
+   * would blame a server that was never called. Rarely rendered, because the
+   * identity change has already torn this screen down, but a table operation
+   * that refuses has to say which refusal it is.
+   */
+  | "stale-identity"
   /** The server answered and refused — wrong turn, illegal action, stale. */
   | "refused"
   | "unreachable";
@@ -210,8 +246,17 @@ export interface TableGateway {
  * thing that is not true.
  */
 const UNREACHABLE = "Could not reach the table. The hand continues on the server.";
-const SIGNED_OUT = "Sign in to play at a table.";
+const SIGNED_OUT = "Connect your player to return to this table. Practice works offline.";
 const UNREADABLE = "The table sent something this app could not read.";
+/**
+ * Said, not sent.
+ *
+ * The screen this would appear on has almost always been replaced by the time
+ * this value exists — an identity change resets the table store — so the wording
+ * matters less than the fact that the call REFUSED rather than going out as
+ * somebody else.
+ */
+const STALE_IDENTITY = "This table belongs to the player who was signed in before. Nothing was sent.";
 
 export function createUnconfiguredTableGateway(message: string): TableGateway {
   const refuse = async () => ({ ok: false as const, reason: "not-configured" as const, message });
@@ -272,11 +317,39 @@ export function createSupabaseTableGateway(
     return isTimedOut(result) ? null : result;
   }
 
-  async function requireSession(): Promise<TableFailure | null> {
-    const session = await bounded(client.auth.getSession());
-    if (session === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
-    if (!session.data.session) return { ok: false, reason: "signed-out", message: SIGNED_OUT };
-    return null;
+  /** Nothing was sent, because the player who asked for it is no longer here. */
+  const stale = (): TableFailure => ({
+    ok: false,
+    reason: "stale-identity",
+    message: STALE_IDENTITY,
+  });
+
+  /**
+   * The player this call belongs to, or the stated reason there is none.
+   *
+   * Replaces a plain "is anybody signed in" check, which is not enough for a
+   * table: knowing that SOMEBODY has a session says nothing about whether the
+   * request will leave carrying the credential of the player who asked for it,
+   * and at a multiplayer table the replacement player has a seat of their own
+   * for the server to find. See the file header and `player-binding.ts`.
+   *
+   * Called as the FIRST statement of every outbound path here, so the scope it
+   * captures is the caller's dispatch rather than whoever is current by the time
+   * the session read returns.
+   */
+  async function bindPlayer(): Promise<
+    { readonly ok: true; readonly player: BoundPlayer } | TableFailure
+  > {
+    const binding = await bindCurrentPlayer(client, timeoutMs);
+    if (binding.ok) return binding;
+    switch (binding.reason) {
+      case "unreachable":
+        return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      case "signed-out":
+        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      default:
+        return stale();
+    }
   }
 
   /**
@@ -290,7 +363,19 @@ export function createSupabaseTableGateway(
     gameId: string,
     command: TableCommand,
     clientActionId: string,
+    player: BoundPlayer,
   ): Promise<TableSnapshotOutcome> {
+    /*
+     * THE GATE ON EVERY ATTEMPT, not just the first.
+     *
+     * `retryWhile` calls this function again after a silence, and the whole
+     * point of a backoff is that seconds pass inside it. A check made once
+     * before the loop would be a check made before an account switch that
+     * happened during it, and the second attempt would carry the new player's
+     * intent under the old player's request id.
+     */
+    if (!player.isCurrent()) return stale();
+
     const result = await bounded(
       client.functions.invoke("game-command", {
         body: {
@@ -301,6 +386,14 @@ export function createSupabaseTableGateway(
           payload: command.payload,
           clientSentAt: new Date().toISOString(),
         },
+        /*
+         * Pinned, exactly as `session-intent.ts` pins the economic one-shots.
+         * The SDK's `fetchWithAuth` sets `Authorization` only when it is absent,
+         * and `functions.invoke` gives call-level headers priority over the
+         * client's own — so a sign-in landing inside this fetch cannot
+         * substitute the replacement player's JWT.
+         */
+        headers: { Authorization: player.authorization },
       }),
     );
     if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
@@ -333,19 +426,19 @@ export function createSupabaseTableGateway(
     command: TableCommand,
     sendOptions: { readonly retry?: boolean; readonly onRetry?: () => void } = {},
   ): Promise<TableSnapshotOutcome> {
-    const denied = await requireSession();
-    if (denied) return denied;
+    const bound = await bindPlayer();
+    if (!bound.ok) return bound;
 
     // Minted ONCE, here, outside the retry loop. Moving this line inside
     // `attempt` is how a retried bet becomes two bets.
     const clientActionId = newClientActionId();
 
     if (sendOptions.retry === false) {
-      return await attempt(gameId, command, clientActionId);
+      return await attempt(gameId, command, clientActionId, bound.player);
     }
 
     const { value } = await retryWhile(
-      () => attempt(gameId, command, clientActionId),
+      () => attempt(gameId, command, clientActionId, bound.player),
       (outcome) => !outcome.ok && outcome.reason === "unreachable",
       {
         ...(policy ? { policy } : {}),
@@ -365,8 +458,15 @@ export function createSupabaseTableGateway(
    * safe and why leaving without one is not.
    */
   async function requestCashOut(gameId: string): Promise<TableCashOutOutcome> {
-    const denied = await requireSession();
-    if (denied) return denied;
+    const bound = await bindPlayer();
+    if (!bound.ok) return bound;
+    /*
+     * The last gate before the write, and the one the audit's reproduction
+     * needed. Nothing is awaited between the binding and here today; this is
+     * what keeps that true, because a check made earlier is not a check made
+     * now — and `cashOut` is the call that closes a seat and moves chips.
+     */
+    if (!bound.player.isCurrent()) return stale();
 
     const result = await bounded(
       client.functions.invoke("create-session", {
@@ -376,6 +476,10 @@ export function createSupabaseTableGateway(
           clientRequestId: globalThis.crypto.randomUUID(),
           clientSentAt: new Date().toISOString(),
         },
+        // The seat the server closes is the one it finds for the JWT it
+        // receives. At a table with more than one participant that is the whole
+        // of the identity check, so the token must be this player's.
+        headers: { Authorization: bound.player.authorization },
       }),
     );
     if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
@@ -413,8 +517,8 @@ export function createSupabaseTableGateway(
    * outright once the first has left the seat able to cover the minimum.
    */
   async function requestStackReset(gameId: string): Promise<TableStackResetOutcome> {
-    const denied = await requireSession();
-    if (denied) return denied;
+    const bound = await bindPlayer();
+    if (!bound.ok) return bound;
 
     /*
      * Minted ONCE, outside the retry loop, for the same reason `send` does it:
@@ -427,6 +531,11 @@ export function createSupabaseTableGateway(
     const clientRequestId = globalThis.crypto.randomUUID();
 
     const attemptOnce = async (): Promise<TableStackResetOutcome> => {
+      // Re-checked per attempt, for the reason `attempt` states: the retry loop
+      // is where the seconds are, and a private stack is a seat's whole
+      // position.
+      if (!bound.player.isCurrent()) return stale();
+
       const result = await bounded(
         client.functions.invoke("create-session", {
           body: {
@@ -435,6 +544,7 @@ export function createSupabaseTableGateway(
             clientRequestId,
             clientSentAt: new Date().toISOString(),
           },
+          headers: { Authorization: bound.player.authorization },
         }),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
@@ -515,6 +625,16 @@ export function createSupabaseTableGateway(
      * The payload is validated like everything else off the wire. An
      * unparseable broadcast is ignored rather than rendered, and the next poll
      * corrects the screen.
+     *
+     * NOT BOUND, and it cannot be. This is the one path here that mutates
+     * nothing: it opens a socket subscription, and Realtime authorises a socket
+     * from the token the client sets on it, which is a property of the client
+     * and not of one request — there is no per-message header to pin. Nothing
+     * here can therefore act as the replacement player. What it could do is push
+     * a stale table at a screen belonging to somebody else, and the store closes
+     * that from the other end: an identity change runs `resetPlayerState()`,
+     * which calls `forgetTable()`, which unsubscribes and bumps the generation
+     * every handler checks.
      */
     subscribe(
       gameId: string,

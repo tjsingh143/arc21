@@ -216,9 +216,12 @@ suite("what a second account can actually read", () => {
       p_token: `ExponentPushToken[${crypto.randomUUID()}]`,
       p_platform: "ios",
       p_device_id: crypto.randomUUID(),
+      // Every argument is explicit since device writes are ordered (B-H4).
+      p_kinds: [],
+      p_revision: 1,
     });
-    // 204 as well as 200: PostgREST answers No Content for a void function, and
-    // treating that as a failure would fail the fixture rather than the policy.
+    // Any 2xx: treating a successful registration's status as a failure would
+    // fail the fixture rather than the policy.
     if (token.status >= 400) throw new Error(`register_push_token: ${token.status} ${token.raw}`);
     const cosmetics = await rpc(owner, "grant_earned_cosmetics");
     if (cosmetics.status >= 400) {

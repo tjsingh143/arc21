@@ -3,19 +3,25 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Last updated:** 2026-09-14 PDT (Refresh A final local verification).
+**Current local software verdict:** **ASTRA REFRESH B: PASS**, October 4, 2026.
+**KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**.
+See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
+for closure evidence and external/unproven items. Local checkpoint only; no push
+or deployment. Refresh C/D/E has not begun.
+
+**Historical Refresh A verification:** 2026-09-14 PDT.
 
 **ASTRA BASELINE AUDIT: PASS**
 
 **KNOWN CURRENT RELEASE-BLOCKING SOFTWARE DEFECTS: 0**
 
-The independent [baseline audit](./astra-refresh/baseline-audit.md) is the current
+The independent [baseline audit](./astra-refresh/baseline-audit.md) records checkpoint-specific
 software evidence: all 22 product findings verified, 2,446 unit tests, 2,420
 coverage tests with per-area thresholds, 320 real server tests, 592 SQL
 assertions, a clean reset of all 59 migrations and the final iOS Release
 installed on both simulators. Final postflight confirms wallet/ledger equality,
-restored permissions and running application services. Refresh B has not begun;
-nothing was pushed, submitted or deployed.
+restored permissions and running application services. These counts and verdicts
+belong to Refresh A only. Refresh B has not been pushed, submitted or deployed.
 
 The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
 four advisories across 18 package entries and explains their actual runtime/build
@@ -69,7 +75,7 @@ written.
 | **Google Play Console** | $25 once | Play submission and the Data safety declaration | `com.arc21.app`, `versionCode`, an app-bundle build profile, and the Play half of the listing copy |
 | **Expo account + EAS project id** | free tier | `eas build`, `eas submit`, and `getExpoPushTokenAsync` — **no device can be issued a push token without it**, which is why push is graded ABSENT in AUDIT.md | `eas.json`, schema-validated. `eas config` has never run: it needs the account |
 | **A domain and hosting** | varies | The privacy-policy URL Apple requires, the support URL both stores require, and the **account-deletion request page Google Play requires in addition to the in-app path** | The text those pages must serve, in PRIVACY.md and TERMS.md, and the deletion route itself (`delete_own_account()`, Settings → Delete account). Publish them at stable URLs and record the URLs in STORE_LISTING.md's "Support and marketing URLs" section |
-| **A Supabase cloud project** | free tier | Deploying the 59 migrations, the three Edge Functions, and the function secrets; and filling the two `EXPO_PUBLIC_*` values a shipped bundle needs | Everything, locally: `supabase db reset && supabase test db` passes, the functions serve, and `.env.example` names every variable and where each one comes from |
+| **A Supabase cloud project** | free tier | Deploying the 61 migrations, the three Edge Functions, and the function secrets; and filling the public build configuration | Local migration/function evidence and Refresh-B activation settings are recorded in [Refresh B](./astra-refresh/refresh-b.md); `.env.example` names the environment variables |
 | **APNs key / FCM credentials** | with the accounts above | A real push. The sender records `mocked` rather than `sent` when no credentials exist, so this fails honestly rather than silently | `send-notifications`, the token schema, the four `PermissionMoment`s, and the no-op adapter |
 | **A physical iOS device** | — | Removing the largest verification gap below | Simulator coverage, on iPhone 17 Pro and 17 Pro Max / iOS 26.5, against a **Release** build |
 | **An Android SDK, and an emulator or device** | free | Building and running the Android app at all | The generated Gradle project (`npx expo prebuild --platform android`), `targetSdk 36`, and a permission set with no `SYSTEM_ALERT_WINDOW`. **Nothing Android has ever been compiled or run**: this machine has no Android SDK, no `adb` and no emulator |
@@ -90,7 +96,16 @@ written.
   GoTrue refuses to redirect anywhere not on that list, so the value the client
   passes and the value the project allows must agree by more than convention.
 
-### Four auth settings that are local-development values today
+### Auth settings and hosted activation
+
+Refresh B enables anonymous Auth, manual linking and email confirmations locally,
+and installs an email-change OTP template. Hosted activation must mirror those
+settings, configure SMTP and the exact recovery redirect, and enable native
+hCaptcha with its private secret in Auth and public site key/origin in the build.
+See [Refresh B](./astra-refresh/refresh-b.md) for the current evidence and limits.
+
+The following measurements are historical phase-10 observations. In particular,
+the `enable_confirmations = false` local value below is superseded by Refresh B.
 
 Phase 10 measured each of these against the running GoTrue rather than reading
 them off `supabase/config.toml`, and each is a deliberate local convenience that

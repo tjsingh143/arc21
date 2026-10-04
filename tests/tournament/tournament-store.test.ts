@@ -234,7 +234,7 @@ describe("the background poll", () => {
   it("clears the signed-out explanation once an account appears", async () => {
     getSession.mockResolvedValue({ data: { session: null } });
     await useTournamentStore.getState().load();
-    expect(useTournamentStore.getState().notice).toContain("need an account");
+    expect(useTournamentStore.getState().notice).toContain("Connect for tournaments");
 
     getSession.mockResolvedValue({ data: { session: { user: { id: "u" } } } });
     await useTournamentStore.getState().load();

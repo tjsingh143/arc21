@@ -189,6 +189,8 @@ suite("an account holds a bounded number of devices", () => {
         p_platform: "ios",
         p_device_id: crypto.randomUUID(),
         p_kinds: ["your_turn"],
+        // Device writes are ordered (B-H4); each token is a new device.
+        p_revision: 1,
       });
       // EVICTS, never refuses. A player who really has replaced a phone eleven
       // times must still be able to register the eleventh.
@@ -273,13 +275,22 @@ suite("the player directory is searched as text, and not without limit", () => {
     const walker = signToken(await createUser("bounded-walk"));
     const seen = new Set<string>();
     let refusals = 0;
+    let accepted = 0;
     let firstRefusal: { status: number; code: unknown; message: unknown } | null = null;
 
     for (const character of "abcdefghijklmnopqrstuvwxyz0123456789") {
       for (const pattern of [`%${character}`, `${character}%`, `_${character}`]) {
         const answer = await rpc(walker, "search_players", { p_query: pattern });
         if (answer.status === 200) {
-          for (const row of answer.body as { id: string }[]) seen.add(row.id);
+          accepted += 1;
+          const rows = answer.body as { id: string; username: string; display_name: string }[];
+          expect(rows.length).toBeLessThanOrEqual(25);
+          for (const row of rows) {
+            // Generated word_word names legitimately contain underscores.
+            // Each result must match the LITERAL text, never wildcard semantics.
+            expect(row.username.startsWith(pattern) || row.display_name.toLowerCase().includes(pattern), `${pattern}: ${row.username}`).toBe(true);
+            seen.add(row.id);
+          }
           continue;
         }
         refusals += 1;
@@ -289,8 +300,11 @@ suite("the player directory is searched as text, and not without limit", () => {
     }
 
     // 108 calls. Before this phase: 0 refused, 445 distinct accounts enumerated.
-    expect(refusals).toBeGreaterThan(0);
-    expect(seen.size).toBe(0);
+    expect(accepted).toBe(30);
+    expect(refusals).toBe(78);
+    // This known visible player contains neither metacharacter: even a single
+    // returned row would prove wildcard injection, regardless of global fixtures.
+    expect(seen.has(targetId)).toBe(false);
 
     // `PTnnn` is the SQLSTATE PostgREST renders as HTTP nnn. The username rename
     // limit once raised `55000` and told a player the server had broken.

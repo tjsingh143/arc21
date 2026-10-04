@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Level and XP, read from the server.
  *
@@ -17,6 +18,7 @@ import { create } from "zustand";
 import { z } from "zod";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import type { ProgressionRecord } from "./profile.js";
 
@@ -49,18 +51,19 @@ export const useLevelStore = create<LevelStoreState>((set) => ({
   loaded: false,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ record: null, atMaxLevel: false, loaded: true });
+      setForPlayer({ record: null, atMaxLevel: false, loaded: true });
       return;
     }
 
     const session = await withTimeout(
-      Promise.resolve(availability.client.auth.getSession()),
+      Promise.resolve(confirmedSession(availability.client)),
       undefined,
     );
     if (isTimedOut(session) || !session.data.session) {
-      set({ record: null, atMaxLevel: false, loaded: true });
+      setForPlayer({ record: null, atMaxLevel: false, loaded: true });
       return;
     }
 
@@ -71,18 +74,18 @@ export const useLevelStore = create<LevelStoreState>((set) => ({
     if (isTimedOut(response) || response.error) {
       // Unreachable is not the same as "no account". The screen distinguishes
       // them, so this leaves the record null and lets it say so.
-      set({ record: null, atMaxLevel: false, loaded: true });
+      setForPlayer({ record: null, atMaxLevel: false, loaded: true });
       return;
     }
 
     const rows = Array.isArray(response.data) ? response.data : [response.data];
     const parsed = rowSchema.safeParse(rows[0]);
     if (!parsed.success) {
-      set({ record: null, atMaxLevel: false, loaded: true });
+      setForPlayer({ record: null, atMaxLevel: false, loaded: true });
       return;
     }
 
-    set({
+    setForPlayer({
       record: {
         level: parsed.data.level,
         xpIntoLevel: parsed.data.xp_into_level,

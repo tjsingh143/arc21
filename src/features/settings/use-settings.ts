@@ -8,6 +8,12 @@
  * Writes are optimistic: the in-memory record updates immediately and the disk
  * write is awaited in the background. A toggle that waits on SQLite before it
  * moves feels broken, and a failed write costs one preference, not the app.
+ *
+ * Disk writes go one at a time, and each writes the record as it stands when
+ * its turn comes. Two unordered saves used to finish in either order, so a
+ * slow earlier save could leave the OLDER choice on disk under a newer one in
+ * memory — and the next launch would load it and carry it to the server
+ * (found with the Refresh-B B-F3 reproduction, which held one save open).
  */
 
 import { useEffect } from "react";
@@ -75,6 +81,44 @@ interface SettingsStore {
   reset: () => Promise<void>;
 }
 
+let saving: Promise<void> = Promise.resolve();
+
+/*
+ * WHICH NOTIFICATION CHOICE IS NEWEST (B-H2).
+ *
+ * A notification offer is asynchronous — an OS permission read, perhaps a
+ * prompt, a registration — and the final Refresh-B audit held one open while
+ * the player turned notifications on in Settings, turned "Friends" on and then
+ * explicitly OFF, and chose "Only me". Released, the old offer registered from
+ * its own snapshot and its caller saved the WHOLE snapshot back: Friends on
+ * again, and privacy public again, on the server too.
+ *
+ * Every explicit notification choice advances this counter, synchronously, as
+ * the choice is recorded. An asynchronous flow captures it when it begins and
+ * may act only while it is unchanged; a newer choice makes it obsolete.
+ */
+const NOTIFICATION_KEYS = ["notificationsEnabled", "notifyYourTurn", "notifyFriendRequests", "notifyDailyChallenge"] as const;
+let notificationIntent = 0;
+
+/** True for as long as no notification choice has been recorded since this was called. */
+export function captureNotificationIntent(): () => boolean {
+  const captured = notificationIntent;
+  return () => captured === notificationIntent;
+}
+
+/** Resolves once the record current at its turn is on disk, or failed to be. */
+function persistLatest(): Promise<void> {
+  const turn = saving.then(async () => {
+    try {
+      await activePersistence().save(useSettingsStore.getState().settings);
+    } catch {
+      // The in-memory record is already correct; the next change will retry.
+    }
+  });
+  saving = turn;
+  return turn;
+}
+
 export const useSettingsStore = create<SettingsStore>((set, get) => ({
   settings: { ...DEFAULT_SETTINGS },
   ready: false,
@@ -93,33 +137,28 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
     }
 
     applySettingsSideEffects(result.settings);
+    // The stored record replaces the defaults wholesale: nothing begun against
+    // the defaults may act on it.
+    notificationIntent += 1;
     set({ settings: result.settings, failure: result.failure, ready: true });
   },
 
   update: async (patch) => {
     const next = normaliseSettings({ ...get().settings, ...patch });
+    if (NOTIFICATION_KEYS.some((key) => key in patch)) notificationIntent += 1;
     applySettingsSideEffects(next);
     // Clear the failure banner: whatever was wrong on disk is about to be
     // overwritten by a record the user just authored.
     set({ settings: next, failure: null });
-
-    try {
-      await activePersistence().save(next);
-    } catch {
-      // The in-memory record is already correct; the next change will retry.
-    }
+    await persistLatest();
   },
 
   reset: async () => {
     const defaults = { ...DEFAULT_SETTINGS };
+    notificationIntent += 1;
     applySettingsSideEffects(defaults);
     set({ settings: defaults, failure: null });
-
-    try {
-      await activePersistence().save(defaults);
-    } catch {
-      // Non-fatal.
-    }
+    await persistLatest();
   },
 }));
 

@@ -32,6 +32,7 @@
 import { z } from "zod";
 
 import { supabaseClientOrNull } from "./client.js";
+import { bindCurrentPlayer } from "./player-binding.js";
 import { isTimedOut, withTimeout, DEFAULT_REQUEST_TIMEOUT_MS } from "./with-timeout.js";
 
 /** The deployed Edge Function that owns the command transaction. */
@@ -77,6 +78,12 @@ export type GameCommandResponse =
 export type GameCommandTransportFailure =
   | { readonly kind: "not-configured"; readonly message: string }
   | { readonly kind: "signed-out"; readonly message: string }
+  /**
+   * The app moved to another player while this was being prepared. Nothing was
+   * sent. See `player-binding.ts`; a command names a table and not a player, so
+   * at a multiplayer table the JWT is the whole of the identity check.
+   */
+  | { readonly kind: "stale-identity"; readonly message: string }
   | { readonly kind: "unreachable"; readonly message: string }
   | { readonly kind: "malformed-response"; readonly message: string };
 
@@ -118,6 +125,16 @@ const responseSchema = z.discriminatedUnion("status", [
  * command. That check is a courtesy to the UI, not a security control — the
  * Edge Function authenticates independently and would refuse an anonymous call
  * regardless.
+ *
+ * It is not a courtesy that the session is BOUND, though. The command names a
+ * `gameId` and no player, so which seat the server acts on is decided entirely
+ * by the JWT that arrives — and at a table with more than one participant the
+ * replacement player has a seat of their own to be found. The independent audit
+ * reproduced exactly that through `online-table-gateway.ts`'s cash-out. This
+ * function has no production caller today (the table gateway does its own
+ * invoke), but it is exported from `src/lib/supabase/index.ts` with the identical
+ * shape, and CLAUDE.md's rule about two files doing one job applies: the one that
+ * did not get fixed is now the bug.
  */
 export async function sendGameCommand(
   request: GameCommandRequest,
@@ -134,16 +151,41 @@ export async function sendGameCommand(
     };
   }
 
-  const sessionResult = await withTimeout(client.auth.getSession(), options.timeoutMs);
-  if (isTimedOut(sessionResult) || sessionResult.data.session === null) {
+  // Captured before the session read, so the credential belongs to the dispatch
+  // rather than to whoever is current by the time the read returns.
+  const bound = await bindCurrentPlayer(client, options.timeoutMs);
+  if (!bound.ok) {
+    if (bound.reason === "signed-out") {
+      return {
+        ok: false,
+        failure: { kind: "signed-out", message: "Connect your player to continue at this table." },
+      };
+    }
+    if (bound.reason === "identity-changed") {
+      return {
+        ok: false,
+        failure: {
+          kind: "stale-identity",
+          message: "This table belongs to the player who was signed in before. Nothing was sent.",
+        },
+      };
+    }
     return {
       ok: false,
-      failure: { kind: "signed-out", message: "Sign in to play at a server table." },
+      failure: {
+        kind: "unreachable",
+        message: "The server did not answer in time. Your table will be re-synced.",
+      },
     };
   }
 
   const invocation = await withTimeout(
-    client.functions.invoke(GAME_COMMAND_FUNCTION, { body: request }),
+    client.functions.invoke(GAME_COMMAND_FUNCTION, {
+      body: request,
+      // Pinned: `fetchWithAuth` fills this header in only when it is absent, so
+      // a sign-in landing inside the fetch cannot substitute another player.
+      headers: { Authorization: bound.player.authorization },
+    }),
     options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
   );
 

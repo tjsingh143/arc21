@@ -1,0 +1,36 @@
+# An EXISTING player's cold launch while the local API gateway (Kong) answers
+# nothing. HANDLE is that player's server handle.
+#
+# Refresh-B B-G1: a credential restored from the keychain is shown only once the
+# server has said its account exists, and "unreachable" is no verdict — so the
+# player is neither shown nor removed, and Practice stays available. Stop Kong
+# before this flow and restore it before offline-existing-reconnect.yaml. Pair
+# with readbacks: no user created, and the player's own session still live.
+appId: com.arc21.app
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 30000
+- assertNotVisible:
+    id: header-chips
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# Scroll to the LAST line asserted: stopping at the card's title leaves the
+# caption beneath it below the fold (Refresh-B §21.11's row 09, again here).
+- scrollUntilVisible:
+    element:
+      text: Could not reach the server.*
+    direction: DOWN
+    timeout: 40000
+- assertVisible: Offline player
+- assertVisible: Could not reach the server.*
+- assertNotVisible: '@${HANDLE}'
+- takeScreenshot: existing-player-unverified-not-shown

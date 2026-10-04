@@ -193,6 +193,7 @@ export interface Database {
        * written it after signup — so "last seen" was the account's creation
        * date, for ever.
        */
+      list_friend_presence: { Args: Record<string, never>; Returns: { user_id: string; state: string }[] };
       touch_last_seen: { Args: Record<string, never>; Returns: string };
       /**
        * Public matchmaking. These allocate a SEAT and never a chip — the buy-in
@@ -361,16 +362,25 @@ export interface Database {
       my_notifications: { Args: { p_limit?: number }; Returns: unknown };
       unread_notification_count: { Args: Record<string, never>; Returns: number };
       mark_notifications_read: { Args: { p_ids: string[] | null }; Returns: number };
+      /**
+       * Device writes are ORDERED (B-H4): each carries the device's intent
+       * revision, and the row applies only a newer one. `applied: false` with
+       * the row's `revision` is an equal (replayed) or obsolete intent.
+       */
       register_push_token: {
         Args: {
           p_token: string;
           p_platform: string;
           p_device_id: string | null;
           p_kinds: string[];
+          p_revision: number;
         };
-        Returns: void;
+        Returns: { applied: boolean; revision: number | null };
       };
-      retire_push_token: { Args: { p_token: string }; Returns: void };
+      retire_push_token: {
+        Args: { p_token: string; p_revision: number };
+        Returns: { applied: boolean; revision: number | null };
+      };
       /**
        * Inviting a friend to a private table. Takes the room and the friend and
        * derives the sender from the session; the server re-checks friendship,

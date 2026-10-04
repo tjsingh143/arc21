@@ -74,7 +74,7 @@ const MODES: Mode[] = [
      * assistance mode costs you on the accuracy board before anything is spent,
      * which is where that belongs.
      */
-    reason: "Needs an account so chips are server-authoritative.",
+    reason: "Online play uses your server-recorded chips.",
   },
   {
     title: "Public Table",
@@ -84,7 +84,7 @@ const MODES: Mode[] = [
     route: "/table/public",
     // Reachable now. The screen itself states what an account is needed for and
     // what the buy-in costs, rather than this card refusing on its behalf.
-    reason: "Needs an account so chips are server-authoritative.",
+    reason: "Online play uses your server-recorded chips.",
   },
   {
     title: "Sprint Tournament",
@@ -94,7 +94,7 @@ const MODES: Mode[] = [
     route: "/tournament",
     // Reachable. The screen states the whole format and the entry fee before
     // anything is spent, which is where that belongs.
-    reason: "Needs an account and a server-run tournament.",
+    reason: "Requires a connection to the tournament server.",
   },
   {
     title: "Daily Challenge",

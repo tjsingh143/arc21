@@ -1,21 +1,7 @@
 /**
- * Arc 21 — the profile summary.
- *
- * There is no authentication in this build, which means there is no account, no
- * username, no level and no XP. The temptation on a profile screen is to invent
- * them anyway — "Player1", "Level 1", "0 / 500 XP" — because the layout has
- * space for them and an empty card looks unfinished.
- *
- * All three of those are fabrications. "Level 1" is not a neutral placeholder:
- * it tells the player they have a level, that it is the lowest one, and that
- * this app is keeping score of something it is not keeping score of. XP and
- * level are server-owned (docs/ARCHITECTURE.md) precisely so a client cannot
- * mint them — so a client that displays them is displaying something it made up.
- *
- * What this device genuinely knows is: how many practice hands were played on
- * it, how accurate the decisions were, and how many career stars were earned.
- * Those are real, and they are what the profile shows.
- *
+ * Public profile presentation and device-local Practice summary.
+ * Server profiles supply online handles, names and competitive progression.
+ * The offline fallback never invents a canonical handle, XP or a server level.
  * Runtime-neutral: no React, React Native or Expo imports.
  */
 
@@ -50,9 +36,9 @@ export type ProfileIdentity = GuestIdentity | AccountIdentity;
 
 export const GUEST_IDENTITY: GuestIdentity = {
   kind: "guest",
-  displayName: "Guest",
-  initials: "G",
-  detail: "A local practice profile on this device. No account, and nothing uploaded.",
+  displayName: "Player",
+  initials: "P",
+  detail: "Practice is saved on this device. Connect for your online player profile.",
 };
 
 /**
@@ -94,11 +80,11 @@ export function profileIdentity(context: {
      * The handle, when there is one. The specification's profile hierarchy is
      * "Avatar / Display name / @username", and this line is the third of those.
      *
-     * It used to read "Signed in to Arc 21." beneath a display name that was
+     * It used to read "Your Arc 21 player profile." beneath a display name that was
      * the player's EMAIL ADDRESS — the largest type on the screen, in a
      * screenshot anybody might share.
      */
-    detail: handle ? `@${handle}` : "Signed in to Arc 21.",
+    detail: handle ? `@${handle}` : "Your Arc 21 player profile.",
   };
 }
 
@@ -154,10 +140,8 @@ export function describeProgressionUnavailable(
          * note now names it instead of denying it exists.
          */
         body:
-          "Level and XP are awarded by the server so they cannot be edited from a phone. " +
-          "You are playing as a guest, so there is no level to show — and showing " +
-          "“Level 1” would be inventing one. Create an account and your XP is " +
-          "kept from then on.",
+          "Level and XP come from online play. Your player identity connects automatically " +
+          "without an email or password. Practice remains available offline.",
       };
     case "OFFLINE":
       return {

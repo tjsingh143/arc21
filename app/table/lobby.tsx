@@ -71,7 +71,9 @@ export default function PrivateTableLobby() {
   const invite = useRoomInvites((state) => state.invite);
 
   const offerPush = usePushRegistration((state) => state.offer);
-  const { settings, update: updateSettings } = useSettings();
+  // Loaded here so an offer is measured against the stored record; the offer
+  // reads it, and records its own narrow patch, itself (B-H2).
+  useSettings();
 
   const [seats, setSeats] = useState<number>(DEFAULT_SEATS);
   const [shareNotice, setShareNotice] = useState<string | null>(null);
@@ -118,7 +120,7 @@ export default function PrivateTableLobby() {
     return () => {
       live = false;
     };
-  }, [restore]);
+  }, [userId, restore]);
 
   // A lobby is a waiting room: other people arrive while you look at it.
   useEffect(() => {
@@ -136,9 +138,8 @@ export default function PrivateTableLobby() {
    */
   const onCreate = useCallback(async () => {
     await createRoom(seats);
-    const granted = await offerPush("created-private-table", settings);
-    if (granted) await updateSettings(granted);
-  }, [createRoom, seats, offerPush, settings, updateSettings]);
+    await offerPush("created-private-table");
+  }, [createRoom, seats, offerPush]);
 
   /*
    * The share sheet carries the CODE, and its own Copy action is the "copy"

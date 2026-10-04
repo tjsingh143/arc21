@@ -1,0 +1,55 @@
+# An ordinary sign-out on a real keychain, then a cold relaunch.
+# HANDLE is the departing player's server handle.
+#
+# Refresh-B B-F2: "signed out" is shown only once the credential has actually
+# left the keychain, so this is the path that must still complete normally. A
+# cold start then has nothing of HANDLE to restore and creates a new player.
+# Pair with readbacks: HANDLE's auth session is gone, and the player after the
+# relaunch is a different UUID with its own single opening grant.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      text: Sign out
+    direction: DOWN
+    timeout: 40000
+- tapOn: Sign out
+- assertVisible: Sign out?
+- tapOn:
+    text: Sign out
+    index: 1
+- extendedWaitUntil:
+    visible: Offline player
+    timeout: 15000
+- assertNotVisible: This device could not remove its saved sign-in.*
+- takeScreenshot: signed-out-offline-player
+- stopApp
+- launchApp:
+    clearState: false
+# A balance in the header means the server answered for a player — the new one.
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 30000
+- assertVisible: '@[a-z]+_[a-z]+(_[0-9]{6})?'
+- assertNotVisible: '@${HANDLE}'
+- takeScreenshot: cold-relaunch-new-player

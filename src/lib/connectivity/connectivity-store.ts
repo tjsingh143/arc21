@@ -7,12 +7,9 @@
  * "Offline: show cached profile with an Offline badge". There was no
  * connectivity signal of any kind in the app to drive them.
  *
- * WHY NOT `expo-network` OR NetInfo. Both answer "is there a network
- * interface", and that is the wrong question. A phone on a captive-portal
- * wifi, or on a train with two bars and no route, reports ONLINE to either
- * library and cannot reach Arc 21 at all — so the banner would say the opposite
- * of the truth exactly when it matters. It also costs a native module and a
- * prebuild for a worse answer.
+ * The native network listener only triggers another identity connection after
+ * connectivity returns. It does not set this status: a network interface does
+ * not prove Arc 21 is reachable through a captive portal or server outage.
  *
  * What this measures instead is the thing the player actually cares about:
  * whether the last request to the server got an answer. Every remote call in

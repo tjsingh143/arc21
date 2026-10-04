@@ -1,0 +1,36 @@
+# After offline-existing-launch.yaml, with Kong restored. HANDLE as there.
+#
+# Foregrounding resumes the bootstrap that found no server (the root's reconnect
+# handler retries a NETWORK failure); the server now answers that the account
+# exists, so the SAME player is restored — not removed, and not replaced by a
+# new one. Pair with readbacks: the same UUID, and no user created.
+appId: com.arc21.app
+---
+- pressKey: Home
+- launchApp:
+    stopApp: false
+    clearState: false
+# The balance lives in Home's header; the app resumes on whatever screen the
+# offline flow left it on (Settings), so go there before waiting for it.
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 15000
+- assertVisible: '@${HANDLE}'
+- takeScreenshot: existing-player-restored-after-reconnect

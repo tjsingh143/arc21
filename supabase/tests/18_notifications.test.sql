@@ -69,7 +69,7 @@ select ok(
 );
 select ok(
   has_function_privilege('authenticated',
-    'public.register_push_token(text, public.push_platform, text, public.notification_kind[])', 'execute'),
+    'public.register_push_token(text, public.push_platform, text, public.notification_kind[], bigint)', 'execute'),
   'and register its own device'
 );
 
@@ -197,7 +197,7 @@ select throws_ok(
 
 select lives_ok(
   $$ select public.register_push_token('ExponentPushToken[fixture-a]', 'ios', 'device-a',
-       array['table_invite', 'friend_request']::public.notification_kind[]) $$,
+       array['table_invite', 'friend_request']::public.notification_kind[], 1) $$,
   'a device registers itself for the kinds it wants'
 );
 select is(
@@ -208,7 +208,7 @@ select is(
 );
 
 select throws_ok(
-  $$ select public.register_push_token('short', 'ios', null, array['system']::public.notification_kind[]) $$,
+  $$ select public.register_push_token('short', 'ios', null, array['system']::public.notification_kind[], 1) $$,
   'P0001',
   'that does not look like a push token',
   'a token too short to be real is refused'

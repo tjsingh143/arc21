@@ -1,14 +1,14 @@
 /**
  * Presence.
  *
- * Ephemeral by construction: it lives in a Realtime channel and is never
- * written to the database, so a crashed client cannot leave a stale "online"
- * behind for someone to believe an hour later.
+ * A server heartbeat projection scoped to friends and block rules. The client
+ * never publishes a user ID or presence state for another player.
  */
 
 export {
   PRESENCE_TOPIC,
   describePresence,
+  presenceFromRows,
   presenceEntrySchema,
   summarisePresence,
   type PresenceEntry,

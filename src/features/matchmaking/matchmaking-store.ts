@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Queueing for a public seat.
  *
@@ -8,11 +9,20 @@
  *
  * A player who is matched has NOT yet paid. They are seated in a lobby; the
  * chips move when the table is opened.
+ *
+ * Every queue RPC is BOUND to the player who asked (`player-binding.ts`). None
+ * of them names a player — `leave_matchmaking()` takes nothing at all — so the
+ * actor is whoever's JWT the request carries, and an unbound request carries
+ * whoever is signed in when it leaves. The Refresh-B audit (B-R1) held player
+ * A's cancel across a real sign-in to B and B's live search was cancelled while
+ * A's stayed waiting. `poll_matchmaking` is bound too: it can allocate a room,
+ * so it is a write, not a read.
  */
 
-import { create } from "zustand";
+import { create, type StoreApi } from "zustand";
 
-import { getSupabase } from "../../lib/supabase/client.js";
+import { getSupabase, type ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, type BoundPlayer } from "../../lib/supabase/player-binding.js";
 import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
@@ -65,7 +75,7 @@ export interface MatchmakingStoreState {
 
 const UNREACHABLE = "Could not reach matchmaking. Check your connection and try again.";
 const SEAT_UNCONFIRMED = "Could not confirm your seat. Check your balance and return to any active table from Play before trying again.";
-const SIGNED_OUT = "Public tables need an account. Practice stays available without one.";
+const SIGNED_OUT = "Connect for public tables. Your player identity is created automatically; Practice works offline.";
 /*
  * "Leave that table first" was advice the player could not act on: the game id
  * reached the client once, in the reply to the join being refused here, and
@@ -89,81 +99,106 @@ async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   return isTimedOut(result) ? null : result;
 }
 
+/**
+ * One poll, sent as the player the caller bound — shared by `poll` and by
+ * `queue`'s follow-up, so a search is read back as the player who started it.
+ */
+async function pollAs(
+  client: ArcSupabaseClient,
+  player: BoundPlayer,
+  setForPlayer: StoreApi<MatchmakingStoreState>["setState"],
+): Promise<void> {
+  if (!player.isCurrent()) return;
+  const result = await bounded(sentAs(client.rpc("poll_matchmaking"), player));
+  if (result === null || result.error) return;
+
+  const place = toQueuePlace(result.data);
+  if (!place) {
+    // No row means no live search. Not an error — the player may have
+    // cancelled on another device.
+    setForPlayer({ status: { kind: "idle" } });
+    return;
+  }
+
+  if (place.status === "matched") {
+    setForPlayer({ status: { kind: "matched", place }, notice: null });
+    return;
+  }
+  if (place.status === "waiting") {
+    setForPlayer({ status: { kind: "queued", place }, notice: null });
+    return;
+  }
+  setForPlayer({ status: { kind: "idle" }, notice: null });
+}
+
 export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => ({
   status: { kind: "idle" },
   notice: null,
   keepWaitingUntil: null,
 
   queue: async (tier) => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message } });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message } });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
-    if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
-      return;
-    }
-    if (!session.data.session) {
-      set({ status: { kind: "unavailable", message: SIGNED_OUT } });
+    const bound = await bindCurrentPlayer(availability.client);
+    if (!bound.ok) {
+      // A changed player has already had this screen cleared: nothing to say.
+      if (bound.reason !== "identity-changed") {
+        setForPlayer({
+          status: { kind: "unavailable", message: bound.reason === "signed-out" ? SIGNED_OUT : UNREACHABLE },
+        });
+      }
       return;
     }
 
-    const result = await bounded(availability.client.rpc("join_matchmaking", { p_tier: tier }));
+    if (!bound.player.isCurrent()) return;
+    const result = await bounded(
+      sentAs(availability.client.rpc("join_matchmaking", { p_tier: tier }), bound.player),
+    );
     if (result === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     if (result.error) {
       if (result.error.code === ALREADY_SEATED_CODE) {
-        set({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
+        setForPlayer({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
         return;
       }
       // Otherwise the server's own wording — "the high table unlocks at level
       // 10" — is more useful than anything this layer could infer.
-      set({ notice: result.error.message });
+      setForPlayer({ notice: result.error.message });
       return;
     }
 
-    await get().poll();
+    // Read back as the same player, with the same credential.
+    await pollAs(availability.client, bound.player, setForPlayer);
   },
 
   keepWaiting: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
-    set({ keepWaitingUntil: new Date(Date.now() + OFFER_ALTERNATIVES_AFTER_MS) });
+    setForPlayer({ keepWaitingUntil: new Date(Date.now() + OFFER_ALTERNATIVES_AFTER_MS) });
     if (current.kind !== "queued") return;
     await get().queue(current.place.tier);
   },
 
   poll: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
-    const result = await bounded(availability.client.rpc("poll_matchmaking"));
-    if (result === null || result.error) return;
-
-    const place = toQueuePlace(result.data);
-    if (!place) {
-      // No row means no live search. Not an error — the player may have
-      // cancelled on another device.
-      set({ status: { kind: "idle" } });
-      return;
-    }
-
-    if (place.status === "matched") {
-      set({ status: { kind: "matched", place }, notice: null });
-      return;
-    }
-    if (place.status === "waiting") {
-      set({ status: { kind: "queued", place }, notice: null });
-      return;
-    }
-    set({ status: { kind: "idle" }, notice: null });
+    // Bound like the writes: a poll can allocate a room.
+    const bound = await bindCurrentPlayer(availability.client);
+    if (!bound.ok) return;
+    await pollAs(availability.client, bound.player, setForPlayer);
   },
 
   takeSeat: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "matched" || !current.place.roomId) return null;
 
@@ -179,8 +214,9 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
       action: "JOIN_PUBLIC_TABLE",
       roomId: current.place.roomId,
     });
+    if (!setForPlayer.isCurrent()) return null;
     if (result.kind === "unknown") {
-      set({ notice: SEAT_UNCONFIRMED });
+      setForPlayer({ notice: SEAT_UNCONFIRMED });
       await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
@@ -196,7 +232,7 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
        */
       const rejection = result.rejection;
       if (rejection?.code === "SESSION_ALREADY_ACTIVE") {
-        set({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
+        setForPlayer({ status: { kind: "idle" }, notice: SEATED_ELSEWHERE });
         return null;
       }
       /*
@@ -209,10 +245,10 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
        * none.
        */
       if (rejection?.code === "TABLE_FULL" || rejection?.code === "SESSION_CLOSED") {
-        set({ status: { kind: "idle" }, notice: rejection.message });
+        setForPlayer({ status: { kind: "idle" }, notice: rejection.message });
         return null;
       }
-      set({ notice: rejection?.message ?? "That seat could not be taken. Nothing has been charged." });
+      setForPlayer({ notice: rejection?.message ?? "That seat could not be taken. Nothing has been charged." });
       return null;
     }
 
@@ -220,7 +256,7 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
     if (typeof data?.gameId !== "string" || typeof data.seatId !== "string") {
       // The seat may well have been taken; only the echo is unreadable. Say so
       // rather than reporting a failure that would invite a second attempt.
-      set({ notice: "Your seat was taken, but the reply could not be read. Reopen Public Table." });
+      setForPlayer({ notice: "Your seat was taken, but the reply could not be read. Reopen Public Table." });
       await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
@@ -235,17 +271,23 @@ export const useMatchmakingStore = create<MatchmakingStoreState>((set, get) => (
      */
     void useWalletStore.getState().refresh();
 
-    set({ status: { kind: "idle" }, notice: null, keepWaitingUntil: null });
+    setForPlayer({ status: { kind: "idle" }, notice: null, keepWaitingUntil: null });
     return { gameId: data.gameId, seatId: data.seatId };
   },
 
   cancel: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status === "ready") {
-      await bounded(availability.client.rpc("leave_matchmaking"));
+      // `leave_matchmaking()` names nobody. It is sent only as the player who
+      // asked to stop, and not at all once that player has been replaced.
+      const bound = await bindCurrentPlayer(availability.client);
+      if (bound.ok && bound.player.isCurrent()) {
+        await bounded(sentAs(availability.client.rpc("leave_matchmaking"), bound.player));
+      }
     }
     // Left locally whatever the server said: the player asked to stop, and no
     // chips are at stake while merely queued.
-    set({ status: { kind: "idle" }, notice: null, keepWaitingUntil: null });
+    setForPlayer({ status: { kind: "idle" }, notice: null, keepWaitingUntil: null });
   },
 }));

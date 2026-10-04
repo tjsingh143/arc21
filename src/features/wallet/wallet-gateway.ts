@@ -23,6 +23,7 @@
  */
 
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, type BoundPlayer } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { RECOVERY_GRANT_REASON } from "./recovery-grant.js";
 import {
@@ -39,7 +40,22 @@ export type WalletFetchFailureReason =
   | "not-configured"
   | "signed-out"
   | "unreachable"
-  | "unreadable";
+  | "unreadable"
+  /** The app moved to another player before this was sent. See `stale-identity` below. */
+  | "stale-identity";
+
+/**
+ * What a refused player binding is, in wallet terms.
+ *
+ * Narrower than either outcome's own union so it is assignable to BOTH: the
+ * binding happens before a read or a write is distinguishable, and it cannot
+ * answer `unreadable` or `refused` because nothing was read or asked.
+ */
+type WalletBindingFailure = {
+  readonly ok: false;
+  readonly reason: "unreachable" | "signed-out" | "stale-identity";
+  readonly message: string;
+};
 
 export type WalletFetchOutcome =
   | {
@@ -62,8 +78,18 @@ export type RecoveryGrantOutcome =
   | { readonly ok: true; readonly balance: number }
   | {
       readonly ok: false;
-      /** `refused` means the server judged the player ineligible. */
-      readonly reason: "refused" | "unreachable" | "signed-out" | "not-configured";
+      /**
+       * `refused` means the server judged the player ineligible. `stale-identity`
+       * means the app moved to another player while this was being prepared, so
+       * nothing was asked for and no wallet moved — a grant credited to whoever
+       * signed in next would be chips nobody earned.
+       */
+      readonly reason:
+        | "refused"
+        | "unreachable"
+        | "signed-out"
+        | "not-configured"
+        | "stale-identity";
       readonly message: string;
     };
 
@@ -92,23 +118,43 @@ export function createSupabaseWalletGateway(
     return isTimedOut(result) ? null : result;
   }
 
+  /**
+   * The player this call belongs to, or the stated reason there is none.
+   *
+   * Called as the FIRST statement of both methods, so the scope it captures is
+   * the caller's. The grant is why this is not merely an "is anybody signed in"
+   * check: `claim_recovery_grant()` names no player and moves chips, so a session
+   * read held across a sign-in would credit the REPLACEMENT player's wallet and
+   * spend their cooldown. See `player-binding.ts`.
+   */
+  async function bindPlayer(): Promise<{ readonly ok: true; readonly player: BoundPlayer } | WalletBindingFailure> {
+    const binding = await bindCurrentPlayer(client, timeoutMs);
+    if (binding.ok) return binding;
+    switch (binding.reason) {
+      case "unreachable":
+        return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      case "signed-out":
+        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      default:
+        return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
+    }
+  }
+
   return {
     kind: "supabase",
 
     async fetch(): Promise<WalletFetchOutcome> {
-      const session = await bounded(client.auth.getSession());
-      if (session === null) {
-        return { ok: false, reason: "unreachable", message: UNREACHABLE };
-      }
-      if (session.data.session === null) {
-        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
-      }
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
       const walletResult = await bounded(
-        client
-          .from("wallets")
-          .select("id, user_id, balance, lifetime_credited, lifetime_debited, version, updated_at")
-          .maybeSingle(),
+        sentAs(
+          client
+            .from("wallets")
+            .select("id, user_id, balance, lifetime_credited, lifetime_debited, version, updated_at")
+            .maybeSingle(),
+          bound.player,
+        ),
       );
       if (walletResult === null) {
         return { ok: false, reason: "unreachable", message: UNREACHABLE };
@@ -125,13 +171,16 @@ export function createSupabaseWalletGateway(
       }
 
       const ledgerResult = await bounded(
-        client
-          .from("wallet_ledger")
-          .select(
-            "id, user_id, delta, balance_after, reason, reference_type, reference_id, created_at",
-          )
-          .order("created_at", { ascending: false })
-          .limit(LEDGER_PAGE_SIZE),
+        sentAs(
+          client
+            .from("wallet_ledger")
+            .select(
+              "id, user_id, delta, balance_after, reason, reference_type, reference_id, created_at",
+            )
+            .order("created_at", { ascending: false })
+            .limit(LEDGER_PAGE_SIZE),
+          bound.player,
+        ),
       );
 
       // History is supporting detail. A balance that read cleanly is still worth
@@ -148,13 +197,16 @@ export function createSupabaseWalletGateway(
        * the screen would offer a grant the server is about to refuse.
        */
       const grantResult = await bounded(
-        client
-          .from("wallet_ledger")
-          .select("created_at")
-          .eq("reason", RECOVERY_GRANT_REASON)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+        sentAs(
+          client
+            .from("wallet_ledger")
+            .select("created_at")
+            .eq("reason", RECOVERY_GRANT_REASON)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          bound.player,
+        ),
       );
 
       const lastGrantIso =
@@ -183,15 +235,15 @@ export function createSupabaseWalletGateway(
      * a prediction of it.
      */
     async claimRecoveryGrant(): Promise<RecoveryGrantOutcome> {
-      const session = await bounded(client.auth.getSession());
-      if (session === null) {
-        return { ok: false, reason: "unreachable", message: UNREACHABLE };
-      }
-      if (!session.data.session) {
-        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      // The last gate before chips move. A check made earlier is not a check
+      // made now.
+      if (!bound.player.isCurrent()) {
+        return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
       }
 
-      const result = await bounded(client.rpc("claim_recovery_grant"));
+      const result = await bounded(sentAs(client.rpc("claim_recovery_grant"), bound.player));
       if (result === null) {
         return { ok: false, reason: "unreachable", message: UNREACHABLE };
       }
@@ -214,7 +266,13 @@ export function createSupabaseWalletGateway(
 }
 
 const UNREACHABLE = "Could not reach the server, so your chips are not shown.";
-const SIGNED_OUT = "Sign in to see your chips. Practice chips are separate and stay on this device.";
+const SIGNED_OUT = "Connect to see your chips. Practice chips are separate and stay on this device.";
 const UNREADABLE = "Your wallet could not be read. Nothing has been changed.";
+/*
+ * Nothing was asked for and no chips moved, for either player. That is the whole
+ * of what this sentence may claim.
+ */
+const STALE_IDENTITY =
+  "You are signed in as a different player now, so that was not sent. Nothing has been changed.";
 const GRANT_APPLIED_UNREADABLE =
   "Your chips were restored, but the new balance could not be read back. Reopen this screen to see it.";

@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Today's Daily Challenge, as client state.
  *
@@ -11,6 +12,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { useActiveSessionStore } from "../table/active-session-store.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
@@ -49,7 +51,7 @@ export interface DailyStoreState {
 
 const UNREACHABLE = "Could not confirm the challenge. Reconnect to check today's attempt and return to any active table from Play.";
 const SIGNED_OUT =
-  "The daily challenge needs an account, because everyone plays the same server-held shoe. Practice stays available without one.";
+  "Connect for the Daily Challenge. Your player identity is created automatically; Practice works offline.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -62,19 +64,20 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
   starting: false,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message } });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message } });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     if (!session.data.session) {
-      set({ status: { kind: "unavailable", message: SIGNED_OUT } });
+      setForPlayer({ status: { kind: "unavailable", message: SIGNED_OUT } });
       return;
     }
 
@@ -84,13 +87,13 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
       availability.client.rpc("ensure_todays_daily_challenge"),
     );
     if (challengeResult === null || challengeResult.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
 
     const challenge = toChallenge(challengeResult.data);
     if (!challenge) {
-      set({
+      setForPlayer({
         status: {
           kind: "unavailable",
           message: "The daily challenge sent something this app could not read.",
@@ -101,7 +104,7 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
 
     const attemptResult = await bounded(availability.client.rpc("my_daily_entry"));
     if (attemptResult === null || attemptResult.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     const attempt = toAttempt(attemptResult.data);
@@ -109,7 +112,7 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
     // malformed row (or one from a different day) is an unreadable history.
     const empty = Array.isArray(attemptResult.data) && attemptResult.data.length === 0;
     if ((!attempt && !empty) || (attempt && attempt.challengeId !== challenge.id)) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
 
@@ -134,25 +137,27 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
         ? toVerification(verificationResult.data)
         : null;
 
-    set({ status: { kind: "ready", challenge, attempt, verification }, notice: null });
+    setForPlayer({ status: { kind: "ready", challenge, attempt, verification }, notice: null });
   },
 
   start: async () => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().starting) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") return null;
 
-    set({ starting: true, notice: null });
+    setForPlayer({ starting: true, notice: null });
     const result = await sendSessionIntent(availability.client, { action: "START_DAILY_CHALLENGE" });
-    set({ starting: false });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ starting: false });
 
     if (result.kind === "unknown") {
       await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
     if (result.kind === "rejected") {
-      set({ notice: result.rejection.message });
+      setForPlayer({ notice: result.rejection.message });
       return null;
     }
 
@@ -161,7 +166,7 @@ export const useDailyStore = create<DailyStoreState>((set, get) => ({
       | null;
     if (typeof data?.gameId !== "string" || typeof data.seatId !== "string" || typeof data.ranked !== "boolean") {
       await Promise.all([get().load(), useActiveSessionStore.getState().refresh()]);
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
 

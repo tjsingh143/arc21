@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Arc 21 — friends view state.
  *
@@ -177,11 +178,12 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
    * emptied by the thing the player just did.
    */
   async function load(quiet: boolean): Promise<void> {
+    const setForPlayer = playerScopedSetter(set);
     if (get().refreshing) return;
-    set({ refreshing: true });
+    setForPlayer({ refreshing: true });
     // An explicit re-read also clears the last refusal: leaving a red banner
     // above a list that has just been read again describes a state that is over.
-    if (!quiet) set({ status: { kind: "loading" }, actionError: null });
+    if (!quiet) setForPlayer({ status: { kind: "loading" }, actionError: null });
 
     let outcome;
     try {
@@ -189,16 +191,16 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
     } catch {
       // A gateway is not supposed to throw, but a friends screen is not the
       // place to find out that one did.
-      set({ status: { kind: "unavailable", message: LOAD_FAILED }, refreshing: false });
+      setForPlayer({ status: { kind: "unavailable", message: LOAD_FAILED }, refreshing: false });
       return;
     }
 
     if (!outcome.ok) {
-      set({ status: statusForFailure(outcome), refreshing: false });
+      setForPlayer({ status: statusForFailure(outcome), refreshing: false });
       return;
     }
 
-    set({
+    setForPlayer({
       status: {
         kind: "ready",
         friends: outcome.friends,
@@ -221,22 +223,23 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
    * blocked nobody", and nothing else may make that claim.
    */
   async function loadBlocked(quiet: boolean): Promise<void> {
-    if (!quiet) set({ blocked: { kind: "loading" } });
+    const setForPlayer = playerScopedSetter(set);
+    if (!quiet) setForPlayer({ blocked: { kind: "loading" } });
 
     let outcome;
     try {
       outcome = await activeFriendsGateway().listBlocked();
     } catch {
-      set({ blocked: { kind: "unavailable", message: BLOCKED_LOAD_FAILED } });
+      setForPlayer({ blocked: { kind: "unavailable", message: BLOCKED_LOAD_FAILED } });
       return;
     }
 
     if (!outcome.ok) {
-      set({ blocked: { kind: "unavailable", message: outcome.message } });
+      setForPlayer({ blocked: { kind: "unavailable", message: outcome.message } });
       return;
     }
 
-    set({ blocked: { kind: "ready", blocked: outcome.blocked, dropped: outcome.dropped } });
+    setForPlayer({ blocked: { kind: "ready", blocked: outcome.blocked, dropped: outcome.dropped } });
   }
 
   /**
@@ -256,21 +259,22 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
     run: (gateway: FriendsGateway) => Promise<RelationshipOutcome>,
     options: { readonly reloadBlocked?: boolean } = {},
   ): Promise<boolean> {
+    const setForPlayer = playerScopedSetter(set);
     // One at a time. Two relationship changes in flight would each reload the
     // graph, and the slower answer would overwrite the newer one.
     if (get().pending !== null) return false;
-    set({ pending: playerId, actionError: null });
+    setForPlayer({ pending: playerId, actionError: null });
 
     let outcome: RelationshipOutcome;
     try {
       outcome = await run(activeFriendsGateway());
     } catch {
-      set({ pending: null, actionError: FRIENDS_ACTION_FAILED });
+      setForPlayer({ pending: null, actionError: FRIENDS_ACTION_FAILED });
       return false;
     }
 
     if (!outcome.ok) {
-      set({
+      setForPlayer({
         pending: null,
         actionError: outcome.message,
         // Losing the session mid-action is a change of state, not just a failed
@@ -282,10 +286,20 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
       return false;
     }
 
+    /*
+     * From here on this only protects the CACHE.
+     *
+     * It is not what stops a mutation reaching the server as the wrong player —
+     * by this line the server has already answered. That is the gateway's job,
+     * which binds the dispatching player's credential and refuses before the
+     * write; see `player-binding.ts`. A post-response check discards a result,
+     * and a result is not a row.
+     */
+    if (!setForPlayer.isCurrent()) return false;
     if (outcome.relationship !== null) {
       const current = get().searchStatus;
       if (current.kind === "results") {
-        set({
+        setForPlayer({
           searchStatus: {
             ...current,
             results: applySearchRelationship(current.results, playerId, outcome.relationship),
@@ -295,9 +309,10 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
     }
 
     await load(true);
+    if (!setForPlayer.isCurrent()) return false;
     if (options.reloadBlocked === true) await loadBlocked(true);
-    set({ pending: null });
-    return true;
+    setForPlayer({ pending: null });
+    return setForPlayer.isCurrent();
   }
 
   return {
@@ -318,6 +333,7 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
     setQuery: (next) => set({ query: next }),
 
     search: async () => {
+      const setForPlayer = playerScopedSetter(set);
       const query = get().query.trim();
 
       /*
@@ -326,29 +342,29 @@ export const useFriendsStore = create<FriendsStoreState>((set, get) => {
        * come back with an empty list that reads like "nobody matches".
        */
       if (query.length < MIN_SEARCH_LENGTH) {
-        set({ searchStatus: { kind: "too-short", message: SEARCH_TOO_SHORT } });
+        setForPlayer({ searchStatus: { kind: "too-short", message: SEARCH_TOO_SHORT } });
         return;
       }
 
-      set({ searchStatus: { kind: "searching", query } });
+      setForPlayer({ searchStatus: { kind: "searching", query } });
 
       let outcome;
       try {
         outcome = await activeFriendsGateway().search(query);
       } catch {
-        set({ searchStatus: { kind: "failed", message: LOAD_FAILED } });
+        setForPlayer({ searchStatus: { kind: "failed", message: LOAD_FAILED } });
         return;
       }
 
       if (!outcome.ok) {
-        set({ searchStatus: { kind: "failed", message: outcome.message } });
+        setForPlayer({ searchStatus: { kind: "failed", message: outcome.message } });
         if (outcome.reason === "signed-out" || outcome.reason === "not-configured") {
-          set({ status: statusForFailure(outcome) });
+          setForPlayer({ status: statusForFailure(outcome) });
         }
         return;
       }
 
-      set({
+      setForPlayer({
         searchStatus: {
           kind: "results",
           query: outcome.query,

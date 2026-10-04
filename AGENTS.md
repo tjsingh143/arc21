@@ -27,11 +27,14 @@ verify behavior through the running app and backend, not just helper tests.
   `docs/ARCHITECTURE.md`, `docs/DATABASE.md`, and `docs/SECURITY.md`.
   Current release index: `docs/LAUNCH_STATE.md`; verification and external
   activation requirements: `docs/astra-refresh/baseline-audit.md` and
-  `docs/RELEASE.md`. Phase reports and Claude checkpoints are historical evidence.
+  `docs/RELEASE.md`. Refresh B implementation/evidence: `docs/astra-refresh/refresh-b.md`. Phase reports and Claude checkpoints are historical evidence.
 
 ## Authority and invariants
 
-- Offline guest Practice owns only local practice state. Competitive Career,
+- Every online player, including an unlinked pseudonymous player, has a verified
+  Supabase Auth UUID. Internal `guest` mode means only the offline Practice
+  fallback; never use it for Supabase anonymous users. Offline Practice owns
+  only local practice state. Competitive Career,
   Daily, Sprint, public/private multiplayer, XP, cosmetics, and account wallets
   are server-authoritative. Never turn multiplayer into local simulated users.
 - Production shuffles use `CryptoRandomSource`; seeded/preordered sources are
@@ -41,6 +44,11 @@ verify behavior through the running app and backend, not just helper tests.
   `apply_wallet_delta` in the same transaction as its cause. Balance and ledger
   must reconcile; balances stay nonnegative; retries cannot debit/credit twice.
   Private stacks cannot enter the global wallet. See `session-economics.ts`.
+- Handles are assigned atomically by the Auth INSERT trigger, filtered and
+  unique. Securing uses verified email/password on the SAME UUID, never a
+  second-account merge or local economic import. Preserve the optional recovery
+  experience, destructive-loss warnings, atomic keychain storage, and player
+  scope guards on late replies and economic retries.
 - Identity comes from verified Auth, never payload metadata. All application
   tables use RLS; server-owned writes have narrow grants and write guards.
   `private` is inaccessible to client roles, including `service_role`.
@@ -65,7 +73,7 @@ npm run test:coverage
 npm run contrast:check
 npm run doctor
 npm run bundle:check
-supabase start
+npm run db:start # pins local PostgREST 16.3 before supabase start
 supabase db reset --local
 supabase test db
 supabase functions serve --no-verify-jwt

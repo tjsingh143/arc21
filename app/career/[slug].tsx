@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Career node detail — what the challenge is, before committing to it.
  *
@@ -179,9 +180,10 @@ function RankedCta({ node }: { node: NonNullable<ReturnType<typeof careerNodeByS
   const start = useCareerServerStore((state) => state.start);
 
   // The table can finish while this route stays mounted underneath it.
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   useFocusEffect(useCallback(() => {
-    void refresh();
-  }, [refresh]));
+    if (userId) void refresh();
+  }, [userId, refresh]));
 
   const recorded = serverProgress[node.slug];
   const paid = recorded?.rewardClaimed === true;

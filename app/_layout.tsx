@@ -1,3 +1,4 @@
+/* eslint-disable import/first -- Crypto must be installed before engine-dependent imports. */
 /**
  * Root layout.
  *
@@ -27,6 +28,11 @@ import { installCryptoPolyfill } from "../src/lib/crypto/install-crypto-polyfill
 installCryptoPolyfill();
 
 import { useEffect } from "react";
+import { AppState } from "react-native";
+import { addNetworkStateListener } from "expo-network";
+import { CaptchaProvider } from "../src/features/auth/CaptchaProvider";
+import { usePlayerState } from "../src/features/player/use-player-state";
+import { useConnectivityStore } from "../src/lib/connectivity/connectivity-store";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -43,14 +49,44 @@ import { installLiveAnnouncementSink } from "../src/lib/accessibility/announce";
 import { configureNotificationHandler, ensureAndroidChannels } from "../src/lib/notifications/push";
 import { useNotificationRouting } from "../src/lib/notifications/use-notification-routing";
 import { useProfilePrivacySync } from "../src/features/settings/use-profile-privacy-sync";
+import { getSupabase } from "../src/lib/supabase/client";
 
 // A cold deep link still needs somewhere to return after an article, Practice,
 // or a successfully cashed-out table. This also covers footer/gesture Back.
 export const unstable_settings = { initialRouteName: "(tabs)" };
 
 export default function RootLayout() {
+  usePlayerState();
   useNotificationRouting();
   useProfilePrivacySync();
+
+  useEffect(() => {
+    const availability = getSupabase();
+    const refreshForState = (state: string) => {
+      if (availability.status !== "ready") return;
+      if (state === "active") void availability.client.auth.startAutoRefresh();
+      else void availability.client.auth.stopAutoRefresh();
+    };
+    refreshForState(AppState.currentState);
+    const reconnect = () => {
+      const auth = useAuthStore.getState();
+      if (auth.hydrated && auth.automaticBootstrap && !auth.session && auth.bootstrapFailure?.code === "NETWORK") void auth.ensurePlayer();
+    };
+    const foreground = AppState.addEventListener("change", (state) => {
+      refreshForState(state);
+      if (state === "active") reconnect();
+    });
+    const unsubscribe = useConnectivityStore.subscribe((next, prior) => {
+      if (next.status === "online" && prior.status === "offline") reconnect();
+    });
+    // A radio change is only a reason to try the server, never proof it is online.
+    let connected: boolean | undefined;
+    const network = addNetworkStateListener((state) => {
+      if (state.isConnected && connected === false) reconnect();
+      connected = state.isConnected;
+    });
+    return () => { foreground.remove(); network.remove(); unsubscribe(); };
+  }, []);
 
   const hydrateAuth = useAuthStore((state) => state.hydrate);
   useEffect(() => {
@@ -80,6 +116,7 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <AccessibilityPrefsProvider>
           <StatusBar style="light" />
+          <CaptchaProvider />
           {/*
             Above the navigator, so it is said once rather than five times.
             Renders nothing unless the server has actually failed to answer —

@@ -1,0 +1,38 @@
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://create-account
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: secure-email
+    timeout: 15000
+- assertVisible: '@${HANDLE}'
+# The field pre-fills with any pending address, and a tap places the cursor at
+# the nearest word boundary rather than the end, so one erase can leave a
+# suffix. The second tap lands past the short remainder. The exact-recipient
+# assertion below is what proves the field held only ${EMAIL}.
+- tapOn:
+    id: secure-email
+- eraseText: 80
+- tapOn:
+    id: secure-email
+- eraseText: 80
+- inputText: ${EMAIL}
+- hideKeyboard
+- tapOn:
+    id: secure-send-code
+- extendedWaitUntil:
+    visible:
+      id: secure-code-sent
+    timeout: 15000
+- assertVisible:
+    id: secure-code
+- assertVisible: Enter the six-digit code sent to ${EMAIL}\. Keep playing while you wait\.
+- takeScreenshot: refresh-b-verification-pending

@@ -14,9 +14,15 @@
  * Nothing throws. Every failure is a value, because "you are signed out",
  * "that code is wrong" and "the server did not answer" are three different
  * sentences a player needs to read differently.
+ *
+ * Every call is BOUND to the player who asked for it. `create_private_room` and
+ * `join_private_room` name no player at all, so a session read held across a
+ * sign-in would open or join a table as whoever signed in next — the same defect
+ * that was reproduced on a friend request. See `player-binding.ts`.
  */
 
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, type BoundPlayer } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toRoom, toRoomState, type Room, type RoomState } from "./rooms.js";
 
@@ -28,7 +34,15 @@ export type RoomsFailureReason =
   /** The server answered, and said no. `message` is its own wording. */
   | "refused"
   /** The server did not answer at all. */
-  | "unreachable";
+  | "unreachable"
+  /**
+   * The app moved to a different player while this was being prepared, so it was
+   * never sent. `create_private_room` and `join_private_room` name no player at
+   * all, so without this a held session read could open or join a table as
+   * whoever signed in next — the same defect as the friend request that was
+   * written by the wrong sender.
+   */
+  | "stale-identity";
 
 export interface RoomsFailure {
   readonly ok: false;
@@ -119,7 +133,13 @@ const UNREACHABLE = "Could not reach the server, so the table could not be opene
  */
 const NO_SUCH_TABLE = "That table is not available.";
 const SIGNED_OUT =
-  "Private tables need an account, so your seat survives a reconnect. Practice stays available without one.";
+  "Connect for private tables. Your player identity keeps your seat through reconnects.";
+/*
+ * Nothing was sent, and no table was opened, joined or left for either player.
+ * That is the whole of what this sentence may claim.
+ */
+const STALE_IDENTITY =
+  "You are signed in as a different player now, so that was not sent. Nothing has been changed.";
 /**
  * What being removed reads as.
  *
@@ -180,21 +200,46 @@ export function createSupabaseRoomsGateway(
     return isTimedOut(result) ? null : result;
   }
 
-  async function requireSession(): Promise<RoomsFailure | null> {
-    const session = await bounded(client.auth.getSession());
-    if (session === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
-    if (!session.data.session) return { ok: false, reason: "signed-out", message: SIGNED_OUT };
-    return null;
+  /**
+   * The player this call belongs to, or the stated reason there is none.
+   *
+   * Called as the FIRST statement of every method, so the player scope it
+   * captures is the caller's. Knowing that somebody is signed in is not enough:
+   * the request must carry the credential of the player who asked, or the SDK
+   * authenticates it as whoever is current when it leaves. See
+   * `player-binding.ts`.
+   */
+  async function bindPlayer(): Promise<{ readonly ok: true; readonly player: BoundPlayer } | RoomsFailure> {
+    const binding = await bindCurrentPlayer(client, timeoutMs);
+    if (binding.ok) return binding;
+    switch (binding.reason) {
+      case "unreachable":
+        return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      case "signed-out":
+        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      default:
+        return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
+    }
+  }
+
+  /** The last gate before a write. A check made earlier is not a check made now. */
+  function stillCurrent(player: BoundPlayer): RoomsFailure | null {
+    if (player.isCurrent()) return null;
+    return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
   }
 
   return {
     kind: "supabase",
 
     async create(maxSeats: number): Promise<RoomOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
-      const result = await bounded(client.rpc("create_private_room", { p_max_seats: maxSeats }));
+      const result = await bounded(
+        sentAs(client.rpc("create_private_room", { p_max_seats: maxSeats }), bound.player),
+      );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
         // The server's own wording — "you already have a table open" — is more
@@ -208,13 +253,18 @@ export function createSupabaseRoomsGateway(
     },
 
     async join(code: string): Promise<RoomOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
       // Case and spacing are normalised server-side too; doing it here as well
       // means an obviously-malformed code never becomes a request.
       const result = await bounded(
-        client.rpc("join_private_room", { p_code: code.replace(/\s/g, "").toUpperCase() }),
+        sentAs(
+          client.rpc("join_private_room", { p_code: code.replace(/\s/g, "").toUpperCase() }),
+          bound.player,
+        ),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       // The server's own wording for a refusal it DID raise — today that is the
@@ -231,10 +281,12 @@ export function createSupabaseRoomsGateway(
     },
 
     async read(roomId: string): Promise<RoomStateOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
-      const result = await bounded(client.rpc("get_room_state", { p_room_id: roomId }));
+      const result = await bounded(
+        sentAs(client.rpc("get_room_state", { p_room_id: roomId }), bound.player),
+      );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
         // The one refusal a player actually experiences: they are not a member
@@ -250,8 +302,8 @@ export function createSupabaseRoomsGateway(
     },
 
     async findOpenRoom(): Promise<RoomLookupOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
       /*
        * `rooms_select_member` is the whole filter for WHOSE room this is: it
@@ -266,13 +318,16 @@ export function createSupabaseRoomsGateway(
        * anybody whose game outlived its lobby, which is every real game.
        */
       const result = await bounded(
-        client
-          .from("rooms")
-          .select("id,code,host_user_id,max_seats,status,game_session_id")
-          .or(OPEN_ROOM_FILTER)
-          .order("created_at", { ascending: false })
-          .limit(1)
-          .maybeSingle(),
+        sentAs(
+          client
+            .from("rooms")
+            .select("id,code,host_user_id,max_seats,status,game_session_id")
+            .or(OPEN_ROOM_FILTER)
+            .order("created_at", { ascending: false })
+            .limit(1)
+            .maybeSingle(),
+          bound.player,
+        ),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) return { ok: false, reason: "refused", message: result.error.message };
@@ -284,11 +339,13 @@ export function createSupabaseRoomsGateway(
     },
 
     async setReady(roomId: string, ready: boolean): Promise<RoomVoidOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
       const result = await bounded(
-        client.rpc("set_room_ready", { p_room_id: roomId, p_ready: ready }),
+        sentAs(client.rpc("set_room_ready", { p_room_id: roomId, p_ready: ready }), bound.player),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
@@ -300,11 +357,16 @@ export function createSupabaseRoomsGateway(
     },
 
     async removeMember(roomId: string, userId: string): Promise<RoomRemovalOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
       const result = await bounded(
-        client.rpc("remove_room_member", { p_room_id: roomId, p_user_id: userId }),
+        sentAs(
+          client.rpc("remove_room_member", { p_room_id: roomId, p_user_id: userId }),
+          bound.player,
+        ),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) return { ok: false, reason: "refused", message: result.error.message };
@@ -323,8 +385,10 @@ export function createSupabaseRoomsGateway(
      * server's.
      */
     async start(roomId: string): Promise<RoomStartOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
       const result = await bounded(
         client.functions.invoke("create-session", {
@@ -334,6 +398,9 @@ export function createSupabaseRoomsGateway(
             roomId,
             clientSentAt: new Date().toISOString(),
           },
+          // Pinned exactly as `session-intent.ts` pins the economic one-shots:
+          // dealing a table is a seat and a stack, and it must be the host's.
+          headers: { Authorization: bound.player.authorization },
         }),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
@@ -353,10 +420,9 @@ export function createSupabaseRoomsGateway(
     },
 
     async findSeat(gameSessionId: string): Promise<RoomSeatOutcome> {
-      const session = await bounded(client.auth.getSession());
-      if (session === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
-      const userId = session.data.session?.user.id;
-      if (!userId) return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const userId = bound.player.userId;
 
       /*
        * Filtered by user id as well as session, even though the RLS policy
@@ -366,24 +432,27 @@ export function createSupabaseRoomsGateway(
        * `maybeSingle` fails on the ambiguity rather than on anything real.
        */
       const result = await bounded(
-        client
-          .from("game_session_seats")
-          .select("id")
-          .eq("game_session_id", gameSessionId)
-          .eq("user_id", userId)
-          /*
-           * A SETTLED SEAT IS NOT A SEAT TO OPEN A TABLE WITH.
-           *
-           * Without this the lobby walks a player straight back into a table
-           * they have just cashed out of: `status = 'left'` is written by
-           * `settleTableClosure`, the row stays for the history, and this
-           * lookup returned it happily. Seen on a device — leaving from the
-           * table screen, deep-linking to the lobby, and being replaced onto
-           * `/table/[gameId]` again, where every command answers
-           * `SESSION_CLOSED`. The seat this asks for is a LIVE one.
-           */
-          .neq("status", "left")
-          .maybeSingle(),
+        sentAs(
+          client
+            .from("game_session_seats")
+            .select("id")
+            .eq("game_session_id", gameSessionId)
+            .eq("user_id", userId)
+            /*
+             * A SETTLED SEAT IS NOT A SEAT TO OPEN A TABLE WITH.
+             *
+             * Without this the lobby walks a player straight back into a table
+             * they have just cashed out of: `status = 'left'` is written by
+             * `settleTableClosure`, the row stays for the history, and this
+             * lookup returned it happily. Seen on a device — leaving from the
+             * table screen, deep-linking to the lobby, and being replaced onto
+             * `/table/[gameId]` again, where every command answers
+             * `SESSION_CLOSED`. The seat this asks for is a LIVE one.
+             */
+            .neq("status", "left")
+            .maybeSingle(),
+          bound.player,
+        ),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
@@ -395,10 +464,14 @@ export function createSupabaseRoomsGateway(
     },
 
     async leave(roomId: string): Promise<RoomVoidOutcome> {
-      const denied = await requireSession();
-      if (denied) return denied;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
+      const stale = stillCurrent(bound.player);
+      if (stale) return stale;
 
-      const result = await bounded(client.rpc("leave_room", { p_room_id: roomId }));
+      const result = await bounded(
+        sentAs(client.rpc("leave_room", { p_room_id: roomId }), bound.player),
+      );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) return { ok: false, reason: "refused", message: result.error.message };
       return { ok: true };

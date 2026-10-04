@@ -76,6 +76,57 @@ leaderboards or ranked progression.
 
 ---
 
+## Player identity (Refresh B)
+
+Opening the configured app restores Supabase Auth or calls `signInAnonymously`.
+Every online player has a real server UUID and the `authenticated` database role.
+`is_anonymous` is Auth-owned classification, not client metadata. It describes
+recoverability, not permission to play: public/private tables, Sprint, Daily,
+Career, wallet, cosmetics, friends and notifications use the same authorization
+for unlinked and secured players.
+
+The Auth INSERT trigger allocates a unique filtered `word_word` handle, with a
+numeric suffix on collision. `username` remains the canonical normalized handle;
+`display_name` is the separately editable public presentation name, initially the
+assigned handle. Existing players and their names are unchanged.
+
+Optional securing is `updateUser({email})` → email-change OTP verification →
+`updateUser({password})`. The UUID never changes. OTP verification uses an
+unpersisted SDK client, compares the verified UUID with the current player, and
+only then adopts the returned session. A conflict with an existing email is a
+refusal, never a merge. OAuth providers are not configured or offered in this
+phase; any future OAuth path must use supported identity linking and preserve
+these same UUID checks.
+
+Auth mutations remain serialized after a UI timeout. Queued intents that expire
+before starting are discarded. Human CAPTCHA time is outside the network
+request deadline. Local expected-player guards prevent a queued delete, login,
+or credential change from acting after another identity replaces the session.
+Keychain writes use two chunk generations and an atomic manifest switch, with
+backward reads of the previous storage format. The SDK owns refresh and tokens;
+Zustand holds only a non-secret identity snapshot.
+
+The app renders before network authentication. SQLite Practice, local settings,
+learning and offline Career practice survive outages and the transition from an
+old device-local identity. No local chips, XP, competitive results or achievements
+are uploaded. Foreground and network-restoration events can resume failed
+connection attempts; cancellation, a rate limit, or an intentional sign-out
+requires an explicit Connect action. Server data caches clear when the UUID
+changes; old asynchronous replies cannot refill them. Economic response-loss
+retries retain both the same intent ID and the original session credential.
+
+Unlinked players have no cross-device recovery promise. Sign-out and replacement
+by sign-in/recovery warn before losing access. Profile offers optional securing
+without interrupting play. Deletion keeps its existing server-owned cleanup and
+active-seat restrictions. A later cold launch creates a new player, never
+resurrects the deleted identity.
+
+Presence is now a bounded friend-only RPC projection from verified heartbeats
+and server seat state. The global client-authored Realtime roster is denied.
+Full decisions and evidence are in [Refresh B](./astra-refresh/refresh-b.md).
+
+---
+
 ## The engine
 
 `applyCommand(state, command, context) → { state, events }`

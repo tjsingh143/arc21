@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Leaderboards.
  *
@@ -29,6 +30,7 @@ import {
 } from "../../src/features/leaderboards";
 
 export default function Leaderboards() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const status = useLeaderboardStore((state) => state.status);
   const category = useLeaderboardStore((state) => state.category);
   const strategyProgress = useLeaderboardStore((state) => state.strategyProgress);
@@ -38,7 +40,7 @@ export default function Leaderboards() {
 
   useEffect(() => {
     void select("weekly_xp");
-  }, [select]);
+  }, [userId, select]);
 
   /*
    * Derived with `useMemo` from subscribed state rather than by calling a store

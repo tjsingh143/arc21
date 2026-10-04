@@ -1,0 +1,64 @@
+# After unverified-protected-work.yaml, with the auth server started again.
+# HANDLE as there.
+#
+# Foregrounding resumes the bootstrap that found no verdict; the server now
+# confirms the account, the SAME player is adopted, and the account-owned
+# screens then work normally — Inventory lists (and, for a new account, grants)
+# cosmetics and Daily offers its ranked start. Pair with readbacks: the
+# device's `GET /auth/v1/user 200` BEFORE its first /rest request, and the
+# cosmetics now on the server.
+appId: com.arc21.app
+---
+- pressKey: Home
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- openLink: arc21://profile/inventory
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: inventory-count
+    timeout: 20000
+- takeScreenshot: confirmed-inventory-loaded
+- openLink: arc21://daily
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# The start button sits below the format, scoring and verification cards, and a
+# wait does not scroll: scroll to it (first run of this flow stopped here with
+# the ready screen plainly shown above the fold).
+- scrollUntilVisible:
+    element:
+      id: daily-start
+    direction: DOWN
+    timeout: 20000
+- assertVisible:
+    id: daily-start
+- takeScreenshot: confirmed-daily-loaded
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 15000
+- assertVisible: '@${HANDLE}'

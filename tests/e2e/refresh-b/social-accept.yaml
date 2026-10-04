@@ -1,0 +1,22 @@
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: request-accept-${OTHER}
+    direction: DOWN
+- tapOn:
+    id: request-accept-${OTHER}
+- extendedWaitUntil:
+    visible:
+      id: friend-row-${OTHER}
+    timeout: 15000
+- takeScreenshot: pseudonymous-friend-accepted

@@ -29,6 +29,62 @@ server-side on authoritative state regardless of what the UI rendered.
 
 ---
 
+## Pseudonymous identity and abuse (Refresh B)
+
+Supabase anonymous players are authenticated users, not the unauthenticated
+`anon` API role. No RLS policy may infer a verified email from `authenticated`.
+The existing account-scoped authorization remains valid for normal play; no
+email-dependent play/social gate was added. Identity is taken from verified
+Auth/session state and never from anonymous signup metadata or payload UUIDs.
+
+The handle allocator runs within the auth-user/profile/wallet transaction. Its
+unique index arbitrates concurrent allocation; filtered candidates retry only a
+username collision. Signup metadata cannot choose an anonymous player's initial
+handle or bypass moderation. Existing rename limits and normalization remain.
+One 25,000-chip opening ledger entry belongs to each new UUID. Restore, refresh,
+linking, and retries on the same UUID cannot award another opening grant. No
+editable local economy/competition data reaches the server through this flow.
+
+Hosted activation must enable anonymous Auth, email confirmations, manual
+linking, the email-change OTP template, working SMTP, and CAPTCHA. The app has
+an optional native hCaptcha integration; only its public site key/origin may be
+`EXPO_PUBLIC_`. The secret belongs to Auth settings. Retain signup/IP limits
+(default 30 anonymous creations/hour/IP), monitor creation volume and abuse,
+and tune protections before release without requiring email for play. CAPTCHA
+and IP limits reduce farming; they do not establish a unique human or prevent
+all multi-account play. Virtual chips cannot be transferred between players,
+private stacks cannot enter global wallets, and no new economic merge exists.
+Repeated deletion/recreation remains subject to Auth signup limits and starts
+an unrelated UUID; deletion never replenishes the previous wallet.
+
+Direct friend-request INSERT is revoked because it bypassed the existing RPC's
+20/hour limit. Presence now exposes only accepted, unblocked friends recently
+seen by the server (90-second window); it does not accept client-authored UUIDs
+or `in_game` claims. Shared Realtime presence read/write policies are removed.
+
+Email securing verifies ownership before password attachment. Verification runs
+in a detached client so a code for another pending UUID cannot replace this
+player. Owned-email conflicts are not merged. A fully lost anonymous-creation
+response can leave an inaccessible orphan because Auth offers no creation
+idempotency key; no device data is imported into its replacement. A lost linking
+response is reconciled using the current server user and refresh on the same ID.
+
+Unlinked credentials lost through sign-out, keychain clearing, reinstall or a
+lost device may be unrecoverable. The app warns at destructive boundaries and
+reports keychain write failures. Atomic storage preserves the previous complete
+credential during replacement. Push registration/retirement are ordered, use the
+captured verified credential, and reject stale local association updates.
+
+There is no automatic age-based deletion of anonymous players: they are normal
+persistent players and may own funds, active seats and relationships. Any future
+orphan cleanup requires an operational retention policy, activity/ownership
+checks, and the established seat/economic cleanup path. Never bulk-delete
+`auth.users` merely because `is_anonymous` is true.
+
+See [Refresh B](./astra-refresh/refresh-b.md) for current proof and activation
+limits. The [Refresh-A audit](./astra-refresh/baseline-audit.md) remains historical
+evidence for its own checkpoint.
+
 ## Authorization
 
 Every Edge Function command authenticates first and derives identity from the
@@ -103,7 +159,7 @@ is ever loosened.
 | `cosmetics` | yes | select active | `SELECT` to `anon` + `authenticated` | Catalogue. Carries no price column and no player reference |
 | `daily_challenges` | yes | select once open | column-level `SELECT` to `authenticated`, **excluding `seed_secret`** | The commitment and the format are public; the seed is the shoe. `select *` is refused by the privilege system, not filtered by a policy |
 | `daily_entries` | yes | select own | `SELECT` to `authenticated` | Your own attempt. The board is published separately as server-produced, public-safe output |
-| `friend_requests` | yes | select participants / insert as sender / update participants | `SELECT`, `INSERT` + `UPDATE (status)` to `authenticated` | You can accept or decline; `status` is the only column either party may move |
+| `friend_requests` | yes | select participants / update participants | `SELECT` + `UPDATE (status)` to `authenticated` | Creation uses the rate-limited RPC; `status` is the only column either party may move |
 | `friendships` | yes | select own / delete own | `SELECT`, `DELETE` to `authenticated` | Unfriending is a client action. Creating a friendship is not — that is `accept_friend_request` |
 | `game_events` | yes | select participant | `SELECT` to `authenticated` | Public event payloads for a table you hold a seat at |
 | `game_session_seats` | yes | select participant | `SELECT` to `authenticated` | Stacks and seat state at your own table. server-owned |
@@ -132,10 +188,10 @@ is ever loosened.
 | `wallet_ledger` | yes | select own | `SELECT` to `authenticated` | Append-only history of your own chips. **No client write of any kind, at table or column level** |
 | `wallets` | yes | select own | `SELECT` to `authenticated` | Your own balance. **No client write of any kind, at table or column level** |
 
-Six tables take a client write — `friend_requests`, `friendships`, `blocks`,
-`loadouts`, `push_tokens`, `notifications` — and `profiles` takes a column-level
-one. The other twenty-seven are server-owned. That list is asserted, not
-described: adding a seventh fails
+Five tables take a table-level client write — `friendships`, `blocks`,
+`loadouts`, `push_tokens`, `notifications` — while `profiles` and
+`friend_requests` take selected-column updates. The other twenty-seven are
+server-owned. That list is asserted, not described: adding another write fails
 `supabase/tests/20_authorization_surface.test.sql`.
 
 ### The one row of that table the database disagreed with, and how it was found
@@ -584,8 +640,8 @@ moment's own category, and nothing else.
 
 ## Local storage
 
-Stored locally: onboarding flag, preferences, audio/haptic settings, guest
-identity, guest practice stats, the offline Practice session, cached strategy
+Stored locally: onboarding flag, preferences, audio/haptic settings, internal
+offline identity, device Practice stats, the offline Practice session, cached strategy
 tables, cached public profile, cosmetics metadata index, and the last active
 online game id.
 

@@ -1,0 +1,27 @@
+# The native SDK must originate this request so its PKCE verifier is in Keychain.
+appId: com.arc21.app
+---
+# Relaunch (keychain and SQLite kept) so a form left filled by an earlier run
+# cannot leave a suffix behind the erase below.
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- openLink: arc21://sign-in
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- tapOn:
+    id: auth-email
+- eraseText
+- inputText: ${EMAIL}
+- hideKeyboard
+- tapOn: Email me a reset link
+- extendedWaitUntil:
+    visible: If .* has an account, a reset link is on its way.
+    timeout: 15000
+- takeScreenshot: recovery-requested-on-device

@@ -136,8 +136,8 @@ select ok(
   'and the handle it was given passes the same filter a rename would'
 );
 
--- The ordinary collision path is unchanged: a permitted base that is taken gets
--- a suffix, and stays tied to the account id.
+-- Existing hex handles remain usable; Refresh B assigns human-readable
+-- fallback handles instead of deriving them from a UUID prefix.
 insert into auth.users (id, email, aud, role) values
   ('1a2b3c4d-5e6f-4000-8000-00000000000b', 'coll-a@arc21.test', 'authenticated', 'authenticated');
 update public.profiles set username = 'p1a2b3c4d5e6f'
@@ -146,9 +146,9 @@ insert into auth.users (id, email, aud, role) values
   ('1a2b3c4d-5e6f-4000-8000-00000000000c', 'coll-b@arc21.test', 'authenticated', 'authenticated');
 
 select is(
-  (select username from public.profiles where id = '1a2b3c4d-5e6f-4000-8000-00000000000c'),
-  'p1a2b3c4d5e6f_1',
-  'a permitted handle that is taken is suffixed, not replaced'
+  (select username <> 'p1a2b3c4d5e6f' and public.username_is_permitted(username) from public.profiles where id = '1a2b3c4d-5e6f-4000-8000-00000000000c'),
+  true,
+  'fallback no longer depends on colliding UUID prefixes and remains permitted'
 );
 
 select * from finish();

@@ -27,10 +27,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { stackUp } from "./stack-guard.js";
 import { createClient } from "@supabase/supabase-js";
-import { useAuthStore } from "../../src/features/auth/auth-store.js";
+import { disposeAuthSubscription, setGuestIdentityStore, useAuthStore } from "../../src/features/auth/auth-store.js";
 import { setSupabaseAvailabilityForTests, type ArcSupabaseClient } from "../../src/lib/supabase/client.js";
 
-afterEach(() => setSupabaseAvailabilityForTests(null));
+import { GuestIdentityStore } from "../../src/features/auth/guest.js";
+import { MemoryKeyValueStore } from "../../src/lib/persistence/key-value-store.js";
+afterEach(() => {
+  disposeAuthSubscription(); setGuestIdentityStore(null); setSupabaseAvailabilityForTests(null);
+});
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const AUTH_ADMIN = `${SUPABASE_URL}/auth/v1/admin/users`;
@@ -69,7 +73,7 @@ async function findMessageTo(address: string, deadlineMs = 5_000): Promise<strin
   const deadline = Date.now() + deadlineMs;
   while (Date.now() < deadline) {
     const response = await fetch(
-      `${MAILPIT}/api/v1/messages?query=${encodeURIComponent(`to:${address}`)}`,
+      `${MAILPIT}/api/v1/search?query=${encodeURIComponent(`to:${address}`)}`,
     );
     const json = (await response.json()) as { messages: MailpitMessage[] };
     if (json.messages.length > 0) return json.messages[0]!.ID;
@@ -108,6 +112,9 @@ suite("password reset, end to end via Mailpit", () => {
         auth: { flowType: "pkce" },
       });
       setSupabaseAvailabilityForTests({ status: "ready", client: requester as ArcSupabaseClient });
+      setGuestIdentityStore(new GuestIdentityStore(new MemoryKeyValueStore()));
+      useAuthStore.setState({ hydrated: false, session: null, mode: "unknown", guest: null });
+      await useAuthStore.getState().hydrate();
       useAuthStore.getState().setMode("signIn");
       useAuthStore.getState().dispatch({ type: "EDIT_EMAIL", value: email });
       await useAuthStore.getState().requestPasswordReset();

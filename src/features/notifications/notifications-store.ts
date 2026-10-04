@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The notification inbox, as client state.
  *
@@ -11,6 +12,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toNotifications, unreadCount, type AppNotification } from "./notifications.js";
 
@@ -31,7 +33,7 @@ export interface NotificationsStoreState {
 
 const UNREACHABLE = "Could not reach your notifications.";
 const SIGNED_OUT =
-  "Notifications need an account. Practice does not, and never sends you anything.";
+  "Connect to see your player notifications. Practice works offline.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -44,33 +46,35 @@ export const useNotificationsStore = create<NotificationsStoreState>((set, get) 
   busy: false,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message }, unread: 0 });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message }, unread: 0 });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE }, unread: 0 });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE }, unread: 0 });
       return;
     }
     if (!session.data.session) {
-      set({ status: { kind: "unavailable", message: SIGNED_OUT }, unread: 0 });
+      setForPlayer({ status: { kind: "unavailable", message: SIGNED_OUT }, unread: 0 });
       return;
     }
 
     const response = await bounded(availability.client.rpc("my_notifications", { p_limit: 50 }));
     if (response === null || response.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE }, unread: 0 });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE }, unread: 0 });
       return;
     }
 
     const rows = toNotifications(response.data);
-    set({ status: { kind: "ready", rows }, unread: unreadCount(rows) });
+    setForPlayer({ status: { kind: "ready", rows }, unread: unreadCount(rows) });
   },
 
   markRead: async (id) => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
@@ -84,23 +88,45 @@ export const useNotificationsStore = create<NotificationsStoreState>((set, get) 
           ? { ...row, read_at: new Date().toISOString() }
           : row,
       );
-      set({ status: { kind: "ready", rows }, unread: unreadCount(rows) });
+      setForPlayer({ status: { kind: "ready", rows }, unread: unreadCount(rows) });
     }
 
-    await bounded(availability.client.rpc("mark_notifications_read", { p_ids: [id] }));
+    // Sent only as the adopted player: never as a restored credential the
+    // server has not confirmed (B-H1).
+    const session = await bounded(confirmedSession(availability.client));
+    if (session === null || !session.data.session) return;
+    await bounded(availability.client.rpc("mark_notifications_read", { p_ids: [id] })
+      .setHeader("Authorization", `Bearer ${session.data.session.access_token}`));
   },
 
+  /**
+   * `p_ids: null` means EVERY unread notification of whoever the request is
+   * sent as — the server scopes it to `auth.uid()` and nothing else — so it is
+   * bound to the player who tapped it (`player-binding.ts`). Unbound, the
+   * Refresh-B audit (B-R2) held player A's tap across a sign-in to B and B's
+   * inbox was marked read while A's stayed unread. `markRead` needs no binding:
+   * its explicit id belongs to one player, and a request sent as anybody else
+   * matches no row.
+   */
   markAllRead: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
-    set({ busy: true });
+    setForPlayer({ busy: true });
+    const bound = await bindCurrentPlayer(availability.client);
+    if (!bound.ok || !bound.player.isCurrent()) {
+      setForPlayer({ busy: false });
+      return;
+    }
     const response = await bounded(
-      availability.client.rpc("mark_notifications_read", { p_ids: null }),
+      sentAs(availability.client.rpc("mark_notifications_read", { p_ids: null }), bound.player),
     );
-    set({ busy: false });
+    setForPlayer({ busy: false });
 
-    if (response === null || response.error) return;
+    // The reload belongs to the same player; a replacement's inbox is theirs
+    // to load when their own screen asks.
+    if (response === null || response.error || !bound.player.isCurrent()) return;
     await get().load();
   },
 }));

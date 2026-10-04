@@ -334,7 +334,7 @@ appId: com.arc21.app
 # Scrolled UP to, for the same reason as the Play header: whether a screen opens
 # at the top or restores a position is not something this flow may assume.
 - scrollUntilVisible:
-    element: ".*Guest.*"
+    element: "Practice is saved on this device.*"
     direction: UP
     timeout: 15000
 
@@ -356,7 +356,7 @@ appId: com.arc21.app
 - tapOn:
     id: "back-bar"
 - scrollUntilVisible:
-    element: ".*Guest.*"
+    element: "Practice is saved on this device.*"
     direction: UP
     timeout: 15000
 

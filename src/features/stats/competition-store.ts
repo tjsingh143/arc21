@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The Competition section of Statistics, read from the server.
  *
@@ -19,6 +20,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import type { CompetitionRecord } from "./competition.js";
 
@@ -65,25 +67,26 @@ export const useCompetitionStore = create<CompetitionStoreState>((set) => ({
   online: false,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ record: null, loading: false, loaded: true, online: false });
+      setForPlayer({ record: null, loading: false, loaded: true, online: false });
       return;
     }
 
-    set({ loading: true });
+    setForPlayer({ loading: true });
     const session = await withTimeout(
-      Promise.resolve(availability.client.auth.getSession()),
+      Promise.resolve(confirmedSession(availability.client)),
       undefined,
     );
     if (isTimedOut(session)) {
-      set({ loading: false, loaded: true, online: false });
+      setForPlayer({ loading: false, loaded: true, online: false });
       return;
     }
     if (!session.data.session) {
       // Not an error and not offline: a guest has no server record, and the
       // section says so through `NO_ACCOUNT`.
-      set({ record: null, loading: false, loaded: true, online: true });
+      setForPlayer({ record: null, loading: false, loaded: true, online: true });
       return;
     }
 
@@ -92,17 +95,17 @@ export const useCompetitionStore = create<CompetitionStoreState>((set) => ({
       undefined,
     );
     if (isTimedOut(result)) {
-      set({ loading: false, loaded: true, online: false });
+      setForPlayer({ loading: false, loaded: true, online: false });
       return;
     }
     if (result.error) {
       // Reached the server and it refused. Reporting that as offline would put
       // a "you are offline" message in front of a player who is not.
-      set({ loading: false, loaded: true, online: true });
+      setForPlayer({ loading: false, loaded: true, online: true });
       return;
     }
 
-    set({ record: toRecord(result.data), loading: false, loaded: true, online: true });
+    setForPlayer({ record: toRecord(result.data), loading: false, loaded: true, online: true });
   },
 
   clear: () => set({ record: null, loading: false, loaded: false, online: false }),

@@ -1,0 +1,51 @@
+# An EXISTING player's cold launch while ONLY the auth server is down: the API
+# gateway (Kong) and PostgREST answer, GoTrue does not, so `/auth/v1/user`
+# fails and every other endpoint works — the final Refresh-B audit's B-H1
+# condition. HANDLE is that player's server handle.
+#
+# Nobody is adopted, so nothing account-owned may be sent as the restored
+# credential: Inventory must not grant or list cosmetics, and Daily must not
+# open (or offer to open) a ranked game. Both say why instead. Stop
+# supabase_auth_arc21 before this flow and start it before
+# unverified-protected-work-resume.yaml. Pair with readbacks: the gateway shows
+# no /rest or /functions request from the device in this window, and the
+# player's cosmetics and daily entries are unchanged.
+appId: com.arc21.app
+---
+- stopApp
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 30000
+- assertNotVisible:
+    id: header-chips
+- openLink: arc21://profile/inventory
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: Connect to see cosmetics earned by your player.*
+    timeout: 20000
+- assertNotVisible:
+    id: inventory-count
+- assertNotVisible:
+    id: inventory-newly-granted
+- takeScreenshot: unverified-inventory-not-loaded
+- openLink: arc21://daily
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: Connect for the Daily Challenge.*
+    timeout: 20000
+- assertNotVisible:
+    id: daily-start
+- assertVisible:
+    id: daily-retry
+- takeScreenshot: unverified-daily-not-loaded

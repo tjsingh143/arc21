@@ -41,7 +41,7 @@ export const STATS_MODES: readonly StatsModeDescriptor[] = [
     id: "quick",
     label: "Quick",
     source: "server",
-    description: "Quick Play results are recorded on the server and need an account.",
+    description: "Quick Play results are recorded on the server under your player identity.",
   },
   {
     id: "career",

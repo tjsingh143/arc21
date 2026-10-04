@@ -65,6 +65,18 @@ export function summarisePresence(raw: unknown): Map<string, PresenceState> {
   return online;
 }
 
+/** Parse only the server's friend-scoped, verified identity projection. */
+export function presenceFromRows(raw: unknown): Map<string, PresenceState> {
+  const result = new Map<string, PresenceState>();
+  if (!Array.isArray(raw)) return result;
+  for (const row of raw) {
+    if (typeof row !== "object" || row === null) continue;
+    const parsed = presenceEntrySchema.safeParse({ userId: row.user_id, state: row.state });
+    if (parsed.success) result.set(parsed.data.userId, parsed.data.state);
+  }
+  return result;
+}
+
 /**
  * The word shown beside a friend.
  *
@@ -78,7 +90,7 @@ export function describePresence(state: PresenceState | undefined): string | nul
     case "in_game":
       return "In a game";
     case "available":
-      return "Online";
+      return "Recently active";
     default:
       return null;
   }

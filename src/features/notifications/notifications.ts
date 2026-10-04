@@ -298,19 +298,45 @@ export function preferencesAfterGrant(
   moment: PermissionMoment,
   current: NotificationPreferences,
 ): NotificationPreferences {
-  const enabled = { ...current, notificationsEnabled: true };
+  return { ...current, ...grantPatch(moment) };
+}
+
+/**
+ * The notification choices a change touches — those keys and nothing else.
+ *
+ * What an asynchronous notification flow carries instead of a Settings
+ * snapshot (B-H2): a snapshot taken before an await restores, after it, every
+ * newer choice made meanwhile — the final Refresh-B audit watched a delayed
+ * offer turn an explicit "Friends: off" back on and a "Only me" back to public.
+ * A patch merged into the record AS IT STANDS cannot.
+ */
+export type NotificationPatch = Partial<NotificationPreferences>;
+
+const PATCH_KEYS = ["notificationsEnabled", "notifyYourTurn", "notifyFriendRequests", "notifyDailyChallenge"] as const;
+
+/** The notification keys of any object, and only those — a full Settings record included. */
+export function notificationPatchOf(value: NotificationPatch): NotificationPatch {
+  const patch: { -readonly [K in keyof NotificationPreferences]?: boolean } = {};
+  for (const key of PATCH_KEYS) {
+    if (typeof value[key] === "boolean") patch[key] = value[key];
+  }
+  return patch;
+}
+
+/** What granting permission at a moment switches on, as a patch (`preferencesAfterGrant`). */
+export function grantPatch(moment: PermissionMoment): NotificationPatch {
   switch (moment) {
     case "accepted-friend-request":
     case "created-private-table":
-      return { ...enabled, notifyFriendRequests: true };
+      return { notificationsEnabled: true, notifyFriendRequests: true };
     case "entered-tournament":
       // Tournament notifications need no per-kind switch. Nothing else is
       // presumed from entering one.
-      return enabled;
+      return { notificationsEnabled: true };
     case "settings-toggle":
       // The player is looking at the switches. Changing one they did not touch
       // would be the screen arguing with them.
-      return enabled;
+      return { notificationsEnabled: true };
   }
 }
 

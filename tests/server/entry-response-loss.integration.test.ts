@@ -2,6 +2,7 @@
  * stores and SDK, not a hand-written OPEN caller or a mocked transaction. */
 import { createClient } from "@supabase/supabase-js";
 import { afterEach, describe, expect, it } from "vitest";
+import { matchEachIntoAPublicRoom } from "./public-seat.js";
 import { stackUp } from "./stack-guard.js";
 import { setSupabaseAvailabilityForTests, type ArcSupabaseClient } from "../../src/lib/supabase/client.js";
 import { MemoryKeyValueStore } from "../../src/lib/persistence/key-value-store.js";
@@ -160,8 +161,36 @@ describe.runIf(stackUp)("entry response loss through production stores", () => {
   });
 
   it("replays a public buy-in without paying twice", async () => {
-    const { requests, committed } = await fixture("JOIN_PUBLIC_TABLE");
-    await useMatchmakingStore.getState().queue("casual");
+    const { supabase, requests, committed } = await fixture("JOIN_PUBLIC_TABLE");
+    const token = (await supabase.auth.getSession()).data.session!.access_token;
+    const partners: { id: string; sdk: typeof supabase }[] = [];
+    const partner = async () => {
+      const email = `response-loss-partner-${crypto.randomUUID()}@arc21.test`, password = crypto.randomUUID();
+      const admin = createClient(URL, ADMIN, { auth: { persistSession: false, autoRefreshToken: false } });
+      const created = await admin.auth.admin.createUser({ email, password, email_confirm: true });
+      expect(created.error).toBeNull();
+      const sdk = createClient(URL, ANON, { auth: { persistSession: false, autoRefreshToken: false } });
+      const loggedIn = await sdk.auth.signInWithPassword({ email, password });
+      expect(loggedIn.error).toBeNull();
+      partners.push({ id: created.data.user!.id, sdk });
+      return loggedIn.data.session!.access_token;
+    };
+    // Allocation is global. Supply a real partner through the established
+    // helper instead of depending on another suite's leftover queue/table.
+    const rpc = async (bearer: string, name: string, args: Record<string, unknown> = {}) => {
+      const response = await fetch(`${URL}/rest/v1/rpc/${name}`, { method: "POST", headers: { apikey: ANON, Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" }, body: JSON.stringify(args) });
+      return { status: response.status, body: await response.json() };
+    };
+    try {
+      await matchEachIntoAPublicRoom(rpc, [token, await partner()], "casual", partner);
+      await useMatchmakingStore.getState().poll();
+    } finally {
+      const admin = createClient(URL, ADMIN, { auth: { persistSession: false, autoRefreshToken: false } });
+      for (const item of partners) {
+        await item.sdk.rpc("leave_matchmaking");
+        expect((await admin.auth.admin.deleteUser(item.id)).error).toBeNull();
+      }
+    }
     expect(useMatchmakingStore.getState().status.kind).toBe("matched");
     const seat = await useMatchmakingStore.getState().takeSeat();
     await wallet(23_000);

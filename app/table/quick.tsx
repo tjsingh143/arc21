@@ -1,3 +1,5 @@
+import { ConnectPlayerButton } from "../../src/components/ui/ConnectPlayerButton";
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Quick Play — pick your stakes and how much help you want, then deal.
  *
@@ -75,6 +77,7 @@ function countsTowardsAccuracy(assistance: AssistanceMode): boolean {
 }
 
 export default function QuickPlaySetup() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const walletStatus = useWalletStore((state) => state.status);
   const refreshWallet = useWalletStore((state) => state.refresh);
   const claimGrant = useWalletStore((state) => state.claim);
@@ -118,7 +121,7 @@ export default function QuickPlaySetup() {
     // a killed session is exactly the state in which the balance on this screen
     // looks wrong, and it is the answer to why.
     void refreshActive();
-  }, [load, refreshWallet, loadLevel, refreshActive]);
+  }, [userId, load, refreshWallet, loadLevel, refreshActive]);
 
   // A ticking clock, so a cooldown countdown actually advances.
   useEffect(() => {
@@ -187,18 +190,13 @@ export default function QuickPlaySetup() {
             <AppText variant="sectionTitle">Practice plays the same game</AppText>
             <AppText variant="body" color="textSecondary">
               {signedOut
-                ? "Quick Play uses your global chip balance, so it needs an account. Practice deals the identical rules from the identical engine and needs nothing at all."
+                ? "Connect for Quick Play with your player identity. No email or password is needed. Practice uses the same rules and works offline."
                 : walletStatus.message}
             </AppText>
           </SurfaceCard>
           <Button label="Play Practice" onPress={() => router.replace("/game/practice")} testID="quick-practice" />
           {signedOut ? (
-            <Button
-              label="Create an account"
-              variant="quiet"
-              onPress={() => router.push("/(auth)/create-account")}
-              testID="quick-sign-up"
-            />
+            <ConnectPlayerButton testID="quick-connect" />
           ) : null}
         </ScrollView>
       </SafeAreaView>

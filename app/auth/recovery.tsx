@@ -34,6 +34,8 @@ import { colors, layout, spacing } from "../../src/design/tokens";
 import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validatePassword } from "../../src/features/auth/credentials";
 import { AuthField, AuthStatusBanner } from "../../src/features/auth/auth-ui";
 import { useAuthStore } from "../../src/features/auth/auth-store";
+import { confirmPlayerReplacement } from "../../src/features/auth/confirm-player-replacement";
+import { preparePlayerDeparture, usePushRegistration } from "../../src/features/notifications/use-push-registration";
 
 export default function PasswordRecovery() {
   const params = useLocalSearchParams<{
@@ -79,7 +81,11 @@ export default function PasswordRecovery() {
 
     setBusy(true);
     setMessage(null);
-    const failure = await completePasswordReset(code, password);
+    const expected = await confirmPlayerReplacement("Recover instead");
+    if (!expected) { setBusy(false); return; }
+    await preparePlayerDeparture();
+    const failure = await completePasswordReset(code, password, expected.userId);
+    await usePushRegistration.getState().restore();
     setPassword("");
     setConfirm("");
     setBusy(false);

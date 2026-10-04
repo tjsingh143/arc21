@@ -24,6 +24,7 @@ import {
   ChunkedSecureSessionStorage,
   CHUNK_SIZE,
   type SecureStoreLike,
+  type SessionStorageDurability,
 } from "../../src/lib/supabase/secure-session-storage.js";
 
 /** A syntactically valid unsigned JWT carrying the given claims. */
@@ -215,7 +216,7 @@ describe("chunked secure session storage", () => {
     const storage = new ChunkedSecureSessionStorage(backend);
     await storage.setItem("k", "y".repeat(5_000));
 
-    backend.entries.delete("k.1");
+    backend.entries.delete("k.v2.0.1");
 
     // Half a session is not a session. GoTrue would throw on the parse.
     expect(await storage.getItem("k")).toBeNull();
@@ -245,5 +246,207 @@ describe("chunked secure session storage", () => {
     await expect(storage.setItem("k", "v")).resolves.toBeUndefined();
     await expect(storage.getItem("k")).resolves.toBeNull();
     await expect(storage.removeItem("k")).resolves.toBeUndefined();
+  });
+
+  it("reads existing v1/plain sessions and removes legacy chunks only after migration commits", async () => {
+    const backend = fakeSecureStore();
+    backend.entries.set("plain", "old plaintext representation inside the keychain");
+    const previous = "old-session".repeat(200);
+    backend.entries.set("k", `arc21.chunked.v1:${Math.ceil(previous.length / CHUNK_SIZE)}`);
+    for (let offset = 0; offset < previous.length; offset += CHUNK_SIZE) {
+      backend.entries.set(`k.${offset / CHUNK_SIZE}`, previous.slice(offset, offset + CHUNK_SIZE));
+    }
+    const storage = new ChunkedSecureSessionStorage(backend);
+    expect(await storage.getItem("plain")).toBe(backend.entries.get("plain"));
+    expect(await storage.getItem("k")).toBe(previous);
+
+    await storage.setItem("k", "new-session".repeat(200));
+    expect(await new ChunkedSecureSessionStorage(backend).getItem("k")).toBe("new-session".repeat(200));
+    expect([...backend.entries.keys()].some((key) => /^k\.\d+$/.test(key))).toBe(false);
+    expect(backend.entries.has("k.v2.legacy")).toBe(false);
+  });
+
+  it.each([
+    ["v2", "old".repeat(700), "new".repeat(900)],
+    ["v1", "legacy".repeat(350), "replacement".repeat(250)],
+    ["plain", "old-short", "new".repeat(900)],
+    ["v2", "old".repeat(700), "new-short"],
+  ])("restores a complete value after a crash at every mutation boundary (%s)", async (format, previous, next) => {
+    const initial = fakeSecureStore();
+    if (format === "v1") {
+      initial.entries.set("k", `arc21.chunked.v1:${Math.ceil(previous.length / CHUNK_SIZE)}`);
+      for (let offset = 0; offset < previous.length; offset += CHUNK_SIZE) {
+        initial.entries.set(`k.${offset / CHUNK_SIZE}`, previous.slice(offset, offset + CHUNK_SIZE));
+      }
+    } else {
+      await new ChunkedSecureSessionStorage(initial).setItem("k", previous);
+    }
+    const before = new Map(initial.entries);
+
+    // Count the actual native mutation boundaries, then kill the fake process
+    // before and after each one. Once killed, every later operation fails too:
+    // catch/cleanup cannot accidentally make the simulated crash recoverable.
+    let mutations = 0;
+    const counter: SecureStoreLike = {
+      ...initial,
+      setItemAsync: async (key, value) => { mutations += 1; initial.entries.set(key, value); },
+      deleteItemAsync: async (key) => { mutations += 1; initial.entries.delete(key); },
+    };
+    await new ChunkedSecureSessionStorage(counter).setItem("k", next);
+
+    for (let boundary = 0; boundary <= mutations; boundary += 1) {
+      const backend = fakeSecureStore();
+      for (const [key, value] of before) backend.entries.set(key, value);
+      let writes = 0;
+      const crash = (): void => {
+        if (writes >= boundary) throw new Error("simulated process termination");
+      };
+      const interrupted: SecureStoreLike = {
+        getItemAsync: async (key) => { crash(); return backend.entries.get(key) ?? null; },
+        setItemAsync: async (key, value) => { crash(); backend.entries.set(key, value); writes += 1; crash(); },
+        deleteItemAsync: async (key) => { crash(); backend.entries.delete(key); writes += 1; crash(); },
+      };
+      await new ChunkedSecureSessionStorage(interrupted).setItem("k", next);
+
+      const restarted = new ChunkedSecureSessionStorage(backend);
+      const restored = await restarted.getItem("k");
+      const committed = backend.entries.get("k") !== before.get("k");
+      expect(restored, `crash boundary ${boundary}`).toBe(committed ? next : previous);
+
+      // A later complete replacement must retire both abandoned generations
+      // and a legacy migration's inventory. No token chunks accumulate.
+      await restarted.setItem("k", "finished");
+      expect([...backend.entries], `cleanup after boundary ${boundary}`).toEqual([["k", "finished"]]);
+    }
+  });
+
+  it("preserves the committed credential when a replacement exceeds the bounded size", async () => {
+    const backend = fakeSecureStore();
+    const states: SessionStorageDurability[] = [];
+    const storage = new ChunkedSecureSessionStorage(backend, {}, (_key, state) => states.push(state));
+    const previous = "saved".repeat(400);
+    await storage.setItem("k", previous);
+    const before = new Map(backend.entries);
+
+    await storage.setItem("k", "x".repeat(CHUNK_SIZE * 48 + 1));
+    expect(backend.entries).toEqual(before);
+    expect(states.at(-1)).toBe("unavailable");
+    expect(await storage.getItem("k")).toBe(previous);
+    // Reading the old credential is not evidence the rotated replacement was
+    // saved. The warning must survive that read.
+    expect(states.at(-1)).toBe("unavailable");
+    await storage.setItem("k", "saved replacement");
+    expect(states.at(-1)).toBe("durable");
+  });
+
+  it("reports an interrupted replacement without treating post-commit cleanup failure as lost durability", async () => {
+    const backend = fakeSecureStore();
+    const states: SessionStorageDurability[] = [];
+    let failSet = false;
+    let failDelete = false;
+    const fallible: SecureStoreLike = {
+      ...backend,
+      setItemAsync: async (key, value) => {
+        if (failSet) throw new Error("keychain unavailable");
+        backend.entries.set(key, value);
+      },
+      deleteItemAsync: async (key) => {
+        if (failDelete) throw new Error("cleanup unavailable");
+        backend.entries.delete(key);
+      },
+    };
+    const storage = new ChunkedSecureSessionStorage(fallible, {}, (_key, state) => states.push(state));
+    await storage.setItem("k", "old".repeat(700));
+    failSet = true;
+    await storage.setItem("k", "next".repeat(700));
+    expect(states.at(-1)).toBe("unavailable");
+    expect(await storage.getItem("k")).toBe("old".repeat(700));
+    expect(states.at(-1)).toBe("unavailable");
+
+    failSet = false;
+    failDelete = true;
+    await storage.setItem("k", "next".repeat(700));
+    expect(states.at(-1)).toBe("durable");
+    expect(await new ChunkedSecureSessionStorage(backend).getItem("k")).toBe("next".repeat(700));
+  });
+
+  it("serializes replacements, reads and removal across adapters sharing a backend", async () => {
+    const backend = fakeSecureStore();
+    let release!: () => void;
+    let writing!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { writing = resolve; });
+    let blockOnce = true;
+    const delayed: SecureStoreLike = {
+      ...backend,
+      setItemAsync: async (key, value) => {
+        if (blockOnce) {
+          blockOnce = false;
+          writing();
+          await blocked;
+        }
+        backend.entries.set(key, value);
+      },
+    };
+    const first = new ChunkedSecureSessionStorage(delayed);
+    const second = new ChunkedSecureSessionStorage(delayed);
+    const replacement = first.setItem("k", "first".repeat(400));
+    await entered;
+    const read = second.getItem("k");
+    const newer = second.setItem("k", "second".repeat(400));
+    const remove = first.removeItem("k");
+    release();
+
+    await Promise.all([replacement, newer, remove]);
+    expect(await read).toBe("first".repeat(400));
+    expect(await first.getItem("k")).toBeNull();
+    expect(backend.entries.size).toBe(0);
+  });
+
+  it("commits sign-out before deleting chunks, even if cleanup fails", async () => {
+    const backend = fakeSecureStore();
+    await new ChunkedSecureSessionStorage(backend).setItem("k", "credential".repeat(300));
+    const interrupted: SecureStoreLike = {
+      ...backend,
+      deleteItemAsync: async (key) => {
+        if (key !== "k") throw new Error("process died during cleanup");
+        backend.entries.delete(key);
+      },
+    };
+    await new ChunkedSecureSessionStorage(interrupted).removeItem("k");
+    expect(await new ChunkedSecureSessionStorage(backend).getItem("k")).toBeNull();
+    await new ChunkedSecureSessionStorage(backend).removeItem("k");
+    expect(backend.entries.size).toBe(0);
+  });
+
+  it.each(["arc21.chunked.v1:2junk", "arc21.chunked.v1:49", "arc21.chunked.v2:4:2", "arc21.chunked.v2:0:0"])(
+    "does not treat a malformed manifest as a credential: %s",
+    async (head) => {
+      const backend = fakeSecureStore();
+      backend.entries.set("k", head);
+      expect(await new ChunkedSecureSessionStorage(backend).getItem("k")).toBeNull();
+    },
+  );
+
+  it("keeps Unicode chunks under the byte bound and forwards native accessibility options", async () => {
+    const backend = fakeSecureStore();
+    const options = { keychainAccessible: "WHEN_UNLOCKED_THIS_DEVICE_ONLY" };
+    const observed: (Record<string, unknown> | undefined)[] = [];
+    const native: SecureStoreLike = {
+      getItemAsync: async (key, supplied) => { observed.push(supplied); return backend.entries.get(key) ?? null; },
+      setItemAsync: async (key, value, supplied) => {
+        observed.push(supplied);
+        expect(Buffer.byteLength(value)).toBeLessThan(2048);
+        expect(key).toMatch(/^[A-Za-z0-9._-]+$/);
+        backend.entries.set(key, value);
+      },
+      deleteItemAsync: async (key, supplied) => { observed.push(supplied); backend.entries.delete(key); },
+    };
+    const storage = new ChunkedSecureSessionStorage(native, options);
+    const value = "界🌊".repeat(1500);
+    await storage.setItem("k", value);
+    expect(await storage.getItem("k")).toBe(value);
+    await storage.removeItem("k");
+    expect(observed.every((supplied) => supplied === options)).toBe(true);
   });
 });

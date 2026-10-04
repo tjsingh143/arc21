@@ -9,7 +9,7 @@
  * never configured, which looks like a slow network and gets shipped.
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MemoryKeyValueStore } from "../../src/lib/persistence/key-value-store.js";
 import { setSupabaseAvailabilityForTests } from "../../src/lib/supabase/client.js";
@@ -33,14 +33,15 @@ const PASSWORD = "correct-horse-battery";
 
 function session(userId = "11111111-2222-4333-8444-555555555555"): AuthSessionSnapshot {
   return {
-    account: { userId, email: "sam@example.com", emailConfirmed: true, username: null },
+    account: { userId, email: "sam@example.com", emailConfirmed: true, username: null, isAnonymous: false, pendingEmail: null },
     expiresAt: 2_000_000_000,
   };
 }
 
 interface FakeOptions {
   signIn?: AuthResult;
-  signUp?: AuthResult;
+  ensurePlayer?: AuthResult;
+  securing?: AuthResult;
   getSession?: AuthResult;
   signOut?: AuthVoidResult;
   reset?: AuthVoidResult;
@@ -63,10 +64,13 @@ function fakeAdapter(options: FakeOptions = {}): AuthAdapter & { calls: string[]
       calls.push("signIn");
       return options.signIn ?? none;
     },
-    async signUp() {
-      calls.push("signUp");
-      return options.signUp ?? none;
+    async ensurePlayer() {
+      calls.push("ensurePlayer");
+      return options.ensurePlayer ?? options.getSession ?? none;
     },
+    async startSecuring() { calls.push("startSecuring"); return options.securing ?? none; },
+    async verifySecuringEmail() { calls.push("verifySecuringEmail"); return options.securing ?? none; },
+    async setSecuredPassword() { calls.push("setSecuredPassword"); return options.securing ?? none; },
     async deleteAccount() {
       this.calls.push("deleteAccount");
       return { ok: true } as const;
@@ -122,6 +126,7 @@ beforeEach(() => {
     configured: false,
     configurationMessage: null,
     form: initialAuthFormState("signIn"),
+    bootstrapStatus: "idle", bootstrapFailure: null, automaticBootstrap: true,
   });
 });
 
@@ -175,7 +180,7 @@ describe("hydration", () => {
     await useAuthStore.getState().hydrate();
     await useAuthStore.getState().hydrate();
 
-    expect(adapter.calls.filter((call) => call === "getSession")).toHaveLength(1);
+    expect(adapter.calls.filter((call) => call === "ensurePlayer")).toHaveLength(1);
   });
 
   it("does not hang when local storage never answers", async () => {
@@ -246,7 +251,7 @@ describe("sign in", () => {
 
     await useAuthStore.getState().signIn(PASSWORD);
 
-    const { hydrate, dispatch, setMode, signIn, signUp, signOut, ...data } =
+    const { hydrate, dispatch, setMode, signIn, startSecuring, signOut, ...data } =
       useAuthStore.getState();
     expect(JSON.stringify(data)).not.toContain(PASSWORD);
   });
@@ -274,76 +279,65 @@ describe("sign in", () => {
   });
 });
 
-describe("sign up", () => {
-  function readyToSignUp(): void {
-    useAuthStore.getState().setMode("signUp");
-    useAuthStore.getState().dispatch({ type: "EDIT_EMAIL", value: "sam@example.com" });
-    useAuthStore.getState().dispatch({ type: "EDIT_USERNAME", value: "sam_21" });
-  }
-
-  it("reports verification required when no session comes back", async () => {
+describe("pseudonymous lifecycle", () => {
+  const anonymous = (): AuthSessionSnapshot => ({ ...session(), account: { ...session().account, isAnonymous: true, email: null, emailConfirmed: false, pendingEmail: null } });
+  it("automatically adopts a real server identity and assigned handle", async () => {
     configured();
-    setAuthAdapter(fakeAdapter({ signUp: { ok: true, session: null, verificationRequired: true } }));
-    readyToSignUp();
-
-    await useAuthStore.getState().signUp(PASSWORD);
-
-    expect(authStateName(useAuthStore.getState().form.status)).toBe("verificationRequired");
+    setAuthAdapter(fakeAdapter({ ensurePlayer: { ok: true, session: anonymous(), verificationRequired: false }, assignedUsername: "brisk_gecko" }));
+    await useAuthStore.getState().hydrate();
+    expect(useAuthStore.getState()).toMatchObject({ mode: "account", bootstrapStatus: "ready", session: { account: { isAnonymous: true, username: "brisk_gecko" } } });
   });
-
-  it("reports the substituted handle when the server assigned a different one", async () => {
-    /*
-     * `handle_new_user()` does not fail on a taken handle — it derives one and
-     * creates the account anyway. A client that ignored that would tell the
-     * player they own a username they do not have.
-     */
+  it("coalesces concurrent hydration and makes offline Practice available while creation is pending", async () => {
     configured();
-    setAuthAdapter(
-      fakeAdapter({
-        signUp: { ok: true, session: session(), verificationRequired: false },
-        assignedUsername: "p3f8a9b2c1d4",
-      }),
-    );
-    readyToSignUp();
-
-    await useAuthStore.getState().signUp(PASSWORD);
-
-    const state = useAuthStore.getState();
-    expect(authStateName(state.form.status)).toBe("usernameUnavailable");
-    // The account was still created, and the player is signed in.
-    expect(state.mode).toBe("account");
+    let resolve!: (result: AuthResult) => void;
+    const adapter = fakeAdapter();
+    adapter.ensurePlayer = vi.fn(() => new Promise<AuthResult>((done) => { resolve = done; }));
+    setAuthAdapter(adapter);
+    const first = useAuthStore.getState().hydrate();
+    const second = useAuthStore.getState().hydrate();
+    await vi.waitFor(() => expect(adapter.ensurePlayer).toHaveBeenCalledTimes(1));
+    expect(useAuthStore.getState()).toMatchObject({ hydrated: true, mode: "guest", bootstrapStatus: "connecting" });
+    resolve({ ok: true, session: anonymous(), verificationRequired: false });
+    await Promise.all([first, second]);
+    expect(useAuthStore.getState().mode).toBe("account");
   });
-
-  it("reports plain success when the requested handle was granted", async () => {
+  it("can connect after an offline first launch without importing local state", async () => {
     configured();
-    setAuthAdapter(
-      fakeAdapter({
-        signUp: { ok: true, session: session(), verificationRequired: false },
-        assignedUsername: "sam_21",
-      }),
-    );
-    readyToSignUp();
-
-    await useAuthStore.getState().signUp(PASSWORD);
-
-    expect(authStateName(useAuthStore.getState().form.status)).toBe("signedIn");
+    const adapter = fakeAdapter({ ensurePlayer: { ok: false, failure: authFailure("NETWORK") } });
+    setAuthAdapter(adapter);
+    await useAuthStore.getState().hydrate();
+    const localIdentity = useAuthStore.getState().guest;
+    adapter.ensurePlayer = vi.fn(async (): Promise<AuthResult> => ({ ok: true, session: anonymous(), verificationRequired: false }));
+    await useAuthStore.getState().ensurePlayer();
+    expect(adapter.ensurePlayer).toHaveBeenCalledWith();
+    expect(useAuthStore.getState().guest).toBe(localIdentity);
+    expect(useAuthStore.getState().mode).toBe("account");
   });
-
-  it("does not claim a substitution when the handle could not be read", async () => {
+  it("keeps the same UUID across email securing and keeps secrets out of store state", async () => {
     configured();
-    setAuthAdapter(
-      fakeAdapter({
-        signUp: { ok: true, session: session(), verificationRequired: false },
-        assignedUsername: null,
-      }),
-    );
-    readyToSignUp();
-
-    await useAuthStore.getState().signUp(PASSWORD);
-
-    // Unknown is not the same as wrong; inventing a substitution message would
-    // be the client asserting something it did not read.
-    expect(authStateName(useAuthStore.getState().form.status)).toBe("signedIn");
+    const secured = session();
+    useAuthStore.setState({ session: anonymous(), mode: "account" });
+    const adapter = fakeAdapter({ securing: { ok: true, session: secured, verificationRequired: false } });
+    setAuthAdapter(adapter);
+    expect(await useAuthStore.getState().startSecuring("sam@example.com")).toBeNull();
+    expect(await useAuthStore.getState().verifySecuringEmail("sam@example.com", "123456")).toBeNull();
+    expect(await useAuthStore.getState().setSecuredPassword(PASSWORD)).toBeNull();
+    expect(useAuthStore.getState().session?.account.userId).toBe(secured.account.userId);
+    expect(JSON.stringify(useAuthStore.getState())).not.toContain(PASSWORD);
+    expect(JSON.stringify(useAuthStore.getState())).not.toContain("123456");
+  });
+  it("retains the current player on email conflict and rejects malformed input before sending", async () => {
+    configured();
+    const current = anonymous();
+    useAuthStore.setState({ session: current, mode: "account" });
+    const adapter = fakeAdapter({ securing: { ok: false, failure: authFailure("EMAIL_IN_USE") } });
+    setAuthAdapter(adapter);
+    expect((await useAuthStore.getState().startSecuring("bad"))?.code).toBe("INVALID_EMAIL");
+    expect(adapter.calls).not.toContain("startSecuring");
+    expect((await useAuthStore.getState().startSecuring("sam@example.com"))?.code).toBe("EMAIL_IN_USE");
+    expect(useAuthStore.getState().session).toBe(current);
+    expect((await useAuthStore.getState().verifySecuringEmail("sam@example.com", "x"))?.code).toBe("VERIFICATION_CODE_INVALID");
+    expect(adapter.calls).not.toContain("verifySecuringEmail");
   });
 });
 
@@ -425,7 +419,7 @@ describe("sign out", () => {
     expect(state.guest).not.toBeNull();
   });
 
-  it("clears the local session even when the server call fails", async () => {
+  it("does not claim credentials were removed when sign-out is unconfirmed", async () => {
     // Someone who asked to sign out on a train must not stay signed in because
     // the tunnel ate the request.
     configured();
@@ -434,8 +428,8 @@ describe("sign out", () => {
 
     await useAuthStore.getState().signOut();
 
-    expect(useAuthStore.getState().session).toBeNull();
-    expect(useAuthStore.getState().mode).toBe("guest");
+    expect(useAuthStore.getState().session).not.toBeNull();
+    expect(useAuthStore.getState().automaticBootstrap).toBe(false);
   });
 });
 
@@ -473,15 +467,14 @@ describe("with no Supabase configuration", () => {
     expect(Date.now() - started).toBeLessThan(1_000);
   });
 
-  it("refuses a sign-up and a reset the same way", async () => {
+  it("refuses securing and a reset without a configured backend", async () => {
     notConfigured();
     await useAuthStore.getState().hydrate();
     useAuthStore.getState().setMode("signUp");
     useAuthStore.getState().dispatch({ type: "EDIT_EMAIL", value: "sam@example.com" });
     useAuthStore.getState().dispatch({ type: "EDIT_USERNAME", value: "sam_21" });
 
-    await useAuthStore.getState().signUp(PASSWORD);
-    expect(authStateName(useAuthStore.getState().form.status)).toBe("notConfigured");
+    expect((await useAuthStore.getState().startSecuring("sam@example.com"))?.code).toBe("NOT_CONFIGURED");
 
     await useAuthStore.getState().requestPasswordReset();
     expect(authStateName(useAuthStore.getState().form.status)).toBe("notConfigured");

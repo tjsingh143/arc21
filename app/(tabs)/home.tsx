@@ -320,9 +320,9 @@ export default function HomeScreen() {
           <View style={styles.section}>
             <AppText variant="sectionTitle">Online</AppText>
             <UnavailableNote>
-              Daily Challenge, tournaments, friends and leaderboards need an Arc 21
-              account, because each of them is recorded on the server rather than
-              taken on trust. Practice, the strategy guide and drills never do.
+              Your player identity connects automatically for Daily Challenge, tournaments,
+              friends and leaderboards. Practice, the strategy guide and drills
+              stay available offline.
             </UnavailableNote>
           </View>
         ) : null}

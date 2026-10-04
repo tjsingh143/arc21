@@ -47,6 +47,21 @@ export type AuthFailureCode =
   | "NOT_CONFIGURED"
   /** The server answered, but with something unusable. */
   | "SERVER"
+  | "PERSISTENCE_UNAVAILABLE"
+  /**
+   * A departure the keychain did not complete: the credential is still stored,
+   * so the player is still signed in on this device. Never "signed out".
+   */
+  | "CREDENTIAL_NOT_REMOVED"
+  /**
+   * The credential this device restored names an account the server says no
+   * longer exists. It was not adopted, and its departure was finished here.
+   */
+  | "ACCOUNT_DELETED"
+  | "IDENTITY_CHANGED"
+  | "PLAYER_CHANGED"
+  | "VERIFICATION_CODE_INVALID"
+  | "CAPTCHA_FAILED"
   | "UNKNOWN";
 
 export interface AuthFailure {
@@ -63,7 +78,7 @@ export const AUTH_FAILURE_MESSAGES: Record<AuthFailureCode, string> = {
   EMAIL_NOT_CONFIRMED:
     "This account still needs its email confirmed. Check your inbox for the link.",
   RATE_LIMITED: "Too many attempts. Wait a minute and try again.",
-  EMAIL_IN_USE: "There is already an account for that email address.",
+  EMAIL_IN_USE: "That email belongs to another player. Use another email to secure this player, or sign in to the existing player. Progress and chips are never merged.",
   USERNAME_UNAVAILABLE: "That username is taken or not available.",
   WEAK_PASSWORD: "That password is too easy to guess. Try a longer one.",
   SAME_PASSWORD: "Choose a different password from your current one.",
@@ -75,8 +90,39 @@ export const AUTH_FAILURE_MESSAGES: Record<AuthFailureCode, string> = {
   NOT_CONFIGURED:
     "This build has no server configured, so accounts are unavailable. Everything offline still works.",
   SERVER: "The server had a problem with that. Try again in a moment.",
+  PERSISTENCE_UNAVAILABLE: "Secure device credentials could not be read or changed. Unlock or restart this device before reconnecting. Practice remains available.",
+  CREDENTIAL_NOT_REMOVED: "This device could not remove its saved sign-in, so you are still signed in here. Try again in a moment.",
+  ACCOUNT_DELETED: "The player saved on this device was deleted, so it was not restored and its sign-in has been removed. Connect to start a new player. Practice remains available.",
+  IDENTITY_CHANGED: "This verification belongs to a different player. Your current player has not been replaced.",
+  PLAYER_CHANGED: "Your player session changed before this action started. Reopen the screen and try again for your current player.",
+  VERIFICATION_CODE_INVALID: "That code is invalid or expired. Check the email or request a new code.",
+  CAPTCHA_FAILED: "Verification was not completed. You can try again or keep playing Practice.",
   UNKNOWN: "Something went wrong. Try again.",
 };
+
+/** `CREDENTIAL_NOT_REMOVED` before anything was sent: the account is untouched. */
+export const DELETION_NOT_STARTED =
+  "This device cannot change its saved sign-in right now, so nothing was deleted. Try again in a moment.";
+
+/** `CREDENTIAL_NOT_REMOVED` after the server erased the account. */
+export const CREDENTIAL_RETAINED_AFTER_DELETION =
+  "Your account was deleted, but this device could not remove its saved sign-in. Sign out to finish.";
+
+/**
+ * `CREDENTIAL_NOT_REMOVED` when a launch finds the erased account's credential
+ * and still cannot remove it. Nobody is shown, so there is nothing to sign out
+ * of: connecting again retries the removal.
+ */
+export const ERASED_CREDENTIAL_RETAINED =
+  "The player saved on this device was deleted, so it was not restored, but this device could not remove its saved sign-in yet. Try connecting again in a moment. Practice remains available.";
+
+/**
+ * `CREDENTIAL_NOT_REMOVED` when a launch finds a credential whose session the
+ * server says has ended, and cannot remove it. Nobody is shown: the server
+ * refused that credential, so it is not adopted. Connecting again retries.
+ */
+export const ENDED_CREDENTIAL_RETAINED =
+  "The sign-in saved on this device has ended, so it was not restored, but this device could not remove it yet. Try connecting again in a moment. Practice remains available.";
 
 const FIELD_BY_CODE: Partial<Record<AuthFailureCode, AuthFailure["field"]>> = {
   EMAIL_IN_USE: "email",
@@ -133,6 +179,11 @@ export function classifyAuthError(error: unknown): AuthFailure {
   }
 
   switch (code) {
+    case "captcha_failed":
+    case "captcha_verification_failed":
+      return authFailure("CAPTCHA_FAILED");
+    case "anonymous_provider_disabled":
+      return authFailure("SIGNUP_DISABLED");
     case "invalid_credentials":
     case "invalid_grant":
       return authFailure("INVALID_CREDENTIALS");
@@ -156,6 +207,11 @@ export function classifyAuthError(error: unknown): AuthFailure {
       return authFailure("SIGNUP_DISABLED");
     case "user_banned":
       return authFailure("ACCOUNT_DISABLED");
+    // `SessionReplacementError`: the keychain could not take a DIFFERENT
+    // player's credential, so the sign-in was refused before anything adopted
+    // it. The device kept the player it had; that is the whole message.
+    case "session_not_persisted":
+      return authFailure("PERSISTENCE_UNAVAILABLE");
     // GoTrue's PKCE code-exchange failures: the code was already used, the
     // OTP behind it expired before it was clicked, or `flow_state` (which
     // holds the code verifier) was not found — all mean the same thing to a

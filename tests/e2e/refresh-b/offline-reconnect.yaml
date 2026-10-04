@@ -1,0 +1,26 @@
+# Restore Kong before this flow. Foreground resumes a failed auth bootstrap;
+# no manual credentials or local-server state copy is involved.
+appId: com.arc21.app
+---
+- pressKey: Home
+- launchApp:
+    stopApp: false
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- assertVisible:
+    id: home-practice
+- takeScreenshot: offline-player-connected-later
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: '@[a-z]+_[a-z]+(_[0-9]{6})?'
+    timeout: 15000
+- assertVisible: Secure your player
+- takeScreenshot: newly-connected-profile-preserves-practice

@@ -1,3 +1,4 @@
+import { ConnectPlayerButton } from "../../src/components/ui/ConnectPlayerButton";
 /**
  * `arc21://room/CODE` — a shared private-table invite.
  *
@@ -78,14 +79,10 @@ export default function RoomInvite() {
               {`Table ${code}`}
             </AppText>
             <AppText variant="caption" color="textSecondary">
-              Private tables need an account, because a seat belongs to a player
-              rather than to a device. Practice stays available without one.
+              Your player identity connects automatically. Once connected, this invite
+              opens your seat without an email or password. Practice works offline.
             </AppText>
-            <Button
-              label="Create account"
-              testID="room-invite-sign-in"
-              onPress={() => router.push("/(auth)/create-account")}
-            />
+            <ConnectPlayerButton testID="room-invite-connect" />
           </SurfaceCard>
         ) : notice ? (
           /*

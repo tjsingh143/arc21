@@ -30,6 +30,7 @@ import {
   type SupabaseConfigProblem,
 } from "./config.js";
 import { createSecureSessionStorage } from "./secure-session-storage.js";
+import { adoptionGatedFetch, manageIdentity } from "./adopted-player.js";
 import type { Database } from "./database.types.js";
 
 export type ArcSupabaseClient = SupabaseClient<Database>;
@@ -44,6 +45,12 @@ export type SupabaseAvailability =
     };
 
 let cached: SupabaseAvailability | null = null;
+const transientFactories = new WeakMap<ArcSupabaseClient, () => ArcSupabaseClient>();
+
+/** Verification must not replace the current identity before its UUID is checked. */
+export function createTransientAuthClient(client: ArcSupabaseClient): ArcSupabaseClient | null {
+  return transientFactories.get(client)?.() ?? null;
+}
 
 /**
  * The client, or a stated reason there is none.
@@ -56,6 +63,14 @@ let cached: SupabaseAvailability | null = null;
 export function getSupabase(): SupabaseAvailability {
   cached ??= buildAvailability(readEnvConfig());
   return cached;
+}
+
+/**
+ * The client if one has already been built, without building one. For
+ * bookkeeping that must not create the SDK client as a side effect.
+ */
+export function builtSupabaseClient(): ArcSupabaseClient | null {
+  return cached?.status === "ready" ? cached.client : null;
 }
 
 /** Convenience for the many call sites that only need the client or null. */
@@ -77,6 +92,8 @@ export function buildAvailability(config: SupabaseConfig): SupabaseAvailability 
     };
   }
 
+  // Assigned below; the fetch it is read by runs only after construction.
+  let built: ArcSupabaseClient | null = null;
   const client = createClient<Database>(config.url, config.publishableKey, {
     auth: {
       storage: createSecureSessionStorage(),
@@ -101,9 +118,23 @@ export function buildAvailability(config: SupabaseConfig): SupabaseAvailability 
     },
     global: {
       headers: { "x-arc21-client": "expo" },
+      /**
+       * Nothing account-owned leaves as a credential the app has not adopted:
+       * the SDK attaches the session it holds to every request, and a restored
+       * one is held before the auth server has said its account exists (B-H1).
+       * See `adopted-player.ts`.
+       */
+      fetch: adoptionGatedFetch(config.url, config.publishableKey, () => built),
     },
   });
+  built = client;
+  // Subject to the adoption rule from birth — before the auth adapter exists,
+  // because a screen's first load can run before the root starts hydration.
+  manageIdentity(client);
 
+  transientFactories.set(client, () => createClient<Database>(config.url, config.publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false, flowType: "pkce" },
+  }));
   return { status: "ready", client };
 }
 

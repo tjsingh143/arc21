@@ -277,12 +277,14 @@ describe("no server secret can reach the bundle", () => {
       const references = [...source.matchAll(/process\.env\.(\w+)/g)].map((match) => match[1]);
 
       for (const name of references) {
-        // Only EXPO_PUBLIC_ values are compiled into the app, and only these two
+        // Only EXPO_PUBLIC_ values are compiled into the app, and these explicitly public values
         // are safe to be there.
         expect(
           [
             "EXPO_PUBLIC_SUPABASE_URL",
             "EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
+            "EXPO_PUBLIC_HCAPTCHA_SITE_KEY",
+            "EXPO_PUBLIC_HCAPTCHA_BASE_URL",
           ],
           `${file} reads process.env.${name ?? ""}`,
         ).toContain(name);

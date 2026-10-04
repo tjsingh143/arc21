@@ -147,5 +147,5 @@ export function describeOwedRewards(record: CareerRecord, hasAccount: boolean): 
   const nodes = `${record.owedRewards} node${record.owedRewards === 1 ? "" : "s"}`;
   return hasAccount
     ? `${nodes} finished offline are waiting to be replayed for their reward. Offline attempts prove the play; only a server-run attempt pays the chips and XP.`
-    : `${nodes} finished offline are waiting for an account. Offline attempts prove the play and keep their stars; only a server-run attempt pays the chips and XP.`;
+    : `${nodes} finished offline can be replayed online for their reward. Offline attempts keep their local stars; only a server-run attempt pays the chips and XP.`;
 }

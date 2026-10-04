@@ -1,0 +1,11 @@
+# Continue an already-sent request without sending another one.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- assertVisible: .*${OTHER}.*Sent — waiting for them to accept.*
+- assertVisible: .*${OTHER}.*Request sent — waiting for them.*
+- assertNotVisible:
+    id: friend-row-${OTHER}
+- takeScreenshot: pseudonymous-pending-request

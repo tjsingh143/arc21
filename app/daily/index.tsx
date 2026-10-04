@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Daily Challenge.
  *
@@ -34,6 +35,7 @@ import {
 import { verifyCommitment } from "../../src/features/daily/verify-commitment";
 
 export default function DailyChallenge() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const status = useDailyStore((state) => state.status);
   const notice = useDailyStore((state) => state.notice);
   const starting = useDailyStore((state) => state.starting);
@@ -42,7 +44,7 @@ export default function DailyChallenge() {
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [userId, load]);
 
   /*
    * Derived with `useMemo` from subscribed state rather than by calling a store

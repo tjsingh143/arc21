@@ -1,0 +1,67 @@
+appId: com.arc21.app
+---
+# Relaunch (keychain and SQLite are kept, so the player is unchanged) so a sheet
+# or half-filled form left by an earlier run cannot carry into this one.
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- openLink: arc21://sign-in
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- tapOn:
+    id: auth-email
+- inputText: ${EMAIL}
+- tapOn:
+    id: auth-password
+- inputText: ${PASSWORD}
+- hideKeyboard
+- tapOn:
+    id: auth-submit
+- assertVisible: Leave this player?
+- assertVisible: .*Players are never merged.*
+- takeScreenshot: replace-unlinked-warning
+- tapOn: Cancel
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# iOS offers to save the typed credential after the app navigates away from the
+# abandoned form, and the system sheet covers the profile. It can arrive a
+# moment late, so wait for it briefly; sign-in-existing.yaml dismisses it too.
+- extendedWaitUntil:
+    visible: Save Password?
+    timeout: 8000
+    optional: true
+- runFlow:
+    when:
+      visible: Save Password?
+    commands:
+      - tapOn: Not Now
+- assertVisible: '@${HANDLE}'
+- assertVisible: Secure your player
+- takeScreenshot: cancelled-switch-retains-player
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      text: Sign out
+    direction: DOWN
+    timeout: 40000
+- tapOn: Sign out
+- assertVisible: Sign out?
+- assertVisible: .*Signing out can permanently lose access.*
+- takeScreenshot: unlinked-signout-warning
+- tapOn: Cancel
+- assertVisible: '@${HANDLE}'

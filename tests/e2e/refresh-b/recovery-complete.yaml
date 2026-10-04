@@ -1,0 +1,56 @@
+# Run after request-recovery.yaml and the harness opening the REAL Mailpit
+# reset link on the device (its PKCE verifier is in this device's Keychain).
+# The device holds a different, unlinked player, so recovery must warn first.
+appId: com.arc21.app
+---
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: recovery-password
+    timeout: 15000
+- tapOn:
+    id: recovery-password
+- inputText: ${NEW_PASSWORD}
+- tapOn:
+    id: recovery-confirm
+- inputText: ${NEW_PASSWORD}
+# Dismiss the keyboard by tapping outside a control (keyboardShouldPersistTaps="handled").
+- tapOn: Reset your password
+- tapOn:
+    id: recovery-submit
+- extendedWaitUntil:
+    visible: Leave this player?
+    timeout: 15000
+- assertVisible: .*Players are never merged.*
+- takeScreenshot: recovery-replaces-unlinked-warning
+- tapOn: Recover instead
+- extendedWaitUntil:
+    visible: Save Password?
+    timeout: 8000
+    optional: true
+- runFlow:
+    when:
+      visible: Save Password?
+    commands:
+      - tapOn: Not Now
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 20000
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      text: Secured player
+    direction: DOWN
+    timeout: 40000
+- assertVisible: ${EMAIL}
+- takeScreenshot: recovered-secured-player

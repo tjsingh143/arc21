@@ -1,0 +1,177 @@
+# Arc 21 — PRIVATE TABLE: run a session stack down and take the FREE RESET.
+#
+# THE EVIDENCE GAP THIS CLOSES. `RESET_PRIVATE_STACK` was the one action of the
+# nine in `session-command.ts` with no client caller for the whole life of the
+# private-table feature — CLAUDE.md records it under "AN ACTION IN THE WIRE
+# CONTRACT WITH NO CLIENT CALLER IS A FEATURE THAT DOES NOT EXIST". The control
+# now exists (`broke-affordance.ts`, `table-reset-stack`), and until this flow
+# nothing had ever PRESSED it on a device. A test that calls `resetStack` proves
+# `resetStack` works; it proves nothing about whether a player stuck at a table
+# can reach it.
+#
+# HOW THE STACK IS RUN DOWN, and why this is legitimate play rather than a
+# fixture. The wager is the table ceiling and the seat then HITS until the hand
+# is over. Hitting a hard total until it busts is a legal action sequence that a
+# real player can choose; it is deliberately bad play, not a manipulated shoe.
+# NO card, shoe, seed or outcome is influenced in any way — invariant 1 — and
+# the server deals exactly as it would for anybody. It simply loses quickly,
+# which is what reaching the broke state requires.
+#
+# The reset is free and the chips are the TABLE's: `buy_in` is 0 at a private
+# table and no wallet movement may appear on either side of this flow. That is
+# the assertion the server-side readback pairs with this run.
+#
+#   maestro test --device <B> tests/e2e/private-broke-reset.yaml
+#
+# Run it on a device already seated at a live private table — see
+# `two-client-host-open.yaml` for the chain that gets there. Every state is
+# checked at the TOP level of the iteration, the fix `career-node.yaml` needed:
+# an iteration that arrives at a settled hand must handle what it finds rather
+# than skipping the whole body. Every tap is `optional`, because a `when` and
+# the tap it guards are two reads of a screen the other seat and the deadline
+# both move.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          optional: true
+
+- openLink: arc21://table/lobby
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 60000
+
+# --- Run the stack down -----------------------------------------------------
+#
+# Guarded on the broke panel itself, so the loop stops the moment the product
+# offers the reset and not on a step count.
+# THE BUDGET IS THE RATE, NOT THE ASSERTION. Measured on this host: a first run
+# of 120 iterations took the stack from 5,030 to 2,410 in 14m06s and then ran out
+# of iterations, which reads as "the seat never went broke" and is nothing of the
+# kind — 117 steps COMPLETED and the stack fell, by 500 a hand, exactly as
+# legitimate play does. The rate limit is the OTHER seat: an idle companion must
+# be stood down by its own fifteen-second clock every hand, so a hand costs
+# 30-45s whatever this device does. 400 iterations is that measurement plus the
+# variance of real cards, not a number raised until something passed.
+- repeat:
+    times: 400
+    while:
+      notVisible:
+        id: "table-reset-stack"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                optional: true
+                id: "insurance-decline"
+      # Hit until the hand is over. One tap per iteration is deliberate: the
+      # screen has to be re-read between hits, because a hit can bust the hand
+      # and remove the control.
+      - runFlow:
+          when:
+            visible:
+              id: "action-hit"
+          commands:
+            - tapOn:
+                optional: true
+                id: "action-hit"
+      # The table ceiling, so the run-down takes hands rather than an hour.
+      # `chip-500` is the fallback for a table whose ceiling is lower; only
+      # denominations that fit this table's limits are rendered at all.
+      - runFlow:
+          when:
+            visible:
+              id: "chip-1000"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-1000"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "chip-500"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-500"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "chip-10"
+          commands:
+            - tapOn:
+                optional: true
+                id: "chip-10"
+            - tapOn:
+                optional: true
+                id: "bet-deal"
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                optional: true
+                id: "table-next-hand"
+
+# --- The broke state, stated by the product ---------------------------------
+#
+# `mayResetPrivateStack` offers this only at BETTING_OPEN, for a CONNECTED seat
+# that the engine has actually sat out — which at a private table can only mean
+# a stack that cannot cover the minimum.
+- extendedWaitUntil:
+    visible:
+      id: "table-broke-title"
+    timeout: 120000
+- assertVisible: "You are out of table chips"
+- assertVisible: ".*Nothing here touches your balance in either direction.*"
+- assertVisible:
+    id: "table-reset-stack"
+- takeScreenshot: refresh-b-private-broke-offer
+
+# --- Take it ----------------------------------------------------------------
+- repeat:
+    times: 4
+    while:
+      visible:
+        id: "table-reset-stack"
+    commands:
+      - tapOn:
+          optional: true
+          id: "table-reset-stack"
+
+# The offer is gone because the seat is no longer sitting out, and the seat is
+# back in the betting window with a full stack. Asserting the RESULT, never the
+# tap: CLAUDE.md records three defects that survived because a COMPLETED tap was
+# taken for a thing that happened.
+- extendedWaitUntil:
+    notVisible:
+      id: "table-broke-title"
+    timeout: 60000
+- assertVisible: "Leave table"
+- takeScreenshot: refresh-b-private-stack-reset

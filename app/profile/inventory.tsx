@@ -19,6 +19,7 @@ import { BackBar } from "../../src/components/ui/BackBar";
 import { Button } from "../../src/components/ui/Button";
 import { SurfaceCard, UnavailableNote } from "../../src/components/ui/Card";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { useAuthStore } from "../../src/features/auth/auth-store";
 import {
   KIND_TABS,
   canEquip,
@@ -45,9 +46,13 @@ export default function Inventory() {
 
   const [tab, setTab] = useState<CosmeticKind>("avatar");
 
+  // Keyed on the ADOPTED player, as Daily and Tournament are: opened while a
+  // restored player is still being confirmed, the inventory loads nothing, and
+  // loads again once the server has confirmed the player (B-H1).
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [userId, load]);
 
   /*
    * Derived with `useMemo` from subscribed state rather than by calling a store

@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Arc 21 — wallet view state.
  *
@@ -94,8 +95,9 @@ export const useWalletStore = create<WalletStoreState>((set, get) => ({
   claiming: false,
 
   refresh: async () => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().status.kind === "loading") return;
-    set({ status: { kind: "loading" } });
+    setForPlayer({ status: { kind: "loading" } });
 
     let outcome;
     try {
@@ -103,25 +105,25 @@ export const useWalletStore = create<WalletStoreState>((set, get) => ({
     } catch {
       // A gateway is not supposed to throw, but a wallet screen is not the
       // place to find out that one did.
-      set({ status: { kind: "unavailable", message: "Your chips could not be loaded." } });
+      setForPlayer({ status: { kind: "unavailable", message: "Your chips could not be loaded." } });
       return;
     }
 
     if (!outcome.ok) {
       switch (outcome.reason) {
         case "not-configured":
-          set({ status: { kind: "not-configured", message: outcome.message } });
+          setForPlayer({ status: { kind: "not-configured", message: outcome.message } });
           return;
         case "signed-out":
-          set({ status: { kind: "signed-out", message: outcome.message } });
+          setForPlayer({ status: { kind: "signed-out", message: outcome.message } });
           return;
         default:
-          set({ status: { kind: "unavailable", message: outcome.message } });
+          setForPlayer({ status: { kind: "unavailable", message: outcome.message } });
           return;
       }
     }
 
-    set({
+    setForPlayer({
       status: {
         kind: "ready",
         wallet: outcome.wallet,
@@ -134,32 +136,34 @@ export const useWalletStore = create<WalletStoreState>((set, get) => ({
   },
 
   claim: async () => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().claiming) return false;
-    set({ claiming: true, grantNotice: null });
+    setForPlayer({ claiming: true, grantNotice: null });
 
     let outcome;
     try {
       outcome = await activeWalletGateway().claimRecoveryGrant();
     } catch {
-      set({ claiming: false, grantNotice: "The grant could not be requested. Nothing has changed." });
+      setForPlayer({ claiming: false, grantNotice: "The grant was not confirmed. Refresh your balance before retrying." });
       return false;
     }
-    set({ claiming: false });
+    setForPlayer({ claiming: false });
 
     if (!outcome.ok) {
       // The server's own wording where there is one. It knows the authoritative
       // balance and the authoritative cooldown; this layer knows a cached copy
       // of both, and saying something different from the server would be worse
       // than saying nothing.
-      set({ grantNotice: outcome.message });
+      setForPlayer({ grantNotice: outcome.message });
       return false;
     }
 
     // The balance moved, so everything showing it must be re-read rather than
     // patched locally — the ledger has a new row too.
+    if (!setForPlayer.isCurrent()) return false;
     await get().refresh();
-    set({ grantNotice: "Recovery grant credited." });
-    return true;
+    setForPlayer({ grantNotice: "Recovery grant credited." });
+    return setForPlayer.isCurrent();
   },
 
   clear: () => set({ status: { kind: "idle" }, grantNotice: null, claiming: false }),

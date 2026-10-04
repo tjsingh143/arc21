@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Sprint Tournament.
  *
@@ -38,6 +39,7 @@ import {
 const POLL_MS = 3_000;
 
 export default function SprintTournament() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const status = useTournamentStore((state) => state.status);
   const notice = useTournamentStore((state) => state.notice);
   const registering = useTournamentStore((state) => state.registering);
@@ -47,7 +49,9 @@ export default function SprintTournament() {
   const withdraw = useTournamentStore((state) => state.withdraw);
 
   const offerPush = usePushRegistration((state) => state.offer);
-  const { settings, update: updateSettings } = useSettings();
+  // Loaded here so an offer is measured against the stored record; the offer
+  // reads it, and records its own narrow patch, itself (B-H2).
+  useSettings();
 
   /*
    * Entering is the third moment the specification allows for asking about
@@ -57,13 +61,12 @@ export default function SprintTournament() {
    */
   const onRegister = useCallback(async () => {
     await register();
-    const granted = await offerPush("entered-tournament", settings);
-    if (granted) await updateSettings(granted);
-  }, [register, offerPush, settings, updateSettings]);
+    await offerPush("entered-tournament");
+  }, [register, offerPush]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+  }, [userId, load]);
 
   const entry = useMemo(() => (status.kind === "ready" ? status.entry : null), [status]);
   const standings = useMemo(
@@ -215,7 +218,7 @@ export default function SprintTournament() {
                * needs an account. Said plainly rather than shown as a button that
                * cannot work.
                */
-              <UnavailableNote>{notice ?? "Entering a tournament needs an account."}</UnavailableNote>
+              <UnavailableNote>{notice ?? "Connect to enter a tournament."}</UnavailableNote>
             ) : entry ? (
               <SurfaceCard>
                 <AppText variant="bodyStrong" testID="tournament-progress">

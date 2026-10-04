@@ -46,7 +46,7 @@ describe("who the profile says you are", () => {
   it("falls back to a plain sentence when the handle has not been read", () => {
     // Not "@undefined", and not a blank line where the handle belongs.
     const identity = profileIdentity({ hasAccount: true, displayName: "Wren", username: null });
-    expect(identity.detail).toBe("Signed in to Arc 21.");
+    expect(identity.detail).toBe("Your Arc 21 player profile.");
   });
 
   it("is a guest when there is no account, whatever else it was handed", () => {
@@ -98,7 +98,7 @@ describe("the Competition section's state", () => {
      */
     const guest = competitionState({ hasAccount: false, online: true });
     expect(guest).toEqual({ status: "unavailable", reason: "NO_ACCOUNT" });
-    expect(describeCompetitionUnavailable("NO_ACCOUNT").title).toMatch(/account/i);
+    expect(describeCompetitionUnavailable("NO_ACCOUNT").title).toMatch(/connect/i);
 
     const signedIn = competitionState({
       hasAccount: true,

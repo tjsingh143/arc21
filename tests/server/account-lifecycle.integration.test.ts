@@ -28,7 +28,7 @@
  */
 
 import crypto from "node:crypto";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createClient } from "@supabase/supabase-js";
 
 import { stackUp } from "./stack-guard.js";
@@ -110,15 +110,32 @@ async function http(url: string, init: RequestInit & { key?: string } = {}): Pro
   return { status: response.status, body, raw };
 }
 
-const signUp = (email: string, username?: string) =>
-  http(`${AUTH}/signup`, {
+const createdIds = new Set<string>();
+function createdId(result: HttpResult): string {
+  const body = result.body as { id?: string; user?: { id: string } };
+  const id = body.user?.id ?? body.id;
+  if (!id) throw new Error(`signup did not return a user: ${result.status}`);
+  return id;
+}
+const signUp = async (email: string, username?: string) => {
+  const result = await http(`${AUTH}/signup`, {
     method: "POST",
-    body: JSON.stringify({
-      email,
-      password: "integration-password-123",
+    body: JSON.stringify({ email, password: "integration-password-123",
       ...(username === undefined ? {} : { data: { username } }),
     }),
   });
+  if (result.status === 200) createdIds.add(createdId(result));
+  return result;
+};
+afterAll(async () => {
+  for (const id of createdIds) {
+    const result = await http(`${AUTH}/admin/users/${id}`, {
+      method: "DELETE", key: LOCAL_SERVICE_KEY,
+      headers: { Authorization: `Bearer ${LOCAL_SERVICE_KEY}` },
+    });
+    expect([200, 404]).toContain(result.status);
+  }
+});
 
 const suite = stackUp ? describe : describe.skip;
 
@@ -142,7 +159,7 @@ suite("account creation under contention", () => {
         "a concurrent signup must not be answered with a server error",
       ).toEqual([]);
 
-      const ids = results.map((result) => (result.body as { user: { id: string } }).user.id);
+      const ids = results.map((result) => createdId(result));
       expect(new Set(ids).size).toBe(8);
 
       const profiles = await http(
@@ -174,7 +191,7 @@ suite("account creation under contention", () => {
     const created = await signUp(`solo-${crypto.randomUUID()}@arc21.test`, wanted);
     expect(created.status).toBe(200);
 
-    const id = (created.body as { user: { id: string } }).user.id;
+    const id = createdId(created);
     const profile = await http(`${REST}/profiles?id=eq.${id}&select=username`, {
       headers: { Authorization: `Bearer ${signToken(id)}` },
     });
@@ -186,22 +203,29 @@ suite("account creation under contention", () => {
     const created = await signUp(`reserved-${crypto.randomUUID()}@arc21.test`, "admin");
     expect(created.status).toBe(200);
 
-    const id = (created.body as { user: { id: string } }).user.id;
+    const id = createdId(created);
     const profile = await http(`${REST}/profiles?id=eq.${id}&select=username`, {
       headers: { Authorization: `Bearer ${signToken(id)}` },
     });
     const username = (profile.body as { username: string }[])[0]?.username;
     expect(username).not.toBe("admin");
-    expect(username).toMatch(/^p[0-9a-f]{12}$/);
+    expect(username).toMatch(/^[a-z]+_[a-z]+(?:_\d{6})?$/);
   });
 });
 
 suite("account deletion through the RPC the app calls", () => {
-  it("deletes through the shipped store and stays signed out after restoring SDK storage", async () => {
+  it("deletes through the shipped store and never resurrects the deleted player on cold launch", async () => {
     const email = `delete-${crypto.randomUUID()}@arc21.test`;
     const created = await signUp(email);
     expect(created.status).toBe(200);
-    const id = (created.body as { user: { id: string } }).user.id;
+    const id = createdId(created);
+    // Existing secured-account fixture: confirmations stay ON for the suite.
+    const confirmed = await http(`${AUTH}/admin/users/${id}`, {
+      method: "PUT", key: LOCAL_SERVICE_KEY,
+      headers: { Authorization: `Bearer ${LOCAL_SERVICE_KEY}` },
+      body: JSON.stringify({ email_confirm: true }),
+    });
+    expect(confirmed.status).toBe(200);
     const storage = new Map<string, string>();
     const sdk = () => createClient(SUPABASE_URL, LOCAL_ANON_KEY, {
       auth: {
@@ -255,9 +279,12 @@ suite("account deletion through the RPC the app calls", () => {
     setSupabaseAvailabilityForTests({ status: "ready", client: restored as ArcSupabaseClient });
     useAuthStore.setState({ hydrated: false, mode: "unknown", session: null });
     await useAuthStore.getState().hydrate();
-    expect(useAuthStore.getState().mode).toBe("guest");
-    expect(useAuthStore.getState().session).toBeNull();
-    expect((await restored.auth.getSession()).data.session).toBeNull();
+    expect(useAuthStore.getState().mode).toBe("account");
+    const replacement = (await restored.auth.getSession()).data.session!.user;
+    createdIds.add(replacement.id);
+    expect(replacement.id).not.toBe(id);
+    expect(replacement.is_anonymous).toBe(true);
+    expect(useAuthStore.getState().session?.account.userId).toBe(replacement.id);
 
     // And the credentials no longer sign in.
     const signIn = await http(`${AUTH}/token?grant_type=password`, {

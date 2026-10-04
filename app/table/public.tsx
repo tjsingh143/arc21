@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Public table — pick your stakes and wait for a seat.
  *
@@ -47,6 +48,7 @@ import { useLevelStore } from "../../src/features/stats/level-store";
 const POLL_MS = 2_000;
 
 export default function PublicTable() {
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   const status = useMatchmakingStore((state) => state.status);
   const notice = useMatchmakingStore((state) => state.notice);
   const queue = useMatchmakingStore((state) => state.queue);
@@ -71,7 +73,7 @@ export default function PublicTable() {
 
   useEffect(() => {
     void loadLevel();
-  }, [loadLevel]);
+  }, [userId, loadLevel]);
 
   // A ticking clock, so "Still looking — 14s" actually advances.
   const [now, setNow] = useState(() => new Date());

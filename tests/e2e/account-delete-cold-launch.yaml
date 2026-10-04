@@ -1,24 +1,37 @@
-# Run only after native deletion is confirmed in the UI and authoritative DB.
-# EMAIL and PASSWORD belong to that freshly deleted disposable local account.
-# Never clear SQLite, Keychain, or app state between deletion and this proof.
+# Delete the disposable local account through Settings before running this.
+# Cold launch must create a NEW pseudonymous identity, never restore the deleted
+# credential. Pair with DB evidence that the old UUID is absent and the new UUID
+# has only its own opening grant. Do not clear SQLite or Keychain here.
 appId: com.arc21.app
 ---
 - stopApp
 - launchApp:
     clearState: false
 - openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# Scroll to the LAST line asserted here: stopping at "Your player" left the
+# caption beneath it below the fold, so its assertion failed against a screen
+# that was right (Refresh-B §21.11).
 - scrollUntilVisible:
     element:
-      text: Sign in or create an account
+      text: This player has no recovery credentials.*
     direction: DOWN
     timeout: 60000
-- assertVisible: Playing as a guest
+- assertVisible: Your player
+- assertVisible: This player has no recovery credentials.*
 - assertNotVisible: ${EMAIL}
-- assertNotVisible: Sign out
-- assertNotVisible:
-    id: delete-account
-- takeScreenshot: deleted-account-cold-guest
-- tapOn: Sign in or create an account
+- assertNotVisible: Secured player
+- takeScreenshot: deleted-account-cold-new-player
+- openLink: arc21://sign-in
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
 - tapOn:
     id: auth-email
 - eraseText
@@ -27,8 +40,11 @@ appId: com.arc21.app
     id: auth-password
 - eraseText
 - inputText: ${PASSWORD}
+- hideKeyboard
 - tapOn:
     id: auth-submit
+- assertVisible: Leave this player?
+- tapOn: Sign in instead
 - extendedWaitUntil:
     visible: That email and password do not match an account.
     timeout: 15000

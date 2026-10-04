@@ -248,7 +248,8 @@ select is(
   'no client role may write any of the 27 server-owned tables'
 );
 
--- The six tables a client MAY write, named explicitly so that adding a seventh is
+-- The five tables a client MAY write at table level; profiles and friend_requests
+-- allow only selected-column updates. Adding another table write is
 -- a decision somebody has to make here as well as in a migration.
 select bag_eq(
   $$ select distinct g.table_name::text
@@ -256,9 +257,9 @@ select bag_eq(
      where g.table_schema = 'public'
        and g.grantee in ('anon', 'authenticated')
        and g.privilege_type in ('INSERT', 'UPDATE', 'DELETE') $$,
-  $$ values ('friend_requests'), ('friendships'), ('blocks'), ('loadouts'),
+  $$ values ('friendships'), ('blocks'), ('loadouts'),
             ('push_tokens'), ('notifications') $$,
-  'exactly six tables take a client write, and profiles takes a column-level one'
+  'exactly five tables take table-level writes; profiles and friend_requests have only column-level updates'
 );
 
 -- `anon` reads only the catalogue: the rules, the career map, the cosmetics and
@@ -345,28 +346,22 @@ select ok(
 
 select is(
   (select count(*)::int from pg_policy where polrelid = 'realtime.messages'::regclass),
-  3,
-  'realtime.messages carries exactly the three Arc 21 channel policies'
+  1,
+  'realtime.messages carries only the seated-game read policy'
 );
 
--- polcmd: 'r' = SELECT, 'a' = INSERT. Exactly one write policy, and the read
--- policies are the two topics the app subscribes to.
+-- Clients receive game state only; friend activity is a scoped Postgres RPC.
 select is(
   (select count(*)::int from pg_policy
    where polrelid = 'realtime.messages'::regclass and polcmd = 'a'),
-  1,
-  'a client may write to exactly one kind of topic'
+  0,
+  'clients cannot publish to any Realtime topic'
 );
-
--- The one write policy must be the presence roster. If a game topic ever
--- becomes writable by a client, a player can push a forged table to the seat
--- next to them, which is the injection this whole area exists to prevent.
 select ok(
-  (select pg_get_expr(polwithcheck, polrelid) like '%presence:players%'
-     and pg_get_expr(polwithcheck, polrelid) not like '%game_session_seats%'
-   from pg_policy
-   where polrelid = 'realtime.messages'::regclass and polcmd = 'a'),
-  'the only client-writable topic is the presence roster, never a game'
+  not exists (select 1 from pg_policy
+    where polrelid = 'realtime.messages'::regclass
+      and coalesce(pg_get_expr(polqual, polrelid), '') like '%presence:players%'),
+  'clients cannot read the obsolete shared presence roster'
 );
 
 -- ---------------------------------------------------------------------------

@@ -149,7 +149,7 @@ set local role authenticated;
 set local request.jwt.claims to
   '{"sub":"bd000000-0000-4000-8000-000000000001","role":"authenticated"}';
 
-select public.register_push_token('ExponentPushToken[bounded-' || g || ']', 'ios', 'device-' || g, '{your_turn}')
+select public.register_push_token('ExponentPushToken[bounded-' || g || ']', 'ios', 'device-' || g, '{your_turn}', g)
 from generate_series(1, 40) as g;
 
 select is(
@@ -202,7 +202,7 @@ select token from public.push_tokens
 where user_id = 'bd000000-0000-4000-8000-000000000001'
 order by last_used_at asc limit 1;
 
-select public.register_push_token('ExponentPushToken[bounded-eleventh]', 'ios', 'device-11', '{your_turn}');
+select public.register_push_token('ExponentPushToken[bounded-eleventh]', 'ios', 'device-11', '{your_turn}', 1);
 
 select is(
   (select count(*)::int from public.push_tokens
@@ -230,7 +230,7 @@ select is(
 -- Re-registering a device the account already holds is an UPDATE, so it neither
 -- adds a row nor evicts one. A phone that opens the app twice must not cost its
 -- owner a device.
-select public.register_push_token('ExponentPushToken[bounded-eleventh]', 'ios', 'device-11', '{your_turn}');
+select public.register_push_token('ExponentPushToken[bounded-eleventh]', 'ios', 'device-11', '{your_turn}', 2);
 
 select is(
   (select count(*)::int from public.push_tokens

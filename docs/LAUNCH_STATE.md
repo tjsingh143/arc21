@@ -1,10 +1,11 @@
 # Arc 21 Launch State
 
-**Latest completed work:** Astra Refresh A — independent baseline audit,
-**PASS, September 14, 2026 PDT**. **Known current release-blocking software
-defects: 0.** Refresh B has not begun.
+**Latest completed work:** [Astra Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
+**PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software
+defects: 0.** Local checkpoint subject: `Complete Astra Refresh B pseudonymous user system`.
+No push or deployment; Refresh C/D/E has not begun. External activation remains.
 
-Read [baseline-audit.md](./astra-refresh/baseline-audit.md) first for the current
+Read [baseline-audit.md](./astra-refresh/baseline-audit.md) for the historical
 22 verified findings, native/backend evidence, final gates and local checkpoint.
 The final gates include 2,446 unit tests, 2,420 coverage tests, 320 real server
 tests, 592 SQL assertions, all 59 migrations and the final iOS Release installed
@@ -570,6 +571,12 @@ that must be bought, registered, signed for or physically present.
 
 ## Current migration head
 
+Refresh B's local head is
+`supabase/migrations/20261004120000_push_registration_intent_order.sql` (61 migrations;
+32 pgTAP files / 640 assertions). Forward preservation and clean-application evidence
+are in [Refresh B](./astra-refresh/refresh-b.md). No hosted migration was applied.
+
+The latest completed Refresh-A checkpoint used
 `supabase/migrations/20260909120000_career_attempt_counts.sql`
 (59 migrations, all applied from scratch cleanly in the final September 14 PDT
 Refresh-A gate, followed by 30 pgTAP files / 592 assertions and 25 server files /

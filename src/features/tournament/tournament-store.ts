@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The Sprint Tournament, as client state.
  *
@@ -11,6 +12,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession, sentAsNobody } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { useWalletStore } from "../wallet/wallet-store.js";
@@ -84,7 +86,7 @@ const WITHDRAW_REFUSED =
  */
 const WITHDRAW_NOTHING_TO_LEAVE = "You were not in a tournament, so nothing was refunded.";
 const SIGNED_OUT =
-  "Tournaments need an account, because the entry fee and the prizes are real chips. Practice stays available without one.";
+  "Connect for tournaments. Entry and prizes use server-recorded virtual chips. Practice works offline.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -98,30 +100,34 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
   withdrawing: false,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message } });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message } });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     const signedOut = !session.data.session;
 
-    // Read FIRST, and before the sign-in question: `sprint_format` is granted to
-    // `anon` too, because the format is published configuration and a guest
-    // deciding whether to make an account is the person who most needs to see it.
-    const formatResult = await bounded(availability.client.rpc("sprint_format"));
+    // Read FIRST, and before the sign-in question: the format is published
+    // configuration and a guest deciding whether to make an account is the
+    // person who most needs to see it. Without an adopted player it is asked
+    // for as NOBODY: the SDK may be holding a restored credential the server
+    // has not confirmed yet, and nothing is sent as that (B-H1).
+    const formatRequest = availability.client.rpc("sprint_format");
+    const formatResult = await bounded(signedOut ? sentAsNobody(formatRequest, availability.client) : formatRequest);
     if (formatResult === null || formatResult.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     const format = toFormat(formatResult.data);
     if (!format) {
-      set({
+      setForPlayer({
         status: {
           kind: "unavailable",
           message: "The tournament sent a format this app could not read.",
@@ -133,7 +139,7 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
     if (signedOut) {
       // The format, and an honest reason entering is not offered. No entry and
       // no standings exist to read without an account.
-      set({
+      setForPlayer({
         status: { kind: "ready", format, entry: null, standings: [], signedOut: true },
         notice: SIGNED_OUT,
       });
@@ -142,7 +148,7 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
 
     const entryResult = await bounded(availability.client.rpc("my_sprint_entry"));
     if (entryResult === null || entryResult.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     const entry = toEntry(entryResult.data);
@@ -150,7 +156,7 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
     // cannot decode must not offer registration as if the fee never happened.
     const empty = Array.isArray(entryResult.data) && entryResult.data.length === 0;
     if (!entry && !empty) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
 
@@ -180,30 +186,32 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
      * and the only notice `load` owns is the signed-out one, which is cleared
      * below the moment an account appears.
      */
-    set((current) => ({
+    setForPlayer((current) => ({
       status: { kind: "ready", format, entry, standings, signedOut: false },
       notice: current.notice === SIGNED_OUT ? null : current.notice,
     }));
   },
 
   register: async () => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().registering || get().withdrawing) return;
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
-    set({ registering: true, notice: null });
+    setForPlayer({ registering: true, notice: null });
     const result = await sendSessionIntent(availability.client, { action: "REGISTER_SPRINT" });
-    set({ registering: false });
+    if (!setForPlayer.isCurrent()) return;
+    setForPlayer({ registering: false });
 
     if (result.kind === "unknown") {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       await Promise.all([get().load(), useWalletStore.getState().refresh()]);
       return;
     }
     if (result.kind === "rejected") {
       // The server's own refusal is the useful one — "the entry fee would
       // overdraw the wallet" says more than any wording invented here.
-      set({ notice: result.rejection.message });
+      setForPlayer({ notice: result.rejection.message });
       return;
     }
 
@@ -213,24 +221,26 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
       // A retry landing on an entry already paid for. Said plainly, because
       // "entered" with no visible charge otherwise reads as a bug — and AFTER
       // the reload, so the reload cannot be the thing that hides it.
-      set({ notice: "You were already entered. No second fee was taken." });
+      setForPlayer({ notice: "You were already entered. No second fee was taken." });
     }
   },
 
   withdraw: async () => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().withdrawing || get().registering) return;
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
-    set({ withdrawing: true, notice: null });
+    setForPlayer({ withdrawing: true, notice: null });
     const result = await sendSessionIntent(availability.client, { action: "WITHDRAW_SPRINT" });
-    set({ withdrawing: false });
+    if (!setForPlayer.isCurrent()) return;
+    setForPlayer({ withdrawing: false });
 
     if (result.kind === "unknown") {
       // Unreachable, not refused: the entry may or may not still stand, and the
       // reload below is what finds out. Saying "nothing has been charged" here
       // would be a claim about a request whose fate is unknown.
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       await Promise.all([get().load(), useWalletStore.getState().refresh()]);
       return;
     }
@@ -240,17 +250,17 @@ export const useTournamentStore = create<TournamentStoreState>((set, get) => ({
       await get().load();
       const current = get().status;
       if (current.kind !== "ready") {
-        set({ notice: result.rejection.message });
+        setForPlayer({ notice: result.rejection.message });
         return;
       }
       const stillEntered = current.kind === "ready" && current.entry !== null;
-      set({ notice: stillEntered ? WITHDRAW_REFUSED : WITHDRAW_NOTHING_TO_LEAVE });
+      setForPlayer({ notice: stillEntered ? WITHDRAW_REFUSED : WITHDRAW_NOTHING_TO_LEAVE });
       return;
     }
 
     const data = result.data as { refundChips?: unknown } | null;
     await Promise.all([get().load(), useWalletStore.getState().refresh()]);
-    set({
+    setForPlayer({
       notice:
         typeof data?.refundChips === "number" && data.refundChips > 0
           ? `Your entry fee of ${data.refundChips} chips is back in your balance.`

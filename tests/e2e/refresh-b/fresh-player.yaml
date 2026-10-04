@@ -1,0 +1,47 @@
+# Requires e2e-fresh-app.ts first. No email/password fixture or session injection.
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+- assertVisible:
+    id: onboarding-guest
+- assertVisible: Start playing
+# Tapped inside a `repeat`, as career-node.yaml and every-screen.yaml do: a tap
+# issued while the app is still settling can be swallowed. Measured here on a
+# freshly re-booted simulator: the root's start-up effects began ~5 s after
+# launch and two single taps at +6 s were lost (the device's own store held no
+# `onboarding:completion`), while the same tap on the settled screen reached
+# Home in 3 s. `optional` for the reason career-node.yaml records; the wait
+# below is what proves the tap landed.
+- repeat:
+    times: 3
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: onboarding-guest
+          commands:
+            - tapOn:
+                optional: true
+                id: onboarding-guest
+- extendedWaitUntil:
+    visible:
+      id: header-chips
+    timeout: 30000
+- assertVisible:
+    id: home-practice
+- assertNotVisible: Guest
+- takeScreenshot: refresh-b-fresh-player-home
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 15000
+- assertVisible: '@[a-z]+_[a-z]+(_[0-9]{6})?'
+- assertVisible: Secure your player
+- takeScreenshot: refresh-b-generated-handle

@@ -143,7 +143,7 @@ describe("rewards a server has not granted", () => {
     );
     expect(record.owedRewards).toBe(1);
     expect(describeOwedRewards(record, false)).toContain("1 node");
-    expect(describeOwedRewards(record, false)).toContain("keep their stars");
+    expect(describeOwedRewards(record, false)).toContain("keep their local stars");
     expect(describeOwedRewards(record, true)).toContain("replayed");
   });
 

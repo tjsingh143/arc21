@@ -155,6 +155,9 @@ jobs:
         with:
           version: 2.116.0
 
+      - name: Pin the local Data API clock fix
+        run: npx tsx scripts/prepare-local-stack.ts
+
       - name: Start the stack
         run: supabase start
 

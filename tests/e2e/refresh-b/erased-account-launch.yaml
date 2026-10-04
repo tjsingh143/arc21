@@ -1,0 +1,52 @@
+# A cold launch over the credential of an account the server has ERASED. EMAIL
+# and HANDLE are that account's address and server handle.
+#
+# The harness stops the app, then erases the account through the product's own
+# `delete_own_account`, called from a second session of the same account — so
+# this device still holds a credential the server no longer honours, exactly
+# what a deletion whose reply or process was lost leaves behind. Refresh-B B-G1:
+# the launch asks the server, finds the account gone, removes the credential and
+# says so; it never shows the erased player, and starts a new one only on
+# Connect. Pair with readbacks: the account has no rows, and no user is created
+# until Connect.
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 30000
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+# Scroll to the LAST line asserted, as offline-existing-launch.yaml does.
+- scrollUntilVisible:
+    element:
+      text: .*was deleted, so it was not restored and its sign-in has been removed.*
+    direction: DOWN
+    timeout: 40000
+- assertVisible: Offline player
+- assertVisible: .*was deleted, so it was not restored and its sign-in has been removed.*
+- assertNotVisible: ${EMAIL}
+- assertNotVisible: Secured player
+- takeScreenshot: erased-account-not-restored
+- tapOn: Connect for online play
+# The new player's card is taller than the one it replaces, so where its title
+# lands depends on the scroll offset; read the new player from Profile instead.
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible: '@[a-z]+_[a-z]+(_[0-9]{6})?'
+    timeout: 30000
+- assertVisible: Secure your player
+- assertNotVisible: '@${HANDLE}'
+- assertNotVisible: ${EMAIL}
+- takeScreenshot: connect-started-a-new-player

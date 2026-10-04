@@ -1,0 +1,16 @@
+# Fresh SQLite/Keychain; local Kong is stopped by the observer before this flow.
+appId: com.arc21.app
+---
+- runFlow: ../practice-hand.yaml
+- takeScreenshot: offline-practice-hand-played
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- assertVisible:
+    id: home-practice
+- assertNotVisible:
+    id: header-chips
+- takeScreenshot: offline-home-without-authentication

@@ -34,7 +34,6 @@ import { callFunction as call } from "./call-function.js";
 import { stackUp } from "./stack-guard.js";
 import { createClient, type RealtimeChannel, type SupabaseClient } from "@supabase/supabase-js";
 
-import { summarisePresence } from "../../src/features/presence/presence.js";
 
 const SUPABASE_URL = "http://127.0.0.1:54321";
 const REST = `${SUPABASE_URL}/rest/v1`;
@@ -470,21 +469,8 @@ suite("a game topic belongs to the players at that game", () => {
   );
 });
 
-/**
- * PRESENCE, over the same authorization.
- *
- * The roster is one shared topic on purpose — everybody publishes and each
- * client renders only the friends it already knows — but it was readable with
- * nothing but the anon key, so "who is online right now" was public. It is now
- * private, which means a signed-in account may read and TRACK, and an
- * anonymous socket may do neither.
- *
- * This is the test that would have caught making it private and breaking it:
- * `track()` needs the INSERT policy as well as the read one, and a presence
- * channel that cannot write looks exactly like a channel with nobody on it.
- * Real sessions here rather than hand-signed tokens, for the reason spelled out
- * on the listener above.
- */
+/** The former global, client-authored roster must be inaccessible. Friend-only
+ * server presence is proved in pseudonymous-identity.integration.test.ts. */
 suite("the presence roster", () => {
   const PRESENCE_TOPIC = "presence:players";
 
@@ -515,66 +501,27 @@ suite("the presence roster", () => {
     return { id: account.id, client };
   }
 
-  it(
-    "carries a signed-in player's state to another signed-in player, and admits no anonymous socket",
-    async () => {
-      const alice = await signedIn();
-      const bob = await signedIn();
-
-      const aliceChannel = alice.client.channel(PRESENCE_TOPIC, {
-        config: { presence: { key: alice.id }, private: true },
-      });
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error("alice could not join presence")), 8_000);
-        aliceChannel.subscribe((status: string) => {
-          if (status === "SUBSCRIBED") {
-            clearTimeout(timer);
-            resolve();
-          }
+  it("refuses the global roster for signed-in and unauthenticated sockets", async () => {
+    const alice = await signedIn();
+    const unauthenticated = createClient(SUPABASE_URL, LOCAL_ANON_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
+    openClients.push(unauthenticated);
+    try {
+      for (const client of [alice.client, unauthenticated]) {
+        const status = await new Promise<string>((resolve) => {
+          const timer = setTimeout(() => resolve("TIMED_OUT"), 8_000);
+          client.channel(PRESENCE_TOPIC, { config: { presence: { key: alice.id }, private: true } })
+            .subscribe((next) => {
+              if (["SUBSCRIBED", "CHANNEL_ERROR", "TIMED_OUT"].includes(next)) {
+                clearTimeout(timer); resolve(next);
+              }
+            });
         });
-      });
-      // `track` is a WRITE. Without the insert policy this resolves "error" and
-      // the roster silently stays empty.
-      expect(await aliceChannel.track({ userId: alice.id, state: "available" })).toBe("ok");
-
-      const bobChannel = bob.client.channel(PRESENCE_TOPIC, {
-        config: { presence: { key: bob.id }, private: true },
-      });
-      const sawAlice = new Promise<boolean>((resolve) => {
-        const timer = setTimeout(() => resolve(false), 8_000);
-        bobChannel.on("presence", { event: "sync" }, () => {
-          const roster = summarisePresence(bobChannel.presenceState());
-          if (roster.get(alice.id) === "available") {
-            clearTimeout(timer);
-            resolve(true);
-          }
-        });
-        bobChannel.subscribe();
-      });
-
-      // eslint-disable-next-line no-console
-      console.log("[presence proof] a second signed-in player saw the first:", await sawAlice);
-      expect(await sawAlice).toBe(true);
-
-      // And an anonymous socket is refused the roster outright.
-      const anonymous = createClient(SUPABASE_URL, LOCAL_ANON_KEY);
-      openClients.push(anonymous);
-      const anonymousStatus = await new Promise<string>((resolve) => {
-        const timer = setTimeout(() => resolve("TIMED_OUT"), 8_000);
-        anonymous
-          .channel(PRESENCE_TOPIC, { config: { presence: { key: "nobody" }, private: true } })
-          .subscribe((status: string, error?: Error) => {
-            if (status === "SUBSCRIBED" || status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-              clearTimeout(timer);
-              resolve(error ? `${status}: ${error.message}` : status);
-            }
-          });
-      });
-
-      // eslint-disable-next-line no-console
-      console.log("[presence proof] an anonymous socket got:", anonymousStatus);
-      expect(anonymousStatus).not.toBe("SUBSCRIBED");
-    },
-    40_000,
-  );
+        // A transport timeout is not proof of an authorization refusal.
+        expect(status).toBe("CHANNEL_ERROR");
+      }
+    } finally {
+      const removed = await fetch(`${AUTH_ADMIN}/${alice.id}`, { method: "DELETE", headers: { apikey: LOCAL_SERVICE_KEY, Authorization: `Bearer ${LOCAL_SERVICE_KEY}` } });
+      expect(removed.ok).toBe(true);
+    }
+  }, 20_000);
 });

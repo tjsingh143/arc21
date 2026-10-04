@@ -220,6 +220,6 @@ describe("the Profile screen", () => {
      * has the better behaviour: a refused save keeps what the player typed,
      * because the row did not change.
      */
-    expect(source).toMatch(/key=\{`\$\{accountProfile\.displayName\}:\$\{accountProfile\.username\}`\}/);
+    expect(source).toMatch(/key=\{`\$\{accountProfile\.userId\}:\$\{accountProfile\.displayName\}:\$\{accountProfile\.username\}`\}/);
   });
 });

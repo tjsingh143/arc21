@@ -1,0 +1,52 @@
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://create-account
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: secure-code
+    timeout: 15000
+- tapOn:
+    id: secure-code
+- eraseText
+- inputText: ${CODE}
+# The number pad has no dismiss key and covers Verify, yet Verify stays in the
+# accessibility tree, so scrollUntilVisible "finds" it and the tap lands on the
+# keyboard. The screen dismisses on a tap outside a control
+# (keyboardShouldPersistTaps="handled"), as a player would do.
+- tapOn: '@${HANDLE}'
+- scrollUntilVisible:
+    element:
+      id: secure-verify
+    direction: DOWN
+- tapOn:
+    id: secure-verify
+- extendedWaitUntil:
+    visible:
+      id: secure-email-verified
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: '@${HANDLE}'
+    direction: UP
+- assertVisible: '@${HANDLE}'
+- takeScreenshot: refresh-b-email-verified-same-player
+- tapOn:
+    id: secure-password
+- inputText: ${PASSWORD}
+- tapOn:
+    id: secure-email-verified
+- tapOn:
+    id: secure-save-password
+- extendedWaitUntil:
+    visible:
+      id: secure-complete
+    timeout: 15000
+- takeScreenshot: refresh-b-secured-same-player

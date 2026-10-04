@@ -1,0 +1,26 @@
+# Run on an unlinked player; EMAIL already belongs to another secured player.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://create-account
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- assertVisible: '@${HANDLE}'
+- tapOn:
+    id: secure-email
+- inputText: ${EMAIL}
+- hideKeyboard
+- tapOn:
+    id: secure-send-code
+- extendedWaitUntil:
+    visible: That email belongs to another player.*
+    timeout: 15000
+- assertVisible: '@${HANDLE}'
+- assertNotVisible:
+    id: secure-email-verified
+- takeScreenshot: existing-email-conflict-same-player

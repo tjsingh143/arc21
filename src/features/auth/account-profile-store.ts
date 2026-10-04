@@ -19,8 +19,11 @@
  */
 
 import { create } from "zustand";
+import { capturePlayerScope, playerScopedSetter } from "../player/player-scope.js";
+import { useAuthStore } from "./auth-store.js";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import type { ProfileRow } from "../../lib/supabase/database.types.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
@@ -83,18 +86,19 @@ export const useAccountProfileStore = create<AccountProfileState>((set) => ({
   loaded: false,
 
   load: async () => {
+    const commit = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ profile: null, loaded: true });
+      commit({ profile: null, loaded: true });
       return;
     }
 
     const session = await withTimeout(
-      Promise.resolve(availability.client.auth.getSession()),
+      Promise.resolve(confirmedSession(availability.client)),
       undefined,
     );
     if (isTimedOut(session) || !session.data.session) {
-      set({ profile: null, loaded: true });
+      commit({ profile: null, loaded: true });
       return;
     }
 
@@ -109,14 +113,23 @@ export const useAccountProfileStore = create<AccountProfileState>((set) => ({
       undefined,
     );
     if (isTimedOut(result) || result.error) {
-      set({ loaded: true });
+      commit({ loaded: true });
       return;
     }
 
-    set({ profile: toProfile(result.data), loaded: true });
+    const profile = toProfile(result.data);
+    commit({ profile, loaded: true });
+    // All identity surfaces must show the server's current handle after a
+    // rename, including Secure Player and Settings. Never adopt the draft.
+    if (profile && commit.isCurrent()) {
+      useAuthStore.setState((state) => state.session?.account.userId === profile.userId
+        ? { session: { ...state.session, account: { ...state.session.account, username: profile.username } } }
+        : {});
+    }
   },
 
   rename: async (request) => {
+    const isCurrent = capturePlayerScope();
     // Nothing to do, and deliberately not a request: a PATCH that sets a column
     // to its current value costs a round trip and teaches the player nothing.
     if (!hasChanges(request)) return { ok: true };
@@ -131,17 +144,17 @@ export const useAccountProfileStore = create<AccountProfileState>((set) => ({
     }
 
     const session = await withTimeout(
-      Promise.resolve(availability.client.auth.getSession()),
+      Promise.resolve(confirmedSession(availability.client)),
       undefined,
     );
     if (isTimedOut(session)) {
       return { ok: false, reason: "UNREACHABLE", message: "The server did not answer." };
     }
-    if (!session.data.session) {
+    if (!session.data.session || !isCurrent()) {
       return {
         ok: false,
         reason: "NOT_SIGNED_IN",
-        message: "Sign in to change your profile.",
+        message: "Connect your current player to change its profile.",
       };
     }
 

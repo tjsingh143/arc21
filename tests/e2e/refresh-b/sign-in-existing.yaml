@@ -1,0 +1,72 @@
+# Assert the intended secured identity; a chip balance alone also belongs to a
+# pseudonymous player and cannot prove password sign-in.
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible:
+        id: onboarding-sign-in
+    commands:
+      - tapOn:
+          id: onboarding-sign-in
+- openLink: arc21://sign-in
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: auth-email
+    timeout: 15000
+- tapOn:
+    id: auth-email
+- eraseText
+- inputText: ${EMAIL}
+- tapOn:
+    id: auth-password
+- eraseText
+- inputText: ${PASSWORD}
+- hideKeyboard
+- tapOn:
+    id: auth-submit
+- runFlow:
+    when:
+      visible: Leave this player?
+    commands:
+      - assertVisible: .*Players are never merged.*
+      - tapOn: Sign in instead
+- runFlow:
+    when:
+      visible: Save Password?
+    commands:
+      - tapOn: Not Now
+- extendedWaitUntil:
+    visible:
+      id: home-practice
+    timeout: 15000
+- assertVisible:
+    id: header-chips
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      text: Secured player
+    direction: DOWN
+    timeout: 40000
+- assertVisible: ${EMAIL}
+- takeScreenshot: signed-in-intended-secured-player
+- openLink: arc21://home
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- assertVisible:
+    id: home-practice

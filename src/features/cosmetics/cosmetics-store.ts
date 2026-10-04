@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The cosmetic inventory, as client state.
  *
@@ -12,6 +13,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { toItems, type CosmeticItem } from "./cosmetics.js";
 import { useLoadoutStore } from "./loadout-store.js";
@@ -34,7 +36,7 @@ export interface CosmeticsStoreState {
 
 const UNREACHABLE = "Could not reach your inventory.";
 const SIGNED_OUT =
-  "Cosmetics need an account, because what you have earned is recorded on the server. Practice stays available without one.";
+  "Connect to see cosmetics earned by your player. Practice stays available offline.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -48,19 +50,20 @@ export const useCosmeticsStore = create<CosmeticsStoreState>((set, get) => ({
   newlyGranted: 0,
 
   load: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message } });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message } });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     if (!session.data.session) {
-      set({ status: { kind: "unavailable", message: SIGNED_OUT } });
+      setForPlayer({ status: { kind: "unavailable", message: SIGNED_OUT } });
       return;
     }
 
@@ -72,35 +75,55 @@ export const useCosmeticsStore = create<CosmeticsStoreState>((set, get) => ({
 
     const inventory = await bounded(availability.client.rpc("my_inventory"));
     if (inventory === null || inventory.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
 
-    set({
+    setForPlayer({
       status: { kind: "ready", items: toItems(inventory.data) },
       newlyGranted,
       notice: null,
     });
   },
 
+  /**
+   * Bound to the player who chose the item (`player-binding.ts`). Ownership is
+   * not identity: the default items belong to everybody, so an unbound request
+   * held across a sign-in (Refresh-B audit, B-R3) equipped player A's choice on
+   * player B's loadout and the server rightly accepted it — B owned it too.
+   */
   equip: async (cosmeticId) => {
+    const setForPlayer = playerScopedSetter(set);
     const availability = getSupabase();
     if (availability.status !== "ready" || get().busy) return;
 
-    set({ busy: true, notice: null });
+    setForPlayer({ busy: true, notice: null });
+    const bound = await bindCurrentPlayer(availability.client);
+    if (!bound.ok || !bound.player.isCurrent()) {
+      setForPlayer({
+        busy: false,
+        // A changed player has already had this screen cleared.
+        notice: bound.ok || bound.reason === "identity-changed"
+          ? null
+          : bound.reason === "signed-out" ? SIGNED_OUT : UNREACHABLE,
+      });
+      return;
+    }
     const result = await bounded(
-      availability.client.rpc("equip_cosmetic", { p_cosmetic_id: cosmeticId }),
+      sentAs(availability.client.rpc("equip_cosmetic", { p_cosmetic_id: cosmeticId }), bound.player),
     );
-    set({ busy: false });
+    setForPlayer({ busy: false });
+    // Everything below is this player's follow-up, including the reloads.
+    if (!bound.player.isCurrent()) return;
 
     if (result === null) {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return;
     }
     if (result.error) {
       // The server refuses an unowned or wrong-kind item at the loadout trigger.
       // Its refusal is the accurate one; this layer does not second-guess it.
-      set({ notice: "That could not be equipped." });
+      setForPlayer({ notice: "That could not be equipped." });
       return;
     }
 

@@ -1,0 +1,31 @@
+# The Settings "Who can see your statistics" control, on a signed-in player.
+# VISIBILITY is the control's label: Anyone, Friends only or Only me.
+#
+# The screen only records the choice; the root reconciliation is the one owner
+# of the profile write (Refresh-B B-F3), and it writes only while the row is
+# still the version it read (B-F1). A screen cannot show `profiles.privacy`, so
+# pair every run with a database readback of that column, and of `updated_at`,
+# for the player the device shows.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      text: Who can see your statistics
+    direction: DOWN
+    timeout: 40000
+- scrollUntilVisible:
+    element:
+      text: ${VISIBILITY}
+    direction: DOWN
+    timeout: 10000
+- tapOn: ${VISIBILITY}
+- takeScreenshot: privacy-control-chosen

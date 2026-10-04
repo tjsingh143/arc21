@@ -354,7 +354,8 @@ suite("what a second account can actually write", () => {
       sender_id: senderId,
       receiver_id: receiverId,
     });
-    expect(real.status).toBe(201);
+    expect(real.status).toBe(403);
+    expect((await write("POST", "rpc/send_friend_request", sender, { p_to: receiverId })).status).toBe(200);
 
     /*
      * The policy lets EITHER participant update the row — a sender withdraws,

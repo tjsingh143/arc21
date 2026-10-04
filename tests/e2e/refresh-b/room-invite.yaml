@@ -1,0 +1,40 @@
+# Arc 21 — invite a friend to the private room this device is hosting.
+#
+# WHY THIS FILE EXISTS. `use-room-invites.ts` sends `invite_friend_to_room`, and
+# the stale-identity repair bound and pinned that call's credential like every
+# other room mutation — so it needs native evidence of its own. The only flow
+# that already taps this control is `social-private-invite.yaml`, and that file
+# opens by ACCEPTING a pending friend request: it cannot be run against a
+# friendship that already exists, which is the state the Refresh-B social rows
+# deliberately leave behind. So the invite half is extracted here, with the same
+# selectors and the same assertion, and nothing is relaxed — `Invited` is the
+# rendered result of the server's answer, not the tap.
+#
+# Run on the HOST device while its room is open, with PEER_ID set to the
+# friend's uuid. The notification the invitation writes into the peer's inbox is
+# read back server-side; a screen cannot prove whose inbox it landed in.
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://friends/${PEER_ID}
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: friend-invite
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: friend-invite
+    direction: DOWN
+- tapOn:
+    id: friend-invite
+- extendedWaitUntil:
+    visible: Invited
+    timeout: 30000
+- takeScreenshot: refresh-b-room-invite-sent

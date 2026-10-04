@@ -22,10 +22,12 @@
  */
 
 import { create } from "zustand";
+import { playerScopedSetter } from "../player/player-scope.js";
 
 import type { AssistanceMode } from "../../../shared/contracts/index.js";
 import type { TierId } from "../matchmaking/matchmaking.js";
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { sendSessionIntent } from "../../lib/supabase/session-intent.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { SqliteKeyValueStore, type KeyValueStore } from "../../lib/persistence/key-value-store.js";
@@ -42,7 +44,7 @@ export interface QuickPlaySelection {
 export const DEFAULT_SELECTION: QuickPlaySelection = { tier: "casual", assistance: "play" };
 
 const UNREACHABLE = "Could not confirm the table. Check your balance and return to any active table below before trying again.";
-const SIGNED_OUT = "Quick Play needs an account. Practice stays available without one.";
+const SIGNED_OUT = "Connect for Quick Play. Your player identity is created automatically; Practice works offline.";
 
 /** Swapped for an in-memory store in tests, exactly as career persistence is. */
 let storage: KeyValueStore | null = null;
@@ -127,33 +129,36 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
   },
 
   open: async (selection) => {
+    const setForPlayer = playerScopedSetter(set);
     if (get().opening) return null;
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ notice: availability.message });
+      setForPlayer({ notice: availability.message });
       return null;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       return null;
     }
     if (!session.data.session) {
-      set({ notice: SIGNED_OUT });
+      setForPlayer({ notice: SIGNED_OUT });
       return null;
     }
 
-    set({ opening: true, notice: null });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ opening: true, notice: null });
     const result = await sendSessionIntent(availability.client, {
       action: "OPEN",
       tier: selection.tier,
       assistance: selection.assistance,
     });
-    set({ opening: false });
+    if (!setForPlayer.isCurrent()) return null;
+    setForPlayer({ opening: false });
 
     if (result.kind === "unknown") {
-      set({ notice: UNREACHABLE });
+      setForPlayer({ notice: UNREACHABLE });
       await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
       return null;
     }
@@ -175,23 +180,23 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
          * buy-in stranded. `my_active_session()` is the ask that was missing.
          */
         void useActiveSessionStore.getState().refresh();
-        set({
+        setForPlayer({
           notice:
             "You are already seated at a table, and your chips are there. Return to it below — nothing has been charged for this one.",
         });
         return null;
       }
       if (rejection?.code === "INSUFFICIENT_STACK") {
-        set({ notice: "That buy-in is more than your balance. Try a lower tier." });
+        setForPlayer({ notice: "That buy-in is more than your balance. Try a lower tier." });
         return null;
       }
-      set({ notice: rejection?.message ?? UNREACHABLE });
+      setForPlayer({ notice: rejection?.message ?? UNREACHABLE });
       return null;
     }
 
     const data = result.data as { gameId?: unknown; seatId?: unknown } | null;
     if (typeof data?.gameId !== "string" || typeof data.seatId !== "string") {
-      set({
+      setForPlayer({
         notice: "The table opened, but the reply could not be read. Reopen Quick Play.",
       });
       await Promise.all([useWalletStore.getState().refresh(), useActiveSessionStore.getState().refresh()]);
@@ -205,6 +210,7 @@ export const useQuickPlayStore = create<QuickPlayState>((set, get) => ({
     // And the player now HAS a live seat, so the cached answer to "where are
     // your chips" is out of date the moment this returns.
     void useActiveSessionStore.getState().refresh();
+    if (!setForPlayer.isCurrent()) return null;
     return { gameId: data.gameId, seatId: data.seatId };
   },
 

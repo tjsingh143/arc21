@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Leaderboards, as client state.
  *
@@ -15,6 +16,7 @@
 import { create } from "zustand";
 
 import { getSupabase } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   nextPageRequest,
@@ -61,7 +63,7 @@ export interface LeaderboardStoreState {
 
 const UNREACHABLE = "Could not reach the leaderboards.";
 const SIGNED_OUT =
-  "Leaderboards need an account, because every figure on them is server-recorded. Practice stays available without one.";
+  "Connect to see server-recorded leaderboards. No email or password is needed.";
 
 async function bounded<T>(work: PromiseLike<T>): Promise<T | null> {
   const result = await withTimeout(Promise.resolve(work), undefined);
@@ -82,21 +84,22 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
   loadingMore: false,
 
   select: async (category) => {
-    set({ category, status: { kind: "loading" }, strategyProgress: null, loadingMore: false });
+    const setForPlayer = playerScopedSetter(set);
+    setForPlayer({ category, status: { kind: "loading" }, strategyProgress: null, loadingMore: false });
 
     const availability = getSupabase();
     if (availability.status !== "ready") {
-      set({ status: { kind: "unavailable", message: availability.message } });
+      setForPlayer({ status: { kind: "unavailable", message: availability.message } });
       return;
     }
 
-    const session = await bounded(availability.client.auth.getSession());
+    const session = await bounded(confirmedSession(availability.client));
     if (session === null) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     if (!session.data.session) {
-      set({ status: { kind: "unavailable", message: SIGNED_OUT } });
+      setForPlayer({ status: { kind: "unavailable", message: SIGNED_OUT } });
       return;
     }
 
@@ -104,7 +107,7 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
       availability.client.rpc(RPC_FOR[category], { p_limit: PAGE_SIZE, p_offset: 0 }),
     );
     if (board === null || board.error) {
-      set({ status: { kind: "unavailable", message: UNREACHABLE } });
+      setForPlayer({ status: { kind: "unavailable", message: UNREACHABLE } });
       return;
     }
     const entries = toEntries(board.data);
@@ -142,7 +145,7 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
       }
     }
 
-    set({
+    setForPlayer({
       status: {
         kind: "ready",
         category,
@@ -155,6 +158,7 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
   },
 
   more: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "ready") return;
 
@@ -169,14 +173,14 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
     const availability = getSupabase();
     if (availability.status !== "ready") return;
 
-    set({ loadingMore: true });
+    setForPlayer({ loadingMore: true });
     const page = await bounded(
       availability.client.rpc(RPC_FOR[current.category], {
         p_limit: request.limit,
         p_offset: request.offset,
       }),
     );
-    set({ loadingMore: false });
+    setForPlayer({ loadingMore: false });
 
     // A page that could not be read leaves the board exactly as it was. The
     // rows already on screen are still true, and "Load more" is still there.
@@ -188,7 +192,7 @@ export const useLeaderboardStore = create<LeaderboardStoreState>((set, get) => (
     // of weekly XP to the accuracy board would be worse than dropping it.
     if (latest.kind !== "ready" || latest.category !== current.category) return;
 
-    set({
+    setForPlayer({
       status: {
         ...latest,
         entries: [...latest.entries, ...next],

@@ -1,31 +1,22 @@
 /**
  * Arc 21 — the auth boundary.
  *
- * Everything above this interface — the state machine, the store, both screens
- * and every test — is written against these six methods and knows nothing about
- * Supabase. That is what makes adding Sign in with Apple later a new adapter
- * method and a new button, rather than a rewrite of the sign-in flow: the
- * optional `signInWithProvider` is already the shape it will arrive in.
- *
- * Three properties are enforced by the types rather than by convention:
- *
- *   * **No method throws.** Every one returns a result union, so a caller cannot
- *     forget to handle failure and cannot accidentally let an auth error escape
- *     into a React render.
- *   * **No method returns a token.** The snapshot carries an account id, an
- *     address and an expiry — never an access token, never a refresh token.
- *     Application state has no business holding either; the SDK keeps them in
- *     the keychain.
- *   * **No method accepts an identity.** There is no `userId` parameter
- *     anywhere. Identity is whatever the verified session says it is.
+ * Screens and the session store depend on result unions and token-free snapshots.
+ * Supabase owns identity and credentials. expectedUserId is only a local
+ * stale-intent guard: it is never sent as identity or used instead of Auth.
+ * Optional securing modifies the current player, while sign-in/recovery replaces
+ * the device session only after the UI has explained any unlinked-player loss.
  */
 
 import type { AuthFailure } from "./auth-failure.js";
 
 export interface AuthAccount {
-  /** The server's `auth.users.id`. A guest has no equivalent. */
+  /** The server's `auth.users.id`, for every online player. */
   readonly userId: string;
   readonly email: string | null;
+  /** Supabase Auth owns this classification; never user metadata. */
+  readonly isAnonymous: boolean;
+  readonly pendingEmail: string | null;
   readonly emailConfirmed: boolean;
   /**
    * The handle on `public.profiles`, once it has been read back.
@@ -47,10 +38,7 @@ export interface AuthSessionSnapshot {
 export type AuthResult =
   | {
       readonly ok: true;
-      /**
-       * Null when the project requires email confirmation: the account now
-       * exists but nobody is signed in yet.
-       */
+      /** Null only when this result has no signed-in player. */
       readonly session: AuthSessionSnapshot | null;
       readonly verificationRequired: boolean;
     }
@@ -63,6 +51,8 @@ export type AuthVoidResult =
 export interface SignInRequest {
   readonly email: string;
   readonly password: string;
+  /** Local intent guard only; never sent as an authenticated identity. */
+  readonly expectedUserId?: string | null;
 }
 
 export interface SignUpRequest extends SignInRequest {
@@ -80,9 +70,13 @@ export interface AuthAdapter {
   /** The current session, if any. Bounded — never hangs on an unreachable host. */
   getSession(): Promise<AuthResult>;
 
-  signUp(request: SignUpRequest): Promise<AuthResult>;
+  /** Restore first; create at most one request at a time. No supplied identity. */
+  ensurePlayer(): Promise<AuthResult>;
+  startSecuring(email: string, expectedUserId?: string | null): Promise<AuthResult>;
+  verifySecuringEmail(email: string, code: string, expectedUserId?: string | null): Promise<AuthResult>;
+  setSecuredPassword(password: string, expectedUserId?: string | null): Promise<AuthResult>;
   signIn(request: SignInRequest): Promise<AuthResult>;
-  signOut(): Promise<AuthVoidResult>;
+  signOut(expectedUserId?: string | null): Promise<AuthVoidResult>;
 
   /**
    * Erases the account.
@@ -91,7 +85,7 @@ export interface AuthAdapter {
    * final state but nothing else, and a single method with a boolean would put
    * account deletion one wrong argument away from an ordinary sign-out.
    */
-  deleteAccount(): Promise<AuthVoidResult>;
+  deleteAccount(expectedUserId?: string | null): Promise<AuthVoidResult>;
 
   /**
    * Sends a reset link. Always reports success when the request was accepted,
@@ -107,12 +101,12 @@ export interface AuthAdapter {
    * or foreign code fails here as `RECOVERY_LINK_INVALID` rather than
    * appearing to succeed.
    */
-  completePasswordReset(code: string, newPassword: string): Promise<AuthVoidResult>;
+  completePasswordReset(code: string, newPassword: string, expectedUserId?: string | null): Promise<AuthVoidResult>;
 
   /**
    * Reads the handle the server actually assigned.
    *
-   * Separate from `signUp` because it needs a session: the row is created by a
+   * Separate from creation because it needs a session: the row is created by a
    * trigger on `auth.users`, and `profiles` is not readable by `anon`.
    */
   fetchAssignedUsername(): Promise<string | null>;
@@ -143,7 +137,10 @@ export function createUnconfiguredAuthAdapter(failure: AuthFailure): AuthAdapter
   return {
     kind: "unconfigured",
     getSession: refuse,
-    signUp: refuse,
+    ensurePlayer: refuse,
+    startSecuring: refuse,
+    verifySecuringEmail: refuse,
+    setSecuredPassword: refuse,
     signIn: refuse,
     signOut: refuseVoid,
     deleteAccount: refuseVoid,

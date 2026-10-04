@@ -727,6 +727,15 @@ export const useOnlineTableStore = create<OnlineTableStoreState>((set, get) => (
 
     set({ pending: true, notice: null });
     const outcome = await activeTableGateway().cashOut(current.state.gameId);
+    /*
+     * THIS CHECK GUARDS THE SCREEN, NOT THE SEAT — and reading it as the write
+     * guard is what let the Refresh-B blocker stand. A delayed Leave released
+     * after a sign-in cashed out the REPLACEMENT player, who was seated at the
+     * same multiplayer table; the line below then discarded the reply, so the UI
+     * was right and the database was wrong. Discarding a result cannot undo a
+     * row. The write guard is in the gateway: the credential is bound before the
+     * session read and pinned onto the request. See `player-binding.ts`.
+     */
     if (generation !== tableGeneration) return false;
     set({ pending: false });
 

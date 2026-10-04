@@ -1,0 +1,29 @@
+appId: com.arc21.app
+---
+- launchApp:
+    stopApp: false
+    clearState: false
+- openLink: arc21://social
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: friends-search-input
+    direction: DOWN
+- tapOn:
+    id: friends-search-input
+- inputText: ${OTHER}
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: search-add-${OTHER}
+    timeout: 15000
+- tapOn:
+    id: search-add-${OTHER}
+- extendedWaitUntil:
+    visible: .*Request sent — waiting for them.*
+    timeout: 15000
+- takeScreenshot: pseudonymous-friend-request-sent

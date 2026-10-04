@@ -7,11 +7,12 @@
  * assert a state nothing supports.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   describePresence,
   summarisePresence,
+  presenceFromRows,
   usePresenceStore,
 } from "../../src/features/presence/index.js";
 import { setSupabaseAvailabilityForTests } from "../../src/lib/supabase/client.js";
@@ -76,7 +77,7 @@ describe("summarising the channel", () => {
 
 describe("what a row says", () => {
   it("names the two live states", () => {
-    expect(describePresence("available")).toBe("Online");
+    expect(describePresence("available")).toBe("Recently active");
     expect(describePresence("in_game")).toBe("In a game");
   });
 
@@ -147,13 +148,13 @@ describe("stamping last seen", () => {
     setSupabaseAvailabilityForTests(null);
   });
 
-  it("stamps when a player joins the channel", () => {
+  it("stamps and reads the friend-scoped projection on join", () => {
     const calls: string[] = [];
     setSupabaseAvailabilityForTests(fakeSupabase(calls));
 
     usePresenceStore.getState().join(ME, "available");
 
-    expect(calls).toEqual(["touch_last_seen"]);
+    expect(calls).toEqual(["touch_last_seen", "list_friend_presence"]);
   });
 
   it("stamps again when the player sits down at a table", () => {
@@ -163,7 +164,7 @@ describe("stamping last seen", () => {
     usePresenceStore.getState().join(ME, "available");
     usePresenceStore.getState().setOwnState("in_game");
 
-    expect(calls).toEqual(["touch_last_seen", "touch_last_seen"]);
+    expect(calls).toEqual(["touch_last_seen", "list_friend_presence", "touch_last_seen"]);
   });
 
   it("stamps for a player who never opened Social, so the fallback is still true", () => {
@@ -189,6 +190,64 @@ describe("stamping last seen", () => {
     // No throw, no request, and no pretence of presence.
     usePresenceStore.getState().join(ME, "available");
     usePresenceStore.getState().setOwnState("in_game");
+    expect(usePresenceStore.getState().joined).toBe(false);
+  });
+});
+
+
+describe("verified friend presence projection", () => {
+  afterEach(() => {
+    usePresenceStore.getState().leave();
+    setSupabaseAvailabilityForTests(null);
+    vi.useRealTimers();
+  });
+
+  it("accepts server user_id rows and rejects spoof-shaped client metadata", () => {
+    const result = presenceFromRows([
+      { user_id: A, state: "available" },
+      { user_id: B, state: "in_game" },
+      { userId: A, state: "in_game" },
+      { user_id: "not-a-uuid", state: "available" },
+    ]);
+    expect([...result]).toEqual([[A, "available"], [B, "in_game"]]);
+  });
+
+  it("never publishes an identity and drops delayed presence after leaving", async () => {
+    let finish!: (value: unknown) => void;
+    const pending = new Promise((resolve) => { finish = resolve; });
+    const calls: Array<{ name: string; args: unknown }> = [];
+    setSupabaseAvailabilityForTests({ status: "ready", client: {
+      rpc: (name: string, args: unknown) => {
+        calls.push({ name, args });
+        return name === "list_friend_presence" ? pending : Promise.resolve({ data: null, error: null });
+      },
+      channel: () => { throw new Error("shared presence channels must not be used"); },
+    } as never });
+    usePresenceStore.getState().join(A, "in_game");
+    usePresenceStore.getState().leave();
+    finish({ data: [{ user_id: B, state: "available" }], error: null });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([{ name: "touch_last_seen", args: undefined }, { name: "list_friend_presence", args: undefined }]);
+    expect(usePresenceStore.getState().online.size).toBe(0);
+    expect(usePresenceStore.getState().joined).toBe(false);
+  });
+
+  it("expires the displayed projection when the next heartbeat cannot be read", async () => {
+    vi.useFakeTimers();
+    let failed = false;
+    setSupabaseAvailabilityForTests({ status: "ready", client: {
+      rpc: async (name: string) => name === "touch_last_seen"
+        ? { data: null, error: null }
+        : failed ? { data: null, error: { message: "unreachable" } }
+        : { data: [{ user_id: B, state: "available" }], error: null },
+    } as never });
+    usePresenceStore.getState().join(A, "available");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(usePresenceStore.getState().online.get(B)).toBe("available");
+    failed = true;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(usePresenceStore.getState().online.size).toBe(0);
     expect(usePresenceStore.getState().joined).toBe(false);
   });
 });

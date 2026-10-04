@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * Arc 21 — asking the server which table the player is at.
  *
@@ -15,6 +16,7 @@
 import { create } from "zustand";
 
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { confirmedSession } from "../../lib/supabase/player-binding.js";
 import { getSupabase } from "../../lib/supabase/client.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import { parseActiveSessionRows, type ActiveSession } from "./active-session.js";
@@ -49,7 +51,7 @@ export function createSupabaseActiveSessionGateway(
   return {
     kind: "supabase",
     async fetch(): Promise<ActiveSessionOutcome> {
-      const session = await bounded(client.auth.getSession());
+      const session = await bounded(confirmedSession(client));
       if (session === null) return { ok: false, reason: "unreachable" };
       if (!session.data.session) return { ok: false, reason: "signed-out" };
 
@@ -100,23 +102,24 @@ export const useActiveSessionStore = create<ActiveSessionStoreState>((set) => ({
   status: { kind: "idle" },
 
   refresh: async () => {
-    set({ status: { kind: "loading" } });
+    const setForPlayer = playerScopedSetter(set);
+    setForPlayer({ status: { kind: "loading" } });
 
     let outcome: ActiveSessionOutcome;
     try {
       outcome = await activeSessionGateway().fetch();
     } catch {
-      set({ status: { kind: "unavailable", reason: "unreachable" } });
+      setForPlayer({ status: { kind: "unavailable", reason: "unreachable" } });
       return null;
     }
 
     if (!outcome.ok) {
-      set({ status: { kind: "unavailable", reason: outcome.reason } });
+      setForPlayer({ status: { kind: "unavailable", reason: outcome.reason } });
       return null;
     }
 
-    set({ status: { kind: "ready", session: outcome.session } });
-    return outcome.session;
+    setForPlayer({ status: { kind: "ready", session: outcome.session } });
+    return setForPlayer.isCurrent() ? outcome.session : null;
   },
 
   clear: () => set({ status: { kind: "idle" } }),

@@ -1,0 +1,29 @@
+appId: com.arc21.app
+---
+- openLink: arc21://settings
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- scrollUntilVisible:
+    element:
+      id: delete-account
+    direction: DOWN
+    timeout: 40000
+- tapOn:
+    id: delete-account
+- assertVisible: Delete your account?
+- assertVisible: .*Practice on this device is unaffected.*
+- tapOn: Keep my account
+- assertVisible: ${EMAIL}
+- tapOn:
+    id: delete-account
+- tapOn: Delete permanently
+- extendedWaitUntil:
+    visible: Offline player
+    timeout: 15000
+- assertNotVisible:
+    id: delete-account
+- assertNotVisible: ${EMAIL}
+- takeScreenshot: deletion-confirmed-offline-player

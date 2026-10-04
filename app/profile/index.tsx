@@ -19,12 +19,14 @@
  * from practice decisions, hands played, and career stars earned locally.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { router } from "expo-router";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import Svg, { Circle, Path } from "react-native-svg";
 
+import { getSessionStorageDurability, subscribeSessionStorageDurability } from "../../src/lib/supabase/secure-session-storage";
+import { ConnectPlayerButton } from "../../src/components/ui/ConnectPlayerButton";
 import { AppText } from "../../src/components/ui/AppText";
 import { BackBar } from "../../src/components/ui/BackBar";
 import { Button } from "../../src/components/ui/Button";
@@ -61,6 +63,7 @@ import { totalStars } from "../../shared/career/progress.js";
 import { CHIPS_NOT_MONEY_FOOTER } from "../../src/features/settings/fair-play-facts";
 
 export default function ProfileScreen() {
+  const durability = useSyncExternalStore(subscribeSessionStorageDurability, getSessionStorageDurability);
   const stats = usePracticeStore((state) => state.stats);
   const hydrate = usePracticeStore((state) => state.hydrate);
   const hydrated = usePracticeStore((state) => state.hydrated);
@@ -146,6 +149,14 @@ export default function ProfileScreen() {
           </View>
         </View>
 
+        {!session ? <SurfaceCard><ConnectPlayerButton /><Button label="Recover an existing player" variant="quiet" onPress={() => router.push("/(auth)/sign-in")} /></SurfaceCard> : null}
+        {session && durability === "unavailable" ? <UnavailableNote>This device could not save your player credentials securely. Access may be lost after closing the app. Add a recovery email to keep this player.</UnavailableNote> : null}
+        {session?.account.isAnonymous ? <SurfaceCard>
+          <AppText variant="bodyStrong">Your player, automatically connected</AppText>
+          <AppText variant="caption" color="textSecondary">Keep playing with this identity. An optional recovery email lets you keep it if you lose this device’s credentials or move to another device.</AppText>
+          <Button label="Secure your player" variant="secondary" onPress={() => router.push("/(auth)/create-account")} />
+          <Button label="Sign in to an existing player" variant="quiet" onPress={() => router.push("/(auth)/sign-in")} />
+        </SurfaceCard> : null}
         {/*
           THE DOOR THAT HAD NO HANDLE ON THE INSIDE.
 
@@ -170,7 +181,7 @@ export default function ProfileScreen() {
             stays on screen with what the player typed still in place.
           */
           <EditIdentityCard
-            key={`${accountProfile.displayName}:${accountProfile.username}`}
+            key={`${accountProfile.userId}:${accountProfile.displayName}:${accountProfile.username}`}
             profile={accountProfile}
           />
         ) : null}
@@ -304,10 +315,9 @@ export default function ProfileScreen() {
         <SurfaceCard>
           <AppText variant="bodyStrong">Your data</AppText>
           <AppText variant="body" color="textSecondary">
-            Practice results, settings and career stars stay on this device and
-            are never uploaded. Chips, statistics, friends and leaderboard
-            standing come with an account and live on the server, because they
-            are checked rather than taken on trust.
+            Practice results and settings stay on this device. Your online
+            player’s chips, progression, statistics, friends and leaderboard
+            standing live on the server and are checked there.
           </AppText>
         </SurfaceCard>
 
@@ -477,7 +487,7 @@ function Avatar({
     );
   }
   return (
-    <View style={styles.avatar} accessible accessibilityLabel="Guest profile picture">
+    <View style={styles.avatar} accessible accessibilityLabel="Player profile picture">
       <Svg width={34} height={34} viewBox="0 0 24 24">
         <Circle cx="12" cy="9" r="3.4" stroke={colors.textSecondary} strokeWidth={1.6} fill="none" />
         <Path

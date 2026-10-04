@@ -40,7 +40,6 @@ import {
   WelcomeHandIllustration,
 } from "../../src/features/onboarding/illustrations";
 import {
-  accountOption,
   ACCOUNT_OPTIONS,
   clampPageIndex,
   offsetForPageIndex,
@@ -177,14 +176,14 @@ export default function WelcomeScreen() {
 
       <View style={styles.dock}>
         <Button
-          label="Continue as Guest"
+          label="Start playing"
           onPress={continueAsGuest}
           testID="onboarding-guest"
-          accessibilityHint="Starts playing on this device. No account needed."
+          accessibilityHint="Starts playing with an automatic player identity. Practice is available offline."
         />
 
         <View style={styles.accountRow}>
-          {ACCOUNT_OPTIONS.map((option) => (
+          {ACCOUNT_OPTIONS.filter((option) => option.id === "sign-in").map((option) => (
             <Button
               key={option.id}
               label={option.label}
@@ -210,7 +209,7 @@ export default function WelcomeScreen() {
           ))}
         </View>
         <AppText variant="caption" color="textDisabled" align="center">
-          {accountOption("create-account").hint}
+          No email or password needed. You can secure your player later.
         </AppText>
 
         <View style={styles.disclosure}>

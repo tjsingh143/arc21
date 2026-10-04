@@ -30,8 +30,11 @@ import { colors, layout, spacing } from "../../src/design/tokens";
 import { AuthField, AuthStatusBanner } from "../../src/features/auth/auth-ui";
 import { authStateName, describeAuthStatus } from "../../src/features/auth/auth-machine";
 import { useAuthStore } from "../../src/features/auth/auth-store";
+import { preparePlayerDeparture, usePushRegistration } from "../../src/features/notifications/use-push-registration";
+import { confirmPlayerReplacement } from "../../src/features/auth/confirm-player-replacement";
 
 export default function SignInScreen() {
+  const [switching, setSwitching] = useState(false);
   const hydrate = useAuthStore((state) => state.hydrate);
   const hydrated = useAuthStore((state) => state.hydrated);
   const configured = useAuthStore((state) => state.configured);
@@ -55,7 +58,7 @@ export default function SignInScreen() {
   }, [setMode]);
 
   const state = authStateName(form.status);
-  const busy = state === "submitting";
+  const busy = switching || state === "submitting";
 
   useEffect(() => {
     if (form.status.kind !== "signedIn") return;
@@ -72,9 +75,17 @@ export default function SignInScreen() {
     router.replace("/(tabs)/home");
   }, [form.status.kind]);
 
-  const submit = useCallback(() => {
-    void signIn(password);
-  }, [password, signIn]);
+  const submit = useCallback(async () => {
+    if (busy) return;
+    setSwitching(true);
+    try {
+      const expected = await confirmPlayerReplacement("Sign in instead");
+      if (!expected) return;
+      await preparePlayerDeparture();
+      await signIn(password, expected.userId);
+      await usePushRegistration.getState().restore();
+    } finally { setSwitching(false); }
+  }, [password, signIn, busy]);
 
   const message = describeAuthStatus(form.status);
   const tone =
@@ -98,8 +109,8 @@ export default function SignInScreen() {
           <View style={styles.titleBlock}>
             <AppText variant="pageTitle">Sign in</AppText>
             <AppText variant="caption" color="textSecondary">
-              An account syncs your chips and lets you play at server tables.
-              Practice, Learn and Career work without one.
+              Return to a player you previously secured with an email and password.
+              Your current player does not need credentials to play online.
             </AppText>
           </View>
 
@@ -167,12 +178,12 @@ export default function SignInScreen() {
           </SurfaceCard>
 
           <SurfaceCard>
-            <AppText variant="bodyStrong">No account yet?</AppText>
+            <AppText variant="bodyStrong">Keep your current player</AppText>
             <AppText variant="caption" color="textSecondary">
-              Creating one takes an email address and a username.
+              Add recovery credentials to this same player when you want to.
             </AppText>
             <Button
-              label="Create an account"
+              label="Secure this player"
               variant="secondary"
               size="medium"
               onPress={() => router.push("./create-account")}
@@ -186,13 +197,13 @@ export default function SignInScreen() {
             whether or not there is a server, and it is worded as a choice.
           */}
           <Button
-            label="Continue as guest"
+            label="Keep playing"
             variant="quiet"
             onPress={() => {
               void continueAsGuest();
               router.replace("/(tabs)/home");
             }}
-            accessibilityHint="Plays offline without an account"
+            accessibilityHint="Returns to Arc 21 without changing your player"
             testID="auth-guest"
           />
         </ScrollView>

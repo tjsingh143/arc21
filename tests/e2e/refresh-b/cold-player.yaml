@@ -1,0 +1,19 @@
+# HANDLE must be the server handle captured after fresh-player on this device.
+appId: com.arc21.app
+---
+- stopApp
+- launchApp:
+    clearState: false
+- openLink: arc21://profile
+- runFlow:
+    when:
+      visible: Open
+    commands:
+      - tapOn: Open
+- extendedWaitUntil:
+    visible:
+      id: profile-edit-name
+    timeout: 15000
+- assertVisible: '@${HANDLE}'
+- assertVisible: Secure your player
+- takeScreenshot: refresh-b-cold-same-player

@@ -1,3 +1,4 @@
+import { ConnectPlayerButton } from "../../src/components/ui/ConnectPlayerButton";
 /**
  * Social — the people you play with.
  *
@@ -92,7 +93,9 @@ export default function SocialScreen() {
   const unreadNotifications = useNotificationsStore((state) => state.unread);
   const loadNotifications = useNotificationsStore((state) => state.load);
   const offerPush = usePushRegistration((state) => state.offer);
-  const { settings, update: updateSettings } = useSettings();
+  // Loaded here so an offer is measured against the stored record; the offer
+  // reads it, and records its own narrow patch, itself (B-H2).
+  useSettings();
 
   const authSession = useAuthStore((state) => state.session);
   const authHydrated = useAuthStore((state) => state.hydrated);
@@ -122,7 +125,7 @@ export default function SocialScreen() {
     if (!authHydrated) return;
     clearSearch();
     void refresh();
-    void loadNotifications();
+    if (authSession?.account.userId) void loadNotifications();
   }, [authHydrated, authSession?.account.userId, clearSearch, refresh, loadNotifications]));
 
   /*
@@ -137,11 +140,10 @@ export default function SocialScreen() {
    */
   const onAccept = useCallback(
     async (playerId: string) => {
-      await acceptRequest(playerId);
-      const granted = await offerPush("accepted-friend-request", settings);
-      if (granted) await updateSettings(granted);
+      if (!await acceptRequest(playerId)) return;
+      await offerPush("accepted-friend-request");
     },
-    [acceptRequest, offerPush, settings, updateSettings],
+    [acceptRequest, offerPush],
   );
 
   const friends = useMemo(() => selectFriends(status), [status]);
@@ -185,7 +187,7 @@ export default function SocialScreen() {
           </SurfaceCard>
         ) : null}
 
-        {status.kind === "signed-out" ? <GuestState message={status.message} /> : null}
+        {status.kind === "signed-out" ? <OfflineState message={status.message} /> : null}
 
         {status.kind === "not-configured" ? (
           <SurfaceCard>
@@ -423,10 +425,10 @@ export default function SocialScreen() {
  * because the fear this screen has to answer is that signing in is required to
  * keep playing. It is not, and never will be.
  */
-function GuestState({ message }: { message: string }) {
+function OfflineState({ message }: { message: string }) {
   return (
     <SurfaceCard>
-      <AppText variant="sectionTitle">Friends need an account</AppText>
+      <AppText variant="sectionTitle">Connect with friends</AppText>
       <AppText variant="body" color="textSecondary">
         {message}
       </AppText>
@@ -435,18 +437,12 @@ function GuestState({ message }: { message: string }) {
         signed out, and never touches a server wallet, friends list or
         leaderboard.
       </AppText>
-      <Button
-        label="Sign in or create an account"
-        testID="friends-sign-in"
-        accessibilityHint="Opens the sign-in screen"
-        onPress={() => router.push("/(auth)/sign-in")}
-        style={styles.cta}
-      />
+      <ConnectPlayerButton testID="friends-connect" />
       <Button
         label="Play Practice"
         variant="secondary"
         testID="friends-practice"
-        accessibilityHint="Offline blackjack, no account needed"
+        accessibilityHint="Offline blackjack on this device"
         onPress={() => router.push("/game/practice")}
       />
     </SurfaceCard>

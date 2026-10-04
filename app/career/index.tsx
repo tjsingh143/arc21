@@ -1,3 +1,4 @@
+import { useAuthStore } from "../../src/features/auth/auth-store";
 /**
  * Career map — a vertical route of challenge cards.
  *
@@ -38,9 +39,10 @@ export default function CareerMapScreen() {
   const serverProgress = useCareerServerStore((state) => state.progress);
   const refreshServer = useCareerServerStore((state) => state.refresh);
 
+  const userId = useAuthStore((state) => state.session?.account.userId ?? null);
   useFocusEffect(useCallback(() => {
-    void refreshServer();
-  }, [refreshServer]));
+    if (userId) void refreshServer();
+  }, [userId, refreshServer]));
 
   /*
    * A node is unlocked by EITHER record.

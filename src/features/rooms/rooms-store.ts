@@ -1,3 +1,4 @@
+import { playerScopedSetter } from "../player/player-scope.js";
 /**
  * The private-table lobby, as state.
  *
@@ -95,43 +96,48 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
   setCodeInput: (raw) => set({ codeInput: normaliseRoomCode(raw), notice: null }),
 
   createRoom: async (maxSeats) => {
-    set({ status: { kind: "working" }, notice: null });
+    const setForPlayer = playerScopedSetter(set);
+    setForPlayer({ status: { kind: "working" }, notice: null });
     const created = await activeRoomsGateway().create(maxSeats);
     if (!created.ok) {
       // A refusal is usually "you already have a table open", which is a state
       // the player can fix — so it is a notice beside an idle screen, not a
       // dead end.
       if (created.reason === "refused") {
-        set({ status: { kind: "idle" }, notice: created.message });
+        setForPlayer({ status: { kind: "idle" }, notice: created.message });
         return;
       }
-      set({ status: statusForFailure(created) });
+      setForPlayer({ status: statusForFailure(created) });
       return;
     }
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(created.room.id);
   },
 
   joinRoom: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const code = get().codeInput;
     if (!looksLikeRoomCode(code)) {
-      set({ notice: "A table code is six letters and numbers." });
+      setForPlayer({ notice: "A table code is six letters and numbers." });
       return;
     }
 
-    set({ status: { kind: "working" }, notice: null });
+    setForPlayer({ status: { kind: "working" }, notice: null });
     const joined = await activeRoomsGateway().join(code);
     if (!joined.ok) {
       if (joined.reason === "refused") {
-        set({ status: { kind: "idle" }, notice: joined.message });
+        setForPlayer({ status: { kind: "idle" }, notice: joined.message });
         return;
       }
-      set({ status: statusForFailure(joined) });
+      setForPlayer({ status: statusForFailure(joined) });
       return;
     }
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(joined.room.id);
   },
 
   refresh: async (roomId?: string) => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     const id = roomId ?? (current.kind === "seated" ? current.state.room.id : null);
     if (!id) return;
@@ -150,13 +156,13 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
          * device: an endless bounce between the lobby and a table answering
          * `SESSION_CLOSED`.
          */
-        set({ status: { kind: "idle" }, dealt: null, notice: read.message });
+        setForPlayer({ status: { kind: "idle" }, dealt: null, notice: read.message });
         return;
       }
-      set({ status: statusForFailure(read) });
+      setForPlayer({ status: statusForFailure(read) });
       return;
     }
-    set({ status: { kind: "seated", state: read.state } });
+    setForPlayer({ status: { kind: "seated", state: read.state } });
 
     /*
      * The host is not the only person who has to reach the table.
@@ -171,6 +177,7 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
      * Resolved here rather than in the lobby so every seated client converges
      * on the same state whatever route it took in.
      */
+    if (!setForPlayer.isCurrent()) return;
     const gameSessionId = read.state.room.gameSessionId;
 
     /*
@@ -188,7 +195,7 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     const held = get().dealt;
     if (held !== null) {
       if (held.gameId === gameSessionId) return;
-      set({ dealt: null });
+      setForPlayer({ dealt: null });
     }
     if (gameSessionId === null) return;
 
@@ -196,11 +203,12 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
     // A missing seat is not an error worth surfacing: the next poll retries,
     // and the only thing it costs is three seconds.
     if (seat.ok && seat.seatId !== null) {
-      set({ dealt: { gameId: gameSessionId, seatId: seat.seatId } });
+      setForPlayer({ dealt: { gameId: gameSessionId, seatId: seat.seatId } });
     }
   },
 
   restore: async () => {
+    const setForPlayer = playerScopedSetter(set);
     /*
      * THE SERVER IS ASKED EVERY TIME, and the guard that used to stand here is
      * the defect this closes.
@@ -244,30 +252,34 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
        * its code, its members, its Deal button — for a room whose membership
        * ended when the seat settled.
        */
-      set({ dealt: null });
-      if (get().status.kind === "seated") set({ status: { kind: "idle" } });
+      setForPlayer({ dealt: null });
+      if (get().status.kind === "seated") setForPlayer({ status: { kind: "idle" } });
       return;
     }
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(found.room.id);
   },
 
   startTable: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "seated") return;
 
-    set({ notice: null });
+    setForPlayer({ notice: null });
     const started = await activeRoomsGateway().start(current.state.room.id);
     if (!started.ok) {
-      set({ notice: started.message });
+      setForPlayer({ notice: started.message });
       return;
     }
     // The room now points at a game; re-read so the lobby reflects it, and
     // hand the caller the ids it needs to open the table.
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(current.state.room.id);
-    set({ dealt: { gameId: started.gameId, seatId: started.seatId } });
+    setForPlayer({ dealt: { gameId: started.gameId, seatId: started.seatId } });
   },
 
   setReady: async (ready) => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "seated") return;
 
@@ -277,43 +289,47 @@ export const useRoomsStore = create<RoomsStoreState>((set, get) => ({
       // the entry screen rather than leaving a lobby on screen that is not
       // yours any more.
       if (result.reason === "refused") {
-        set({ status: { kind: "idle" }, dealt: null, notice: result.message });
+        setForPlayer({ status: { kind: "idle" }, dealt: null, notice: result.message });
         return;
       }
-      set({ notice: result.message });
+      setForPlayer({ notice: result.message });
       return;
     }
     // Re-read rather than patch: every other client sees the server's row, and
     // a local flag that disagreed with it would be the one thing on this screen
     // that was not the server's answer.
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(current.state.room.id);
   },
 
   removeMember: async (userId) => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "seated") return;
 
-    set({ notice: null });
+    setForPlayer({ notice: null });
     const result = await activeRoomsGateway().removeMember(current.state.room.id, userId);
     if (!result.ok) {
-      set({ notice: result.message });
+      setForPlayer({ notice: result.message });
       return;
     }
     if (!result.removed) {
       // The server refuses without explaining, so the client says the one thing
       // that is true of every refusal it can reach from this screen.
-      set({ notice: "That player could not be removed. A table that has started belongs to the server." });
+      setForPlayer({ notice: "That player could not be removed. A table that has started belongs to the server." });
     }
+    if (!setForPlayer.isCurrent()) return;
     await get().refresh(current.state.room.id);
   },
 
   leave: async () => {
+    const setForPlayer = playerScopedSetter(set);
     const current = get().status;
     if (current.kind !== "seated") return;
 
     await activeRoomsGateway().leave(current.state.room.id);
     // Left locally whatever the server said. The player asked to go, and a
     // failed leave that strands them in a lobby is the wrong failure direction.
-    set({ status: { kind: "idle" }, dealt: null, codeInput: "", notice: null });
+    setForPlayer({ status: { kind: "idle" }, dealt: null, codeInput: "", notice: null });
   },
 }));

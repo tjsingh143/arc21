@@ -253,6 +253,8 @@ suite("the sender records what actually happened", () => {
       p_platform: "ios",
       p_device_id: "integration",
       p_kinds: ["table_invite", "friend_request"],
+      // Device writes are ordered (B-H4); a device's first intent.
+      p_revision: 1,
     });
     expect(registered.status).toBeLessThan(300);
 
@@ -291,6 +293,7 @@ suite("the sender records what actually happened", () => {
       p_device_id: "integration-2",
       // Deliberately narrow: friend requests are NOT in this list.
       p_kinds: ["daily_challenge"],
+      p_revision: 1,
     });
 
     const frank = await createUser();

@@ -18,9 +18,16 @@
  * drops packets neither resolves nor rejects, and a friends list stuck on a
  * spinner forever is a worse failure than one that says the server is
  * unreachable.
+ *
+ * And every call is BOUND to the player who asked for it. Because the RPCs name
+ * only the other person, the acting player comes entirely from the JWT — so a
+ * session read held across a sign-in once sent a player's friend request as the
+ * player who replaced them, with the row landing in the database under the wrong
+ * sender. `player-binding.ts` is the mechanism and the whole story.
  */
 
 import type { ArcSupabaseClient } from "../../lib/supabase/client.js";
+import { bindCurrentPlayer, sentAs, type BoundPlayer } from "../../lib/supabase/player-binding.js";
 import { isTimedOut, withTimeout } from "../../lib/supabase/with-timeout.js";
 import {
   describeRpcFailure,
@@ -44,6 +51,15 @@ export type FriendsFailureReason =
   | "signed-out"
   /** No answer inside the timeout. */
   | "unreachable"
+  /**
+   * The app moved to a different player while this was being prepared, so it was
+   * never sent.
+   *
+   * Rarely rendered — the identity change has already cleared this screen — but
+   * it is a real answer and a borrowed one would be a lie: "signed out" is false
+   * (somebody is signed in) and "unreachable" blames a server nobody called.
+   */
+  | "stale-identity"
   /** The server answered, and the answer was a refusal. */
   | "refused";
 
@@ -212,14 +228,29 @@ export function createSupabaseFriendsGateway(
     return isTimedOut(result) ? null : result;
   }
 
-  /** `null` when there is a session; a stated failure when there is not. */
-  async function requireSession(): Promise<FriendsFailure | null> {
-    const session = await bounded(client.auth.getSession());
-    if (session === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
-    if (session.data.session === null) {
-      return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+  /**
+   * The player this call belongs to, or the stated reason there is none.
+   *
+   * Replaces a plain "is anybody signed in" check. Knowing that SOMEBODY has a
+   * session is not enough for a write: the request has to carry the credential of
+   * the player who asked for it, or the SDK will authenticate it as whoever is
+   * current when it leaves. See `player-binding.ts` — a friend request written by
+   * the wrong player was reproduced against the real backend.
+   *
+   * Called as the FIRST statement of every method here, so the scope it captures
+   * is the caller's.
+   */
+  async function bindPlayer(): Promise<{ readonly ok: true; readonly player: BoundPlayer } | FriendsFailure> {
+    const binding = await bindCurrentPlayer(client, timeoutMs);
+    if (binding.ok) return binding;
+    switch (binding.reason) {
+      case "unreachable":
+        return { ok: false, reason: "unreachable", message: UNREACHABLE };
+      case "signed-out":
+        return { ok: false, reason: "signed-out", message: SIGNED_OUT };
+      default:
+        return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
     }
-    return null;
   }
 
   /**
@@ -232,12 +263,23 @@ export function createSupabaseFriendsGateway(
    * typechecks and then silently does nothing at run time.
    */
   async function mutate(
-    run: () => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }>,
+    run: (
+      player: BoundPlayer,
+    ) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }>,
   ): Promise<RelationshipOutcome> {
-    const noSession = await requireSession();
-    if (noSession !== null) return noSession;
+    const bound = await bindPlayer();
+    if (!bound.ok) return bound;
 
-    const result = await bounded(run());
+    /*
+     * The last gate before the write. Nothing is awaited between the binding and
+     * here today, and this is what keeps that true: a check made earlier is not
+     * a check made now, and the whole defect was a guard that ran afterwards.
+     */
+    if (!bound.player.isCurrent()) {
+      return { ok: false, reason: "stale-identity", message: STALE_IDENTITY };
+    }
+
+    const result = await bounded(run(bound.player));
     if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
 
     if (result.error) {
@@ -254,10 +296,10 @@ export function createSupabaseFriendsGateway(
     kind: "supabase",
 
     async load(): Promise<FriendsLoadOutcome> {
-      const noSession = await requireSession();
-      if (noSession !== null) return noSession;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
-      const friendsResult = await bounded(client.rpc("list_friends"));
+      const friendsResult = await bounded(sentAs(client.rpc("list_friends"), bound.player));
       if (friendsResult === null) {
         return { ok: false, reason: "unreachable", message: UNREACHABLE };
       }
@@ -274,7 +316,9 @@ export function createSupabaseFriendsGateway(
        * become a stated absence instead, exactly as the wallet keeps a balance
        * whose ledger page did not arrive.
        */
-      const requestsResult = await bounded(client.rpc("list_friend_requests"));
+      const requestsResult = await bounded(
+        sentAs(client.rpc("list_friend_requests"), bound.player),
+      );
       const requestsFailed = requestsResult === null || requestsResult.error !== null;
 
       const friends = toFriends(asRows(friendsResult.data));
@@ -292,10 +336,17 @@ export function createSupabaseFriendsGateway(
     },
 
     async search(query: string): Promise<FriendsSearchOutcome> {
-      const noSession = await requireSession();
-      if (noSession !== null) return noSession;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
-      const result = await bounded(client.rpc("search_players", { p_query: query }));
+      /*
+       * Bound like the writes, and not only for tidiness: this RPC is
+       * rate-limited, so a search issued after the switch would spend the
+       * REPLACEMENT player's budget on a query they never typed.
+       */
+      const result = await bounded(
+        sentAs(client.rpc("search_players", { p_query: query }), bound.player),
+      );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
         if (result.error.code === NO_SESSION_CODE) {
@@ -319,10 +370,10 @@ export function createSupabaseFriendsGateway(
     },
 
     async listBlocked(): Promise<BlockedLoadOutcome> {
-      const noSession = await requireSession();
-      if (noSession !== null) return noSession;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
-      const result = await bounded(client.rpc("list_blocked"));
+      const result = await bounded(sentAs(client.rpc("list_blocked"), bound.player));
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
         if (result.error.code === NO_SESSION_CODE) {
@@ -336,11 +387,11 @@ export function createSupabaseFriendsGateway(
     },
 
     async profile(playerId: string): Promise<PlayerProfileOutcome> {
-      const noSession = await requireSession();
-      if (noSession !== null) return noSession;
+      const bound = await bindPlayer();
+      if (!bound.ok) return bound;
 
       const result = await bounded(
-        client.rpc("player_public_profile", { p_user_id: playerId }),
+        sentAs(client.rpc("player_public_profile", { p_user_id: playerId }), bound.player),
       );
       if (result === null) return { ok: false, reason: "unreachable", message: UNREACHABLE };
       if (result.error) {
@@ -355,12 +406,18 @@ export function createSupabaseFriendsGateway(
       return { ok: true, profile: toPlayerProfile(result.data) };
     },
 
-    sendRequest: (playerId) => mutate(() => client.rpc("send_friend_request", { p_to: playerId })),
-    acceptRequest: (playerId) => mutate(() => client.rpc("accept_friend_request", { p_from: playerId })),
-    declineRequest: (playerId) => mutate(() => client.rpc("decline_friend_request", { p_from: playerId })),
-    removeFriend: (playerId) => mutate(() => client.rpc("remove_friend", { p_other: playerId })),
-    blockPlayer: (playerId) => mutate(() => client.rpc("block_player", { p_other: playerId })),
-    unblockPlayer: (playerId) => mutate(() => client.rpc("unblock_player", { p_other: playerId })),
+    sendRequest: (playerId) =>
+      mutate((player) => sentAs(client.rpc("send_friend_request", { p_to: playerId }), player)),
+    acceptRequest: (playerId) =>
+      mutate((player) => sentAs(client.rpc("accept_friend_request", { p_from: playerId }), player)),
+    declineRequest: (playerId) =>
+      mutate((player) => sentAs(client.rpc("decline_friend_request", { p_from: playerId }), player)),
+    removeFriend: (playerId) =>
+      mutate((player) => sentAs(client.rpc("remove_friend", { p_other: playerId }), player)),
+    blockPlayer: (playerId) =>
+      mutate((player) => sentAs(client.rpc("block_player", { p_other: playerId }), player)),
+    unblockPlayer: (playerId) =>
+      mutate((player) => sentAs(client.rpc("unblock_player", { p_other: playerId }), player)),
   };
 }
 
@@ -374,7 +431,13 @@ function asRows(data: unknown): readonly unknown[] {
 
 const UNREACHABLE = "Could not reach the server, so your friends are not shown.";
 const SIGNED_OUT =
-  "Friends need an Arc 21 account. Practice stays on this device and works either way.";
+  "Connect to find players and use friends. No email or password is needed.";
+/*
+ * Never "that failed". Nothing was sent, and nothing was changed for either
+ * player — which is the only claim this sentence is allowed to make.
+ */
+const STALE_IDENTITY =
+  "You are signed in as a different player now, so that was not sent. Nothing has been changed.";
 const LIST_REFUSED = "Your friends list could not be read. Nothing has been changed.";
 const REQUESTS_REFUSED = "Your pending requests could not be read. Nothing has been changed.";
 const SEARCH_REFUSED = "That search could not be run. Nothing has been changed.";
