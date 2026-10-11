@@ -1,9 +1,12 @@
 # Arc 21 Launch State
 
-**Latest completed work:** [Astra Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
+**Latest completed work:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
 **PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software
-defects: 0.** Local checkpoint subject: `Complete Astra Refresh B pseudonymous user system`.
-No push or deployment; Refresh C/D/E has not begun. External activation remains.
+defects: 0.** The implementation is published in this repository; both hosted CI
+jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`
+([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)).
+No store submission or cloud deployment is established. Refresh C/D/E has not
+begun here. External activation remains.
 
 Read [baseline-audit.md](./astra-refresh/baseline-audit.md) for the historical
 22 verified findings, native/backend evidence, final gates and local checkpoint.

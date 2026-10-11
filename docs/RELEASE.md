@@ -3,11 +3,13 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Current local software verdict:** **ASTRA REFRESH B: PASS**, October 4, 2026.
+**Current local software verdict:** **REFRESH B: PASS**, October 4, 2026.
 **KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**.
 See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
-for closure evidence and external/unproven items. Local checkpoint only; no push
-or deployment. Refresh C/D/E has not begun.
+for closure evidence and external/unproven items. The implementation is now
+published in this repository, with both hosted CI jobs passing at
+`059ee0ba9b848254fecd024daae7e2a60be374aa`. Store submission and cloud deployment
+remain unverified. Refresh C/D/E has not begun here.
 
 **Historical Refresh A verification:** 2026-09-14 PDT.
 
@@ -21,7 +23,7 @@ coverage tests with per-area thresholds, 320 real server tests, 592 SQL
 assertions, a clean reset of all 59 migrations and the final iOS Release
 installed on both simulators. Final postflight confirms wallet/ledger equality,
 restored permissions and running application services. These counts and verdicts
-belong to Refresh A only. Refresh B has not been pushed, submitted or deployed.
+belong to Refresh A only. Refresh B is published to GitHub; no store submission or cloud deployment is established.
 
 The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
 four advisories across 18 package entries and explains their actual runtime/build

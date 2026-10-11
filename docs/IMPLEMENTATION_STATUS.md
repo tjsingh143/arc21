@@ -1,5 +1,12 @@
 # Arc 21 — Implementation Status
 
+> **Historical release record.** Current source has completed Refresh B; its
+> bounded closure review passed on October 4, 2026. Read
+> [the current launch index](LAUNCH_STATE.md) and
+> [Refresh B closure evidence](astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
+> for the latest repository state. Earlier dates, measurements and decisions
+> below retain their original scope. (Pointer added October 11, 2026.)
+
 > **Arc 21 is a temporary development codename.** It has not been trademark-cleared.
 > Arc 21 is a simulated card game. Virtual chips have no monetary value, cannot be
 > withdrawn, and cannot be exchanged for money or prizes.

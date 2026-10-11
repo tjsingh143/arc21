@@ -1,5 +1,12 @@
 # Arc 21 — Phase 12, Production Release Candidate
 
+> **Historical release record.** Current source has completed Refresh B; its
+> bounded closure review passed on October 4, 2026. Read
+> [the current launch index](LAUNCH_STATE.md) and
+> [Refresh B closure evidence](astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
+> for the latest repository state. Earlier dates, measurements and decisions
+> below retain their original scope. (Pointer added October 11, 2026.)
+
 **Date:** 2026-09-04
 **Branch:** `phase14-s2-security`
 **Code head this phase started from:** `08b0326` (documentation-only ahead of
