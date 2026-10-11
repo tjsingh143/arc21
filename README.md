@@ -32,6 +32,8 @@ remain outside the verified release evidence.
 Where to read the current state:
 
 - [Launch state](docs/LAUNCH_STATE.md) — current release index.
+- [October 11 SDK maintenance](docs/CI_MAINTENANCE_2026_10_11.md) — current
+  SDK 57 patch alignment, portable checks, and retained CI timeout evidence.
 - [Refresh B closure](docs/astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
   — implementation, regression evidence, and remaining limits.
 - [Release readiness](docs/RELEASE.md) — external activation requirements.
@@ -40,8 +42,8 @@ Where to read the current state:
 
 ## Getting started
 
-Requires Node 22+ (CI and every recorded local run use Node 26), plus Docker and
-the Supabase CLI for the backend.
+Requires Node 22+, plus Docker and the Supabase CLI for the backend. Hosted CI
+pins Node 26; the October 11 portable maintenance checks also passed on Node 24.19.0.
 
 ```bash
 npm ci
