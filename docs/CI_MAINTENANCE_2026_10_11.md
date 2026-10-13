@@ -62,3 +62,18 @@ The dependency-maintenance commit triggers a fresh complete hosted workflow.
 Its result is linked from the account-wide audit record. Native simulator and
 physical-device tests, Android builds, cloud deployment, store submission and
 live push delivery were not repeated for this patch update.
+
+## SDK patch follow-up — October 13, 2026
+
+The neutral documentation update triggered [run 38336126475](https://github.com/tjsingh143/arc21/actions/runs/38336126475). Its database job passed; the application job passed lint, typecheck, Edge Function checks, unit tests and coverage, then Expo Doctor found four newer SDK 57 requirements. The original failed run remains in workflow history.
+
+| Package | Previous locked version | Updated locked version |
+|---|---|---|
+| expo | 57.0.27 | 57.0.28 |
+| expo-crypto | 57.0.3 | 57.0.4 |
+| expo-router | 57.0.25 | 57.0.26 |
+| expo-splash-screen | 57.0.9 | 57.0.10 |
+
+The package manager resolved the associated dependencies within SDK 57. Optional-platform metadata on 20 unchanged packages was preserved. No dependency was excluded from validation, and no test assertion or timeout was changed.
+
+The resulting lockfile installed with `npm ci`. Local typecheck passed, Expo Doctor passed 21/21, and a cold two-pass iOS Hermes export produced the 6.4 MB bundle. A fresh full hosted workflow verifies the published dependency update; its result is linked from the account audit. This is dependency maintenance, not a new native-device, Android, deployment, store or live-push verification.
