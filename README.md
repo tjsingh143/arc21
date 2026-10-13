@@ -137,3 +137,5 @@ The engine exists to make these true, and the test suite exists to keep them tru
 [Project portfolio](https://drive.google.com/drive/folders/1TZOI26W1vDebR4cEnA-JnhNpGNTCFuOY) contains the project overview, architecture,
 code examples, testing notes, and supporting evidence. Portfolio measurements
 retain their stated snapshot and verification boundaries.
+
+[Review entry point](https://drive.google.com/file/d/1MLABU2Y_iZAQuzPHN2MqA0qQuWsqjAL-/view?usp=drivesdk) · [Overview](https://drive.google.com/file/d/1JOdDQEyl_TtFdlJOov9uHfI00MnqHFAV/view?usp=drivesdk) · [Testing](https://drive.google.com/file/d/1BXVJ2G-8JGh8UvxOyzuIS9rvEPVNktPm/view?usp=drivesdk) · [Code samples](https://drive.google.com/file/d/13V14LeAI4aziC_QEEYzQYtlsF2ndLjG4/view?usp=drivesdk)
