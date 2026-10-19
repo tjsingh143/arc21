@@ -51,6 +51,20 @@ export interface PublicSeat {
   connected: boolean;
   sittingOut: boolean;
   betLocked: boolean;
+  /**
+   * Present, and true, only on a computer-controlled seat at an AI Table.
+   *
+   * ABSENT rather than `false` on every other seat, for the reason `outcome`
+   * is absent on an unsettled hand: the wire contract is strict, so a key an
+   * older client has never heard of would make it refuse EVERY table's snapshot.
+   * Emitted only where it is true, the payload of every existing table is byte
+   * for byte what it was, and only a table that really does seat computer
+   * players carries anything new.
+   *
+   * It is the client's ONLY way to tell a computer player from a person. A
+   * display name is not that: names are free text a player chooses.
+   */
+  isAi?: true;
 }
 
 export interface PublicGameState {
@@ -139,6 +153,7 @@ export function toPublicState(state: BlackjackGameState): PublicGameState {
     connected: seat.connected,
     sittingOut: seat.sittingOut,
     betLocked: seat.betLocked,
+    ...(seat.isAi === true ? { isAi: true as const } : {}),
     hands: seat.hands.map((hand) => {
       const value = evaluatePlayerHand(hand, rules.splitAceTwentyOneIsBlackjack);
       return {

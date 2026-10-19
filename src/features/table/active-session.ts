@@ -43,6 +43,7 @@ export const ACTIVE_SESSION_MODES = [
   "tournament",
   "daily_challenge",
   "career",
+  "ai_table",
 ] as const;
 
 export type ActiveSessionMode = (typeof ACTIVE_SESSION_MODES)[number];
@@ -121,6 +122,8 @@ export function describeActiveSessionMode(mode: ActiveSessionMode): string {
       return "Daily Challenge";
     case "career":
       return "Career";
+    case "ai_table":
+      return "AI Table";
     case "practice":
       return "Practice";
   }
@@ -149,6 +152,48 @@ export function resumeTargetFor(session: ActiveSession): ResumeTarget {
 }
 
 /**
+ * The modes whose table chips came OUT of the wallet and go back INTO it when
+ * the seat closes: Quick Play and a public table. Every other mode is a closed
+ * economy — a private table, a tournament, the daily challenge, a career node
+ * and an AI table — whose chips are created at the table and end with it.
+ *
+ * Mirrors `WALLET_BACKED_MODES` in
+ * `supabase/functions/_shared/session-economics.ts`, which is the answer that is
+ * ENFORCED; `tests/table/active-session.test.ts` holds the two equal. This copy
+ * decides only what the app SAYS — and saying chips come back from a table
+ * whose chips cannot leave it would be a promise the server will not keep.
+ */
+export const WALLET_BACKED_SESSION_MODES = ["solo", "public_table"] as const;
+
+export function chipsReturnToWallet(mode: ActiveSessionMode): boolean {
+  return (WALLET_BACKED_SESSION_MODES as readonly string[]).includes(mode);
+}
+
+/**
+ * The modes whose tables carry NO clock: Quick Play, the daily challenge, a
+ * career node and an AI table — the tables `create-session` opens with
+ * `SOLO_TIMING` or `AI_TABLE_TIMING`, both `null`. Nothing there waits on
+ * anybody but the person, so no deadline exists to stand a hand for them: once
+ * a hand is dealt, only the person's own commands can finish it (at an AI
+ * table, the computer players act inside those commands and never start or end
+ * a turn of theirs). Every other mode is timed and its clock applies the stated
+ * default — stand, decline insurance — to an absent player.
+ *
+ * Refresh C (audit C-4) added it: a leave held mid-hand at an AI table told the
+ * person "You do not need to do anything else", and the hand then sat at their
+ * turn for ever. `tests/server/ai-table.integration.test.ts` measures the
+ * server half (`deadlineAt` null, RESOLVE_TIMEOUT refused).
+ */
+export const UNTIMED_SESSION_MODES = ["solo", "daily_challenge", "career", "ai_table"] as const;
+
+/** What ends a hand the player has asked to leave: their own play, or the table's clock. */
+export type HandCompletion = "player" | "clock" | "unknown";
+
+export function handCompletionForMode(mode: ActiveSessionMode): Exclude<HandCompletion, "unknown"> {
+  return (UNTIMED_SESSION_MODES as readonly string[]).includes(mode) ? "player" : "clock";
+}
+
+/**
  * The line shown beside the resume control.
  *
  * It names no chip figure. The stack at a table is the server's number and this
@@ -158,8 +203,14 @@ export function resumeTargetFor(session: ActiveSession): ResumeTarget {
  * player staring at a smaller balance actually needs.
  */
 export function describeActiveSession(session: ActiveSession): string {
+  // Said in full rather than through the template below, which would produce
+  // "a AI Table table". The facts are the closed-economy ones: nothing of the
+  // player's is at an AI table to come back, so nothing is promised.
+  if (session.mode === "ai_table") {
+    return "You are still seated at your AI table. Return to it to play on or to leave.";
+  }
   const name = describeActiveSessionMode(session.mode);
-  const chipsAreEscrowed = session.mode === "solo" || session.mode === "public_table";
+  const chipsAreEscrowed = chipsReturnToWallet(session.mode);
   return chipsAreEscrowed
     ? `You are still seated at a ${name} table, and your buy-in is there. Return to it to play on or to leave and take your chips back.`
     : `You are still seated at a ${name} table. Return to it to play on or to leave.`;

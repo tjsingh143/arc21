@@ -23,46 +23,81 @@
  * table can reach it.
  */
 
+/**
+ * The modes whose chips are the table's own and whose broke seats may start
+ * again: a private table and, since Astra Refresh C, an AI table.
+ *
+ * Mirrors `FREE_STACK_RESET_MODES` in
+ * `supabase/functions/_shared/session-economics.ts`, which is the server's
+ * answer and the one that is enforced; `tests/table/broke-affordance.test.ts`
+ * holds the two equal. This copy decides only what an honest client draws.
+ */
+export const FREE_RESET_TABLE_MODES = ["private_table", "ai_table"] as const;
+
+export function offersFreeReset(mode: string): boolean {
+  return (FREE_RESET_TABLE_MODES as readonly string[]).includes(mode);
+}
+
 /** Phases and states in which the free reset is worth offering. */
 export interface BrokeSeatView {
   /**
-   * Whether this table's chips are the table's own.
+   * Whether this table's chips are the table's own — a private table or an AI
+   * table, by `offersFreeReset`.
    *
    * Read from `my_active_session()`, which derives the mode server-side from
    * the session row — not from a route parameter, which a stack-resetting deep
    * link or a stale navigation can carry from the table before. The server
    * checks the mode again anyway; this decides only what an honest client draws.
    */
-  readonly isPrivateTable: boolean;
+  readonly freeResetTable: boolean;
   /** The phase from the server's snapshot. */
   readonly phase: string;
   /** This seat's `sittingOut`, from the server's snapshot. */
   readonly sittingOut: boolean;
   /** This seat's `connected`, from the server's snapshot. */
   readonly connected: boolean;
+  /**
+   * Whether this seat can still put chips on the felt, or already has: the
+   * server's `canPlaceBet || canLockBet` for the seat, or its `betLocked`.
+   *
+   * False is the broke state seen from the other side. A seat whose stack
+   * cannot cover the minimum is offered neither control by `getLegalActions`,
+   * and that is true BEFORE anything sits it out.
+   */
+  readonly canStake: boolean;
 }
 
 /**
  * May the table offer a free reset?
  *
- * `sittingOut` during `BETTING_OPEN` is exactly the stuck state and nothing
- * else. The engine sets it there for three reasons — a competition holding a
- * seat out of one hand, a seat that has DEPARTED, and a stack that cannot cover
- * the minimum — and only the third can be true of a connected seat at a private
- * table, which is why `connected` is part of the question rather than assumed.
+ * Two shapes of the same stuck seat, in the betting window:
+ *
+ *   * `sittingOut`. The engine sets it in betting for three reasons — a
+ *     competition holding a seat out of one hand, a seat that has DEPARTED, and
+ *     a betting deadline that lapsed on a stack that could not cover the
+ *     minimum — and only the last can be true of a connected seat at a private
+ *     table, which is why `connected` is part of the question rather than
+ *     assumed.
+ *   * NOT sitting out, and unable to stake. Nothing sits a broke seat out except
+ *     a lapsed betting clock, and an AI table carries no clock — so without this
+ *     branch a player who ran out of chips there would face "Waiting for the next
+ *     hand." with no deadline ever coming to change it. At a private table it is
+ *     the fifteen seconds before that clock lapses, and the reset is the right
+ *     offer there too: the server's own guard is "the stack cannot cover the
+ *     minimum", which is exactly what an empty legal set at this phase means.
  *
  * Deliberately not offered at `HAND_COMPLETE`, where a seat that has just lost
- * its last chips still reads as playing: the engine has not sat it out yet, so
- * the snapshot cannot yet distinguish it from a seat about to bet again. One
- * beat later the betting window opens, the flag is set, and the offer appears
- * beside the reason for it. Offering it earlier would mean guessing, and a
- * guess here is a "refill" button beside a stack that is merely small.
+ * its last chips still reads as playing and `getLegalActions` offers it only the
+ * next hand, so the snapshot cannot yet say whether it can bet again. One beat
+ * later the betting window opens and the answer is on the snapshot. Offering it
+ * earlier would mean guessing, and a guess here is a "refill" button beside a
+ * stack that is merely small.
  */
 export function mayResetPrivateStack(view: BrokeSeatView): boolean {
-  if (!view.isPrivateTable) return false;
+  if (!view.freeResetTable) return false;
   if (view.phase !== "BETTING_OPEN") return false;
   if (!view.connected) return false;
-  return view.sittingOut;
+  return view.sittingOut || !view.canStake;
 }
 
 /**

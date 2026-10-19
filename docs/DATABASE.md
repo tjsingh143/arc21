@@ -39,9 +39,43 @@ extension is never installed into a deployed database.
 
 ---
 
+## Refresh-C forward migrations (AI Tables)
+
+The current head is `20261017120000_ai_table_open_requests.sql`, the repair for
+the Refresh C audit's finding C-2: `private.ai_table_open_requests` records which
+table each `(player, clientRequestId)` was answered with, written by
+`create-session` in the transaction that answers it, so a replayed
+`OPEN_AI_TABLE` — including one that arrives after the table has closed — is
+answered with that table and opens nothing. It lives in `private` with no grant to
+any API role and RLS enabled, cascades from `profiles` and from `game_sessions`,
+and ends with `assert_client_authorization_surface()`. Applied forward with
+`supabase migration up --local` over the existing local database (history row and
+table both checked afterwards). Rolling it back is `drop table`; nothing else
+references it. **33 pgTAP files / 672 assertions** pass, 32 of them in
+`33_ai_tables.test.sql`.
+
+The one-live-seat repair for finding C-1 needs no schema: it is a per-player
+transaction advisory lock (`seat_admission:<user>`) taken by every admission path
+through `assertNoOtherLiveSeat` in `create-session` — for a private deal, by every
+member, ordered by lock key — and the check reads seats and pending sprint entries
+in ONE statement, so one snapshot answers both. Still no schema change. See
+[Refresh C §13](./astra-refresh/refresh-c.md).
+
+Before it, the head was `20261005120000_ai_tables.sql`: the `ai_table` game mode, an
+explicit `game_session_seats.is_ai` marker (a computer player is never an account
+and never buys in — both CHECK constraints), and `guard_ai_seat_placement`, a
+trigger that refuses a computer-player seat at any table but an AI table and a
+second person at one. No client grant changes. It is ONE transaction on purpose:
+a `commit; begin;` split left everything after the `begin;` uncommitted under
+`supabase migration up` while the CLI reported success (measured; see
+[Refresh C §8](./astra-refresh/refresh-c.md)). Applied forward over the existing
+local seats and from scratch; **33 pgTAP files / 665 assertions** pass, 25 of them
+in `33_ai_tables.test.sql`. An AI table moves no chip and writes no ledger row,
+so nothing here touches the economy schema.
+
 ## Refresh-B forward migration
 
-The current head is `20261004120000_push_registration_intent_order.sql`:
+The Refresh-B head was `20261004120000_push_registration_intent_order.sql`:
 per-token revisions order push registration and retirement at Postgres, with
 old RPC signatures removed and existing authorization boundaries preserved.
 The closure run passed **32 pgTAP files / 640 assertions**, including 30 for this
@@ -417,8 +451,9 @@ suite.
 The specification asks that migrations be "reversible where reasonable or include
 documented recovery". This is the position for every one of them, so that a bad
 deploy is answered by reading rather than by improvising. The count was
-forty-four when this section was written and is **sixty-one** for Refresh B. The
-seventeen added since mostly add DDL, replace function bodies, or narrow policies.
+forty-four when this section was written, **sixty-one** for Refresh B and
+**sixty-three** for Refresh C (sixty-two before the audit repair). The
+eighteen added since mostly add DDL, replace function bodies, or narrow policies.
 The Career attempt repair also recomputes a derived aggregate, as described
 below. One index change needs a sentence of its own:
 `20260906120000_seat_index_reuse.sql` DROPS `game_session_seats_unique_index`
@@ -440,6 +475,15 @@ from the retained `career_attempts` rows. Re-running that aggregate repair is
 idempotent; it changes no chips, XP, stars or rewards. Restoring the old function
 would reintroduce double counting. `30_career_attempt_counts.test.sql` covers
 the repair and repeat-completion behavior.
+
+`20261005120000_ai_tables.sql` adds the `ai_table` label to `game_mode` — which,
+like `recovery_grant`, cannot be removed, and an unused label costs nothing — plus
+the `is_ai` column, its two CHECK constraints and the placement trigger. Dropping
+the trigger, the constraints and the column restores the prior shape; every seat
+that existed before it reads `is_ai = false`, and AI tables move no chip, so no
+ledger or wallet row depends on any of it. Dropping the column while AI-table
+sessions exist would leave their computer seats indistinguishable from account
+seats whose owner was deleted, so end or delete those sessions first.
 
 **There is no down-migration framework, and adding one would be worse than not
 having it.** A `down.sql` that nobody runs is a file that describes a rollback
@@ -514,7 +558,7 @@ bites on three of them, and it is worth naming which:
 
 ### The forward guarantee, which is the one that is actually tested
 
-`supabase db reset` applies all sixty-one from an empty database when the clean-stack
+`supabase db reset` applies all sixty-three from an empty database when the clean-stack
 gate runs, and `20260818120000_authorization_gate.sql` fails the migration
 if the authorization surface is wrong when it finishes. A migration that cannot
 apply cleanly from scratch is caught before it is ever deployed, which is the
@@ -570,6 +614,10 @@ supabase/tests/
   30_career_attempt_counts.test.sql  authoritative attempt counts
   31_pseudonymous_identity.test.sql  generated handles, one grant, social privacy
   32_push_intent_order.test.sql  per-token intent ordering and authorization
+  33_ai_tables.test.sql          computer-player seats: never an account, never
+                                 bought in, refused at every table but an AI
+                                 table, one person per AI table, invisible to
+                                 strangers
 ```
 
 **Refresh-B closure run: 640 assertions across 32 files.** They test authorization by **acting as the

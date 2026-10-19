@@ -38,8 +38,10 @@ import type { PublicGameState, RandomSource } from "../../../shared/blackjack/in
 import {
   accountForSettlement,
   isEmptyAccounting,
+  recordsHandSettlement,
   SERVER_DAILY_REPEATABLE_XP_CAP,
 } from "../_shared/settlement-accounting.ts";
+import { driveAiSeats } from "../_shared/ai-seat-driver.ts";
 import { authenticate } from "../_shared/identity.ts";
 import { classify, CommandError, toRejectedResponse } from "../_shared/command-errors.ts";
 import {
@@ -73,7 +75,7 @@ import {
   totalChipsAtTable,
 } from "../_shared/session-repository.ts";
 import { settleTableClosure } from "../_shared/close-table.ts";
-import { chipsCameFromWallet } from "../_shared/session-economics.ts";
+import { chipsCameFromWallet, seatsComputerPlayers } from "../_shared/session-economics.ts";
 import { commandStartsNextHand, resolveHandBoundary } from "../_shared/session-boundary.ts";
 import { careerNodeBySlug } from "../_shared/career/index.ts";
 import { dailyShoeSource } from "../_shared/daily-challenge.ts";
@@ -418,6 +420,17 @@ async function handle(
     };
   }
 
+  /*
+   * A computer seat outside an AI table is not a configuration, it is a breach:
+   * the database refuses to store one (`guard_ai_seat_placement`), and nothing
+   * here would ever act for it, so the table could never move again. Refused
+   * before anything is applied rather than played around.
+   */
+  const seatsAi = seatsComputerPlayers(session.mode);
+  if (!seatsAi && state.seats.some((candidate) => candidate.isAi === true)) {
+    throw new CommandError("INTERNAL", `a ${session.mode} session holds an AI seat`);
+  }
+
   // --- Legality on authoritative state ------------------------------------
   assertCommandIsLegal(state, seat.id, command);
 
@@ -491,10 +504,31 @@ async function handle(
 
   // --- Apply ---------------------------------------------------------------
   const engineCommand = toEngineCommand(command, seat.id, now);
-  const { state: nextState, events } = applyCommand(state, engineCommand, {
-    random: await shoeSourceFor(tx, session, command.gameId, state),
-    now,
-  });
+  const context = { random: await shoeSourceFor(tx, session, command.gameId, state), now };
+  const commanded = applyCommand(state, engineCommand, context);
+
+  /*
+   * --- The computer players, in this same transaction ----------------------
+   *
+   * At an AI table the person's command can hand a decision to a computer
+   * seat — their lock closes betting, their stand passes the turn — and there is
+   * no other process that could take it. So every decision the table is now
+   * waiting on from a computer player is made HERE, through the same legality
+   * gate and the same engine as the command above, before anything is
+   * persisted: the events, the snapshot, the broadcast and the idempotency
+   * record below all describe the table as the person will next find it, which
+   * is waiting on them, resting, or over.
+   *
+   * A replay of this command never reaches this point — it is answered from
+   * `private.game_commands` above — so a lost reply cannot make a computer
+   * player act twice. See `_shared/ai-seat-driver.ts` for the bound.
+   */
+  const drive = seatsAi
+    ? driveAiSeats(commanded.state, context)
+    : { state: commanded.state, events: [], actions: [] };
+  const nextState = drive.state;
+  const events = [...commanded.events, ...drive.events];
+  if (drive.actions.length > 0) log.aiDecisions = drive.actions.length;
 
   const seatState = nextState.seats.find((candidate) => candidate.seatId === seat.id);
   if (!seatState) throw new CommandError("INTERNAL", "seat vanished from engine state");
@@ -578,8 +612,13 @@ async function handle(
   // One command can settle every hand at a shared table. Each authenticated
   // seat owns its own events, regardless of who stood or resolved the timeout.
   // The engine lock and command replay gate cover this entire transaction.
+  //
+  // Only for a mode that records hands at all: an AI table records none, so a
+  // hand against computer players moves no statistic and pays no XP — see
+  // `SETTLEMENT_RECORDING_MODES`. A computer seat has no account and is skipped
+  // by the `userId` check in any mode.
   const persistedSeats = [...nextState.seats].sort((a, b) => a.seatId.localeCompare(b.seatId));
-  for (const settledSeat of persistedSeats) {
+  for (const settledSeat of recordsHandSettlement(session.mode) ? persistedSeats : []) {
     if (!settledSeat.userId) continue;
     const accounting = accountForSettlement(events, settledSeat.seatId);
     if (isEmptyAccounting(accounting)) continue;

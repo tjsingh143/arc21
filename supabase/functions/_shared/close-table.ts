@@ -103,9 +103,17 @@ export async function settleTableClosure(
    * SESSION_COMPLETE, and the remaining player's next command came back
    * SESSION_CLOSED with their bet already staged. A tournament makes the same
    * demand — three people must keep playing after a fourth quits.
+   *
+   * ONLY PEOPLE KEEP A TABLE OPEN. A computer player at an AI table is always
+   * `connected` — nothing ever disconnects it but its own LEAVE — so counting it
+   * here would leave the table running for nobody once its one person had gone:
+   * an `active` session nobody can address, whose computer players would never
+   * be asked to act again. They exist to play with the person; when the person
+   * leaves, the table ends.
    */
   const sessionEnded = !params.state.seats.some(
-    (candidate) => candidate.seatId !== params.seatId && candidate.connected,
+    (candidate) =>
+      candidate.seatId !== params.seatId && candidate.connected && candidate.isAi !== true,
   );
 
   if (sessionEnded) {

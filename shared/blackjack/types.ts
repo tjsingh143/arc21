@@ -266,6 +266,30 @@ export interface SeatState {
    * here is and can. Optional so states persisted before it existed still load.
    */
   sitOutNextHand?: boolean;
+  /**
+   * True for a COMPUTER-CONTROLLED participant at an AI Table. Absent for every
+   * other seat — a person's, a local Practice seat, a vacated slot.
+   *
+   * THE ENGINE NEVER READS IT. A rule that treated an AI seat differently would
+   * be a second set of rules, and there is one: an AI seat is dealt from the
+   * same shoe, offered the same legal actions and settled by the same code as
+   * anybody else (`tests/engine/ai-seat.test.ts` proves the reducer is blind to
+   * it). The flag exists for two readers outside the rules: the sanitised
+   * snapshot, so a client can LABEL the seat — the specification's "explicitly
+   * labeled" computer seats — and the server, which must know which seats it
+   * answers for.
+   *
+   * `userId: null` cannot carry that meaning on its own. It is also null for a
+   * Practice seat, and the database's copy of it is null for a seat whose
+   * account was deleted, so "no account" and "a computer player" would be
+   * indistinguishable. An AI seat never carries an account: `createGame`
+   * refuses the combination, and so does a CHECK constraint on
+   * `game_session_seats`.
+   *
+   * Optional, like `sitOutNextHand`, so states persisted before it existed load
+   * unchanged and every human seat serialises exactly as it always has.
+   */
+  isAi?: boolean;
 }
 
 export interface DealerState {

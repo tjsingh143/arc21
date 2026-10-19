@@ -1,12 +1,30 @@
 # Arc 21 Launch State
 
-**Latest completed work:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
+**Refresh C — approved and published, integration pending:**
+[AI Tables](./astra-refresh/refresh-c.md) was committed as
+`554defeb76c073703004bc10fa3c5ef8a63b88d2` on `refresh-c-ai-tables` and
+published in [PR #5](https://github.com/tjsingh143/arc21/pull/5), which is open.
+The earlier independent reviews returned **ASTRA REFRESH C: FAIL**; the four
+findings and the private-admission closure finding were repaired (§13–14).
+The final independent verdict supplied in the approved publication handoff is
+**ASTRA REFRESH C: PASS**: 439 server tests, 3,056 unit tests, 672 database
+assertions, 18 private-admission regressions and 63 migrations replayed.
+These are prior audit results, not results for the combined integration tree.
+A complete prior audit hash manifest was not located during publication.
+
+Refresh C adds the unranked, closed-economy `ai_table` mode with server-driven,
+explicitly labelled computer seats and two forward migrations
+(`20261005120000_ai_tables.sql`, `20261017120000_ai_table_open_requests.sql`).
+It has not been integrated into `main` or deployed. Integration validation and
+current hosted CI belong to PR #5; the prior PASS is not production or store
+approval. Refresh D/E have not begun.
+
+**Latest integrated refresh:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
 **PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software
 defects: 0.** The implementation is published in this repository; both hosted CI
 jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`
 ([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)).
-No store submission or cloud deployment is established. Refresh C/D/E has not
-begun here. External activation remains.
+No store submission or cloud deployment is established. External activation remains.
 
 Read [baseline-audit.md](./astra-refresh/baseline-audit.md) for the historical
 22 verified findings, native/backend evidence, final gates and local checkpoint.

@@ -1,0 +1,276 @@
+# Arc 21 — an AI Table, started from the Play tab and played on a device,
+# against a real server (Astra Refresh C).
+#
+# WHAT IT PROVES, in order:
+#   * the mode is REACHABLE: the Play tab card leads to the AI Table screen,
+#     which states the terms — table chips, unranked — before anything opens;
+#   * Sit down opens a server table with two computer players, each LABELLED
+#     from the server's `isAi` flag (the "AI" badge), named, and waiting for the
+#     person to bet ("Bets when you deal");
+#   * a chip can be staged and DEAL pressed, and the computer players stake and
+#     play ON THE SERVER inside that one command — their bets appear with the
+#     deal, and nothing on this device sent a command for them;
+#   * the table SURVIVES THE APP BEING KILLED mid-hand: relaunched, the AI Table
+#     screen offers "Return to your AI table" and the same table comes back;
+#   * the hand can be played out and the NEXT one started;
+#   * leaving asks first and says what is true at a closed economy — the chips
+#     stay with the table — and the server releases the seat, which only the
+#     SERVER can show: the AI Table screen offers Sit down again, with no table
+#     to return to.
+#
+# BEFORE RUNNING — the same three as `online-table.yaml`:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT, and the build must be a Release build of the
+#   commit under test (`npx expo run:ios --configuration Release`).
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro --device <UDID> test tests/e2e/ai-table.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          # The dialog can dismiss itself between the `when` and the tap.
+          optional: true
+
+# --- Sign in ---------------------------------------------------------------
+- runFlow: sign-in.yaml
+
+# --- The Play tab card, reached the way a player reaches it ----------------
+- repeat:
+    while:
+      notVisible: ".*Same rules everywhere.*"
+    times: 4
+    commands:
+      - tapOn:
+          text: "Play"
+          optional: true
+- extendedWaitUntil:
+    visible: ".*Same rules everywhere.*"
+    timeout: 15000
+# A regex: each mode card is ONE accessibility element whose label carries the
+# title, purpose and structure, so there is no bare "AI Table" node to match.
+- scrollUntilVisible:
+    element: ".*AI Table.*computer players.*"
+    direction: DOWN
+    timeout: 15000
+- tapOn: ".*AI Table.*computer players.*"
+
+# --- The terms, before anything opens --------------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-stack"
+    timeout: 30000
+- assertVisible:
+    id: "ai-table-stack"
+    text: "5,000 for every seat"
+# Scrolled to the LAST thing asserted, because `scrollUntilVisible` stops the
+# moment its target enters the viewport.
+- scrollUntilVisible:
+    element:
+      id: "ai-table-start"
+    direction: DOWN
+    timeout: 15000
+- assertVisible: ".*Unranked.*no XP.*"
+# No table held from an earlier run: the server would otherwise be offering it.
+- assertNotVisible:
+    id: "ai-table-resume-card"
+- tapOn:
+    id: "ai-table-start"
+
+# --- The table -------------------------------------------------------------
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 45000
+# Two computer players, named, and LABELLED from the server's flag — the badge
+# renders from `isAi`, never from a name.
+- assertVisible: "AI Player 1"
+- assertVisible: "AI Player 2"
+- assertVisible:
+    id: "table-seat-ai-badge"
+# Waiting for the person: computer players stake only once the person locks.
+- assertVisible: "Bets when you deal"
+
+- extendedWaitUntil:
+    visible:
+      id: "chip-50"
+    timeout: 30000
+- tapOn:
+    id: "chip-50"
+- tapOn:
+    id: "bet-deal"
+
+# The SERVER dealt, and the computer players acted inside that one command:
+# their bets of the table minimum are on the felt, and nothing on this device
+# sent a command for them.
+- extendedWaitUntil:
+    notVisible: "No cards yet."
+    timeout: 45000
+# A dealer ACE stops the deal at INSURANCE_OFFER, about one deal in thirteen,
+# and the offer is a MODAL sheet: the felt behind it is drawn but not in the
+# accessibility tree, so "Bet 20" reads as absent. Answer it first — declining
+# is what the computer players do too. (Measured on a Release build: the flow
+# failed here on its first run with the sheet on screen.)
+- runFlow:
+    when:
+      visible:
+        id: "insurance-decline"
+    commands:
+      - tapOn:
+          id: "insurance-decline"
+          optional: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+- assertNotVisible: "Bets when you deal"
+- assertVisible: ".*Bet 20.*"
+- takeScreenshot: ai-table-dealt
+
+# --- Killed mid-hand, and found again --------------------------------------
+# Only while the hand is still live: a natural can settle it inside the deal,
+# and a settled table is resumed just the same — but the point here is the
+# harder case, a hand with a decision still owed.
+- stopApp
+- launchApp:
+    clearState: false
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          optional: true
+# A DEEP LINK, not the tab bar: after an in-session stop/launch the driver's
+# coordinate taps are unreliable, and `arc21://table/ai` lands directly.
+- openLink: arc21://table/ai
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-resume"
+    timeout: 45000
+- assertVisible: "Your AI table is waiting"
+- tapOn:
+    id: "ai-table-resume"
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 45000
+- assertVisible: "AI Player 1"
+- assertVisible:
+    id: "table-seat-ai-badge"
+- takeScreenshot: ai-table-resumed
+
+# --- Play the hand out -----------------------------------------------------
+# Each state is checked at the TOP level of the iteration, never nested inside
+# one branch — `career-node.yaml` once deadlocked on exactly that. Every tap is
+# optional: a `when` and its tap are two reads of the screen, and the tap that
+# lands navigates away from what the `when` saw.
+#
+# The action dock can sit BELOW THE FOLD at the person's turn: three seats'
+# hands and their result lines push it down on an iPhone 17 Pro (measured on a
+# Release build, with Stand off-screen and the loop never pressing it), and
+# `when: visible` does not scroll. So each iteration scrolls to it first;
+# `optional`, because outside a turn there is no dock to find.
+- repeat:
+    times: 12
+    commands:
+      - scrollUntilVisible:
+          element:
+            id: "action-stand"
+          direction: DOWN
+          timeout: 3000
+          optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+                optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "action-stand"
+          commands:
+            - tapOn:
+                id: "action-stand"
+                optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                id: "table-next-hand"
+                optional: true
+
+# The NEXT hand opened — the betting bar came back, which it can only do if
+# NEXT_HAND was applied by the server and its snapshot arrived — and the
+# computer players are waiting for the person again.
+- extendedWaitUntil:
+    visible:
+      id: "chip-50"
+    timeout: 45000
+- assertVisible: "Bets when you deal"
+
+# --- Leave ----------------------------------------------------------------
+- scrollUntilVisible:
+    element: "Leave table"
+    direction: UP
+    timeout: 10000
+- tapOn: "Leave table"
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 15000
+# What is TRUE at a closed economy: the chips stay with the table. The dialog
+# used to promise "chips return to your balance" at every table.
+- assertVisible: ".*nothing is added to your balance.*"
+- assertNotVisible: ".*return to your balance.*"
+# The destructive button, not the cancel one.
+- tapOn:
+    text: "Leave table"
+    index: 1
+- extendedWaitUntil:
+    notVisible: "Leave this table?"
+    timeout: 30000
+
+# THE SEAT WAS ACTUALLY GIVEN UP, asked of the SERVER: the AI Table screen
+# re-reads `my_active_session()` on mount, so a seat still held would come back
+# as "Your AI table is waiting".
+- openLink: arc21://table/ai
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-stack"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "ai-table-start"
+    direction: DOWN
+    timeout: 15000
+- assertNotVisible:
+    id: "ai-table-resume-card"
+- assertVisible:
+    id: "ai-table-start"
+    enabled: true

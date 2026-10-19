@@ -58,6 +58,8 @@ export interface SeatSeed {
   userId?: string | null;
   displayName: string;
   stack: number;
+  /** A computer-controlled participant. See `SeatState.isAi`. */
+  isAi?: boolean;
 }
 
 export interface CreateGameOptions {
@@ -142,6 +144,15 @@ export function createGame(options: CreateGameOptions): EngineState {
   assertRulesAreCoherent(rules);
   if (options.timing) assertTimingIsCoherent(options.timing);
 
+  for (const seed of options.seats) {
+    // A computer player is never an account. Letting one carry a user id would
+    // let the server's per-account bookkeeping — statistics, XP, a cash-out —
+    // treat it as a person, which is the one thing an AI seat must never be.
+    if (seed.isAi === true && seed.userId !== undefined && seed.userId !== null) {
+      throw new EngineError("ILLEGAL_ACTION", `AI seat ${seed.seatId} cannot belong to an account`);
+    }
+  }
+
   const seats: SeatState[] = options.seats.map((seed) => ({
     seatId: seed.seatId,
     userId: seed.userId ?? null,
@@ -155,6 +166,8 @@ export function createGame(options: CreateGameOptions): EngineState {
     connected: true,
     betLocked: false,
     sittingOut: false,
+    // Present only when true, so a human seat's persisted shape is unchanged.
+    ...(seed.isAi === true ? { isAi: true } : {}),
   }));
 
   return {

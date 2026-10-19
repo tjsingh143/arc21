@@ -28,7 +28,7 @@ import { HandSelector } from "../../src/components/table/HandSelector";
 import { OutcomeBadge } from "../../src/components/table/OutcomeBadge";
 import { useTableFeedback } from "../../src/features/practice/use-table-feedback";
 import { useTableTextVariant } from "../../src/design/accessibility";
-import { colors, layout, spacing } from "../../src/design/tokens";
+import { colors, layout, radius, spacing } from "../../src/design/tokens";
 import { formatChips } from "../../src/design/typography";
 import { announce } from "../../src/lib/accessibility/announce";
 import { rankName } from "../../shared/blackjack/cards.js";
@@ -36,9 +36,10 @@ import { isVisibleCard } from "../../shared/blackjack/types.js";
 import type { PublicGameState } from "../../shared/blackjack/index.js";
 import {
   describeLeaveTableConfirmation,
+  describeLeavingAtBoundary,
   LEAVE_TABLE_CONFIRM_TITLE,
-  LEAVING_AT_BOUNDARY_NOTICE,
   mayLeaveTable,
+  type ChipDestination,
   STAY_AT_TABLE_LABEL,
   shouldConfirmLeavingTable,
   shouldExitAfterHeldLeave,
@@ -49,15 +50,22 @@ import { useSettings } from "../../src/features/settings/use-settings";
 import {
   BROKE_AT_PRIVATE_TABLE_BODY,
   BROKE_AT_PRIVATE_TABLE_TITLE,
+  chipsReturnToWallet,
+  handCompletionForMode,
+  type HandCompletion,
+  COMPUTER_PLAYER_ACCESSIBILITY_LABEL,
   COUNTDOWN_TICK_MS,
   deadlineAwaitsSeat,
   describeDeadline,
   describeDealerUpCardForAnnouncement,
   describeSeatBetting,
+  describeSeatHandDetail,
+  describeSeatIdentity,
   engineEventsOf,
   insuranceOffer,
   isMyTurn,
   mayResetPrivateStack,
+  offersFreeReset,
   ownSeat,
   RESET_PRIVATE_STACK_LABEL,
   resolveTableSeat,
@@ -322,26 +330,29 @@ export default function SharedTable() {
   /*
    * THE FREE RESET, and the reason this branch exists at all.
    *
-   * A seat that cannot cover the table minimum is sat out by the engine, and
-   * `getLegalActions` answers NO_ACTIONS for a seat that is sitting out — so
-   * every branch below is false and the screen falls through to "Waiting for
-   * the next hand.", hand after hand, for the life of the table. At a private
-   * table the specification's remedy is a free reset to the fixed stack, which
-   * the server has always accepted and nothing had ever sent.
+   * A seat that cannot cover the table minimum has no legal bet — and, once a
+   * lapsed betting clock sits it out, no legal action of any kind — so every
+   * branch below is false and the screen falls through to "Waiting for the next
+   * hand.", hand after hand, for the life of the table. At a private table, and
+   * at an AI table, whose chips are equally the table's own, the remedy is a
+   * free reset to the fixed stack. An AI table has no clock at all, so the seat
+   * is never sat out there; `canStake` is what recognises it.
    */
   const canResetStack = useMemo(
     () =>
       status.kind === "at-table" && seat !== null
         ? mayResetPrivateStack({
-            isPrivateTable:
-              activeSession?.mode === "private_table" &&
-              activeSession.gameId === status.state.gameId,
+            freeResetTable:
+              activeSession !== null &&
+              activeSession.gameId === status.state.gameId &&
+              offersFreeReset(activeSession.mode),
             phase: status.state.phase,
             sittingOut: seat.sittingOut,
             connected: seat.connected,
+            canStake: seat.betLocked || Boolean(legal?.canPlaceBet || legal?.canLockBet),
           })
         : false,
-    [status, seat, activeSession],
+    [status, seat, activeSession, legal],
   );
 
   /*
@@ -493,7 +504,13 @@ export default function SharedTable() {
       {others.length > 0 ? (
         <View style={styles.others}>
           {others.map((other) => {
-            const hand = other.hands[0];
+            /*
+             * EVERY hand, not the first. A seat that splits plays up to four,
+             * and drawing only `hands[0]` hid the rest — their cards and their
+             * results — which at an AI table, where a computer player splits
+             * whenever the chart says to, is much of what there is to follow.
+             */
+            const dealtHands = other.hands.filter((hand) => hand.cards.length > 0);
             /*
              * A seat whose player has GONE used to read "0 · Yet to bet ·
              * Disconnected — their clock keeps running." for the life of the
@@ -502,21 +519,43 @@ export default function SharedTable() {
              */
             const presence = seatPresence(other);
             const betting = describeSeatBetting(other);
+            /*
+             * A computer player is labelled from the server's flag, never from
+             * its name: names are free text a person chooses.
+             */
+            const identity = describeSeatIdentity(other);
             return (
               <SurfaceCard key={other.seatId}>
                 <View style={styles.otherHeader}>
-                  <AppText variant="bodyStrong">{other.displayName}</AppText>
+                  <View style={styles.otherName}>
+                    <AppText variant="bodyStrong">{other.displayName}</AppText>
+                    {identity ? (
+                      <View
+                        style={styles.aiBadge}
+                        accessible
+                        accessibilityLabel={COMPUTER_PLAYER_ACCESSIBILITY_LABEL}
+                        testID="table-seat-ai-badge"
+                      >
+                        <AppText variant="caption" color="textSecondary">
+                          {identity}
+                        </AppText>
+                      </View>
+                    ) : null}
+                  </View>
                   <AppText variant="caption" color="textSecondary" numeric>
                     {formatChips(other.stack)}
                   </AppText>
                 </View>
-                {hand && hand.cards.length > 0 ? (
-                  <HandCards
-                    cards={[...hand.cards]}
-                    size="compact"
-                    detail={hand.wager > 0 ? `Bet ${formatChips(hand.wager)}` : undefined}
-                    focused={table.activeSeatId === other.seatId}
-                  />
+                {dealtHands.length > 0 ? (
+                  dealtHands.map((hand) => (
+                    <HandCards
+                      key={hand.id}
+                      cards={[...hand.cards]}
+                      size="compact"
+                      detail={describeSeatHandDetail(hand)}
+                      focused={table.activeSeatId === other.seatId && table.activeHandId === hand.id}
+                    />
+                  ))
                 ) : betting ? (
                   <AppText variant="caption" color="textDisabled">
                     {betting}
@@ -614,7 +653,10 @@ export default function SharedTable() {
          */
         <View style={styles.leaving}>
           <AppText variant="body" color="warning" testID="table-leaving">
-            {LEAVING_AT_BOUNDARY_NOTICE}
+            {describeLeavingAtBoundary(
+              chipDestinationFor(activeSession, table.gameId),
+              handCompletionFor(activeSession, table.gameId),
+            )}
           </AppText>
           <Pressable
             accessibilityRole="button"
@@ -792,6 +834,21 @@ function Frame({ children }: { children: React.ReactNode }) {
   const leaveTable = useOnlineTableStore((state) => state.leaveTable);
   const status = useOnlineTableStore((state) => state.status);
   const leavingWhenSafe = useOnlineTableStore((state) => state.leavingWhenSafe);
+  /*
+   * WHERE THIS TABLE'S CHIPS GO, so the dialog does not promise what the server
+   * will not do. Read from the same `my_active_session()` answer the screen
+   * above asks for on mount, and matched to THIS game; until it has answered,
+   * the dialog claims nothing either way.
+   */
+  const activeSessionStatus = useActiveSessionStore((state) => state.status);
+  const destination = useMemo(
+    () =>
+      chipDestinationFor(
+        selectActiveSession(activeSessionStatus),
+        status.kind === "at-table" ? status.state.gameId : null,
+      ),
+    [activeSessionStatus, status],
+  );
   const { settings } = useSettings();
   const navigation = useNavigation();
   /*
@@ -874,7 +931,7 @@ function Frame({ children }: { children: React.ReactNode }) {
 
     async function askThenLeave(): Promise<boolean> {
     const agreed = await new Promise<boolean>((resolve) => {
-      Alert.alert(LEAVE_TABLE_CONFIRM_TITLE, describeLeaveTableConfirmation(stack), [
+      Alert.alert(LEAVE_TABLE_CONFIRM_TITLE, describeLeaveTableConfirmation(stack, destination), [
         // `onDismiss` is Android-only and does not fire for a backdrop tap on
         // iOS, so Cancel carries the negative answer rather than relying on it.
         { text: "Stay", style: "cancel", onPress: () => resolve(false) },
@@ -884,7 +941,7 @@ function Frame({ children }: { children: React.ReactNode }) {
     if (!agreed) return false;
     return leaveTable();
     }
-  }, [confirmFirst, leaveTable, stack]);
+  }, [confirmFirst, leaveTable, stack, destination]);
 
   /**
    * Everything that must happen AFTER the server has settled the seat, for both
@@ -1059,6 +1116,30 @@ function TableAdvice({
   );
 }
 
+/**
+ * Where a seat's chips go when it closes — the wallet, nowhere, or not known yet
+ * — for the table this screen is showing. See `ChipDestination`.
+ */
+function chipDestinationFor(
+  session: ReturnType<typeof selectActiveSession>,
+  gameId: string | null,
+): ChipDestination {
+  if (session === null || gameId === null || session.gameId !== gameId) return "unknown";
+  return chipsReturnToWallet(session.mode) ? "wallet" : "table";
+}
+
+/**
+ * What will end a hand the player has asked to leave — their own play, or the
+ * table's clock — for the table this screen is showing. See `HandCompletion`.
+ */
+function handCompletionFor(
+  session: ReturnType<typeof selectActiveSession>,
+  gameId: string | null,
+): HandCompletion {
+  if (session === null || gameId === null || session.gameId !== gameId) return "unknown";
+  return handCompletionForMode(session.mode);
+}
+
 /** Player-facing names for the five graded actions. */
 const ACTION_LABELS: Record<string, string> = {
   HIT: "Hit",
@@ -1097,6 +1178,23 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
+  },
+  // The name yields width and the label keeps it, so a long name grown by
+  // Dynamic Type cannot push "AI" off the card — the one word that says what
+  // the seat is.
+  otherName: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    flexShrink: 1,
+  },
+  aiBadge: {
+    flexShrink: 0,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   mine: { alignItems: "center", gap: spacing.md },
   mineHeader: {

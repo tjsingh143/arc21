@@ -32,6 +32,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   describeLeaveTableConfirmation,
+  describeLeavingAtBoundary,
+  LEAVING_AT_BOUNDARY_NOTICE,
   LEAVE_TABLE_CONFIRM_TITLE,
   shouldConfirmLeavingTable,
 } from "../../src/features/table/leave-guard.js";
@@ -151,5 +153,84 @@ describe("the Settings screen", () => {
     );
     expect(gameplay).toContain("settings.confirmLeavingOnlineGame");
     expect(gameplay).toContain("confirmLeavingOnlineGame: next");
+  });
+});
+
+/**
+ * WHAT THE DIALOG MAY PROMISE (Astra Refresh C).
+ *
+ * "N chips return to your balance" is true at Quick Play and a public table and
+ * false everywhere else: a closed economy's chips are created at the table and
+ * end with it. An AI table's own entry screen says "nothing goes back to it", so
+ * the dialog repeating the wallet promise there would contradict it on the way
+ * out — and promise something the server will not do.
+ */
+describe("the dialog at a table whose chips are its own", () => {
+  it("keeps the wallet promise exactly where the wallet is", () => {
+    expect(describeLeaveTableConfirmation(12_500, "wallet")).toBe(describeLeaveTableConfirmation(12_500));
+    expect(describeLeaveTableConfirmation(12_500, "wallet")).toContain("return to your balance");
+  });
+
+  it("says the chips stay with the table, and promises nothing", () => {
+    const text = describeLeaveTableConfirmation(5_000, "table");
+    expect(text).not.toMatch(/return to your balance/i);
+    expect(text).toMatch(/nothing is added to your balance/i);
+    expect(text).toContain("5,000");
+    expect(text).toMatch(/cannot rejoin/i);
+  });
+
+  it("claims nothing about chips before it knows which kind of table this is", () => {
+    const text = describeLeaveTableConfirmation(5_000, "unknown");
+    expect(text).not.toMatch(/balance|return/i);
+    expect(text).toMatch(/seat closes/i);
+  });
+
+  it("does not promise a held leave will bring chips back from a closed economy", () => {
+    expect(describeLeavingAtBoundary("wallet")).toBe(LEAVING_AT_BOUNDARY_NOTICE);
+    expect(describeLeavingAtBoundary("table")).not.toMatch(/chips come back/i);
+    expect(describeLeavingAtBoundary("unknown")).not.toMatch(/chips come back/i);
+  });
+});
+
+/**
+ * Refresh C audit finding C-4. A leave asked mid-hand is HELD and completed by
+ * the poll once the hand is over (`shouldCompleteLeave`) — but at a table with
+ * NO CLOCK nothing ends the hand except the person: the server answers
+ * `RESOLVE_TIMEOUT` with DEADLINE_NOT_REACHED and the computer players act only
+ * inside the person's own commands. The held notice said "You do not need to do
+ * anything else" there, which is a completion the server cannot deliver.
+ * `tests/server/ai-table.integration.test.ts` (C-4) pins the lifecycle; this
+ * pins what the player is told about it.
+ */
+describe("a held leave tells the player what will actually end the hand", () => {
+  it("at a table with no clock, says the hand waits for them and promises nothing automatic", () => {
+    const text = describeLeavingAtBoundary("table", "player");
+    expect(text).toMatch(/^Leaving when this hand ends\./);
+    expect(text).toMatch(/finish your hand/i);
+    expect(text).not.toMatch(/do not need to do anything/i);
+    expect(text).not.toMatch(/automatic/i);
+    expect(text).not.toMatch(/chips come back/i);
+  });
+
+  it("at a closed-economy table WITH a clock, keeps saying nothing more is needed — the clock stands the hand", () => {
+    expect(describeLeavingAtBoundary("table", "clock")).toBe(
+      "Leaving when this hand ends. You do not need to do anything else.",
+    );
+  });
+
+  it("claims nothing about how the hand ends before the table's mode is known", () => {
+    for (const destination of ["table", "unknown"] as const) {
+      const text = describeLeavingAtBoundary(destination, "unknown");
+      expect(text).toBe("Leaving when this hand ends.");
+    }
+  });
+
+  it("leaves the wallet-backed wording, and the E2E flow asserting it, unchanged", () => {
+    expect(describeLeavingAtBoundary("wallet", "clock")).toBe(LEAVING_AT_BOUNDARY_NOTICE);
+    expect(describeLeavingAtBoundary("wallet", "player")).toBe(LEAVING_AT_BOUNDARY_NOTICE);
+  });
+
+  it("the table screen passes how this table's hand ends, not only where its chips go", () => {
+    expect(tableSource).toMatch(/describeLeavingAtBoundary\(\s*chipDestinationFor\([^)]*\),\s*handCompletionFor\(/);
   });
 });

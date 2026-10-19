@@ -93,11 +93,13 @@ export const startPrivateTableRequestSchema = z.strictObject({
 });
 
 /**
- * Put a broke seat back on the private table's fixed stack.
+ * Put a broke seat back on the table's own fixed stack.
  *
- * Only meaningful at a private table, where the chips are the table's own and
- * unranked. There is no equivalent for a wallet-backed table and there must
- * never be one — a free reset there would mint chips.
+ * Only meaningful at a closed economy whose chips are the table's own and
+ * unranked: a private table, and since Astra Refresh C an AI table
+ * (`FREE_STACK_RESET_MODES` on the server). The name predates AI tables and is
+ * kept so no client breaks. There is no equivalent for a wallet-backed table and
+ * there must never be one — a free reset there would mint chips.
  *
  * The client names the game and nothing else. The amount is the ruleset's.
  */
@@ -120,6 +122,27 @@ export const joinPublicTableRequestSchema = z.strictObject({
   action: z.literal("JOIN_PUBLIC_TABLE"),
   clientRequestId: uuidSchema,
   roomId: uuidSchema,
+  clientSentAt: isoTimestampSchema,
+});
+
+/**
+ * Sit down at an AI Table: the player and computer-controlled seats.
+ *
+ * The client names NOTHING about the table. How many computer players, where the
+ * player sits, the stakes and every seat's stack are all the server's
+ * (`AI_TABLE_*` in `shared/blackjack/rules.ts`), and no seat, stack or bet of a
+ * computer player can be named here — a client that could stage an AI seat's
+ * chips could stage anybody's.
+ *
+ * No chip moves in either direction. An AI table is a closed economy: its
+ * chips appear at the table, are wagered there and vanish with it, so there is
+ * nothing to buy in with and nothing to cash out. A player already sitting at an
+ * AI table is answered with THAT table, which is also what makes a retried
+ * request harmless.
+ */
+export const openAiTableRequestSchema = z.strictObject({
+  action: z.literal("OPEN_AI_TABLE"),
+  clientRequestId: uuidSchema,
   clientSentAt: isoTimestampSchema,
 });
 
@@ -227,6 +250,7 @@ export const sessionRequestSchema = z.discriminatedUnion("action", [
   startPrivateTableRequestSchema,
   resetPrivateStackRequestSchema,
   joinPublicTableRequestSchema,
+  openAiTableRequestSchema,
   startDailyChallengeRequestSchema,
   registerSprintRequestSchema,
   withdrawSprintRequestSchema,
@@ -277,6 +301,24 @@ export const publicSeatTakenResponseSchema = z.strictObject({
   /** What was actually debited from the wallet for this seat. */
   buyIn: chipAmountSchema,
   walletBalance: chipAmountSchema,
+  publicState: publicGameStateSchema,
+});
+
+/**
+ * An AI table, opened or returned to.
+ *
+ * `tableStack` is what every seat started on, and no wallet was touched to
+ * provide it — there is deliberately no `buyIn` and no `walletBalance` here,
+ * because nothing left the wallet and nothing will go back to it.
+ * `resumed` is true when the player was already seated at an AI table and this
+ * is that table, which is the answer to a retried or doubled request.
+ */
+export const aiTableOpenedResponseSchema = z.strictObject({
+  status: z.literal("ai_table_opened"),
+  gameId: uuidSchema,
+  seatId: uuidSchema,
+  tableStack: chipAmountSchema,
+  resumed: z.boolean(),
   publicState: publicGameStateSchema,
 });
 
@@ -390,6 +432,7 @@ export const sessionResponseSchema = z.discriminatedUnion("status", [
   privateTableStartedResponseSchema,
   privateStackResetResponseSchema,
   publicSeatTakenResponseSchema,
+  aiTableOpenedResponseSchema,
   dailyChallengeStartedResponseSchema,
   sprintRegisteredResponseSchema,
   sprintWithdrawnResponseSchema,
@@ -409,6 +452,8 @@ export type CashOutRequest = z.infer<typeof cashOutRequestSchema>;
 export type StartPrivateTableRequest = z.infer<typeof startPrivateTableRequestSchema>;
 export type ResetPrivateStackRequest = z.infer<typeof resetPrivateStackRequestSchema>;
 export type JoinPublicTableRequest = z.infer<typeof joinPublicTableRequestSchema>;
+export type OpenAiTableRequest = z.infer<typeof openAiTableRequestSchema>;
+export type AiTableOpenedResponse = z.infer<typeof aiTableOpenedResponseSchema>;
 export type StartDailyChallengeRequest = z.infer<typeof startDailyChallengeRequestSchema>;
 export type RegisterSprintRequest = z.infer<typeof registerSprintRequestSchema>;
 export type WithdrawSprintRequest = z.infer<typeof withdrawSprintRequestSchema>;

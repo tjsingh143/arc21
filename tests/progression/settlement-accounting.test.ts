@@ -19,9 +19,16 @@ import { describe, expect, it } from "vitest";
 import {
   accountForSettlement,
   isEmptyAccounting,
+  recordsHandSettlement,
   SERVER_DAILY_REPEATABLE_XP_CAP,
   SERVER_XP_PER_SETTLED_HAND,
+  SETTLEMENT_RECORDING_MODES,
 } from "../../supabase/functions/_shared/settlement-accounting.js";
+import { ALL_SESSION_MODES } from "../../supabase/functions/_shared/session-economics.js";
+import {
+  ACCURACY_ELIGIBLE_MODES,
+  GRADED_MODES,
+} from "../../supabase/functions/_shared/decision-grading.js";
 import {
   DAILY_REPEATABLE_XP_CAP,
   XP_PER_SETTLED_HAND,
@@ -185,5 +192,44 @@ describe("an empty batch", () => {
   it("is not confused with a batch for another seat", () => {
     const result = accountForSettlement([settled("theirs", "WIN", 200, 100)], "mine");
     expect(isEmptyAccounting(result)).toBe(true);
+  });
+});
+
+/**
+ * WHICH TABLES WRITE TO A PLAYER'S RECORD AT ALL (Astra Refresh C).
+ *
+ * Until AI tables existed every settled hand was recorded, unconditionally —
+ * true of every mode that then existed, and exactly the shape that would have
+ * made the first new mode count by accident. The recording is an allowlist now,
+ * like the accuracy board's, and these pin both halves: every mode that recorded
+ * before still does, and an AI table does not.
+ */
+describe("which modes record a settled hand", () => {
+  it("is every server mode that recorded before AI tables, unchanged", () => {
+    expect([...SETTLEMENT_RECORDING_MODES].sort()).toEqual(
+      ["career", "daily_challenge", "private_table", "public_table", "solo", "tournament"].sort(),
+    );
+  });
+
+  it("leaves an AI table out: a hand against computer players earns no XP and moves no statistic", () => {
+    // The weekly XP board is fed entirely by repeatable XP, so a hand that paid
+    // XP here would be a ranking input won against machines.
+    expect(recordsHandSettlement("ai_table")).toBe(false);
+  });
+
+  it("records nothing for a mode nobody has decided about", () => {
+    expect(recordsHandSettlement("something_new")).toBe(false);
+    expect(recordsHandSettlement("practice")).toBe(false);
+  });
+
+  it("names only modes the server knows", () => {
+    for (const mode of SETTLEMENT_RECORDING_MODES) {
+      expect(ALL_SESSION_MODES as readonly string[]).toContain(mode);
+    }
+  });
+
+  it("keeps an AI table off the accuracy board and ungraded, too", () => {
+    expect(ACCURACY_ELIGIBLE_MODES as readonly string[]).not.toContain("ai_table");
+    expect(GRADED_MODES as readonly string[]).not.toContain("ai_table");
   });
 });

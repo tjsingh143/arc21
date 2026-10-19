@@ -32,7 +32,9 @@ select plan(37);
 -- a label fails here until someone has placed it on one side or the other.
 -- `career` was added in the closure mission and is NOT wallet-backed: a node's
 -- 2,000 chips are a scoring medium, and crediting them would mint chips per
--- attempt.
+-- attempt. `ai_table` was added in Astra Refresh C and is NOT wallet-backed
+-- either: every seat's stack is created at the table, and a computer player has
+-- no wallet, so a chip won from one that reached a wallet would be minted.
 --
 -- It is not a stylistic assertion. Before that module existed, leaving a private
 -- table credited its 5,000 session chips to the global wallet — 25,000 became
@@ -40,7 +42,7 @@ select plan(37);
 select enum_has_labels(
   'public', 'game_mode',
   array['practice', 'solo', 'private_table', 'public_table', 'tournament',
-        'daily_challenge', 'career'],
+        'daily_challenge', 'career', 'ai_table'],
   'every game mode is one session-economics knows about'
 );
 

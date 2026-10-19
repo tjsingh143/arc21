@@ -163,6 +163,56 @@ export function privateTableRules(): BlackjackRules {
   };
 }
 
+/*
+ * AN AI TABLE: one person and computer-controlled seats, unranked.
+ *
+ * Every figure that shapes one lives here, beside the private table's, because
+ * they are the same kind of fact — what a table posts and what a seat starts
+ * on — and one place to change them is the point. Nothing here is a rule of
+ * blackjack: the cards, the dealer and every payout are Arc Standard, which is
+ * why `aiTableRules` changes the bet band and nothing else, and why the solved
+ * strategy chart keyed to `arc-standard@1` still applies (the band is excluded
+ * from `StrategyRulesSummary` for exactly this reason).
+ *
+ * A CLOSED ECONOMY, like a private table: every seat — the player's and each
+ * computer player's — starts on `AI_TABLE_STACK` chips that come from nowhere,
+ * stay at the table and vanish with it. No buy-in, no cash-out, no ledger row.
+ * If the player's chips could leave an AI table, beating a computer player
+ * would be a way to mint wallet chips; see `session-economics.ts`.
+ */
+
+/** Every seat's starting stack, the player's and each computer player's. */
+export const AI_TABLE_STACK = 5_000;
+
+/** The private table's gentle band, for the same reason: the chips are unranked. */
+export const AI_TABLE_MIN_BET = 20;
+export const AI_TABLE_MAX_BET = 500;
+
+/**
+ * Seats at an AI table, the player's included: the player and two computer
+ * players. Within the 2–5 shape of the shared tables, and small enough that
+ * every seat stays readable on a phone.
+ */
+export const AI_TABLE_SEAT_COUNT = 3;
+
+/**
+ * Where the player sits, zero-based in dealing order: the middle.
+ *
+ * Deliberate. With a computer player on each side, every hand has one acting
+ * BEFORE the player and one AFTER, so the table hands the turn to the player
+ * and takes it back again exactly as a full table would.
+ */
+export const AI_TABLE_PLAYER_SEAT_INDEX = 1;
+
+/** Arc Standard at AI-table stakes. Rules never differ, only the band. */
+export function aiTableRules(): BlackjackRules {
+  return {
+    ...ARC_STANDARD_RULES,
+    minBet: AI_TABLE_MIN_BET,
+    maxBet: AI_TABLE_MAX_BET,
+  };
+}
+
 export const TABLE_TIERS: readonly TableTier[] = [
   { id: "casual", label: "Casual", buyIn: 2_000, minBet: 20, maxBet: 500, unlockLevel: 1 },
   { id: "standard", label: "Standard", buyIn: 5_000, minBet: 50, maxBet: 1_000, unlockLevel: 1 },

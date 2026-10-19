@@ -1,3 +1,5 @@
+import { AI_TABLE_STACK, PRIVATE_TABLE_STACK } from "../../../shared/blackjack/index.js";
+
 /**
  * Which tables owe chips back to a wallet, and which do not.
  *
@@ -26,6 +28,13 @@
  * came from nowhere and vanish with the session; crediting them to a wallet
  * would mint 2,000 chips per attempt, which is the mistake this list exists to
  * make impossible.
+ *
+ * AN AI TABLE IS NOT HERE, and must never be. Every seat at one — the player's
+ * and each computer player's — starts on `AI_TABLE_STACK` chips the server
+ * created. A computer player owns no wallet, so a chip the player wins from one
+ * was never debited from anybody: crediting an AI table's stack to a wallet
+ * would mint exactly the chips the computer players lost, every hand, on
+ * demand. No chip enters an AI table and none leaves it.
  */
 export const WALLET_BACKED_MODES = ["solo", "public_table"] as const;
 
@@ -46,6 +55,7 @@ export const ALL_SESSION_MODES = [
   "tournament",
   "daily_challenge",
   "career",
+  "ai_table",
 ] as const;
 
 export type SessionMode = (typeof ALL_SESSION_MODES)[number];
@@ -64,4 +74,58 @@ export function chipsCameFromWallet(mode: string): boolean {
  */
 export function isKnownSessionMode(mode: string): mode is SessionMode {
   return (ALL_SESSION_MODES as readonly string[]).includes(mode);
+}
+
+/**
+ * Closed-economy tables where a seat that cannot cover the minimum may start
+ * again from the table's own stack, between hands.
+ *
+ * A private table has had this from the start — the specification's "permit a
+ * free reset to 5,000 between hands; private mode is unranked". An AI table is
+ * the same kind of table: its chips are its own, it is unranked, and a player
+ * who runs out at one has no other way to keep playing it. Without a reset a
+ * broke player would sit at an AI table that can never deal again.
+ *
+ * NEVER a wallet-backed mode: a free reset there is chips out of nothing.
+ * `tests/progression/session-economics.test.ts` asserts the two lists share no
+ * member.
+ */
+export const FREE_STACK_RESET_MODES = ["private_table", "ai_table"] as const;
+
+export function allowsFreeStackReset(mode: string): boolean {
+  return (FREE_STACK_RESET_MODES as readonly string[]).includes(mode);
+}
+
+/**
+ * The stack a free reset restores, for a mode that allows one, or null.
+ *
+ * Read from the engine's own constants rather than restated, so the figure a
+ * reset restores cannot drift from the figure the table opened with.
+ */
+export function freeResetStackFor(mode: string): number | null {
+  switch (mode) {
+    case "private_table":
+      return PRIVATE_TABLE_STACK;
+    case "ai_table":
+      return AI_TABLE_STACK;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Modes whose tables seat computer-controlled players.
+ *
+ * Exactly one, and the specification is why: "Ranked public multiplayer and
+ * ranked tournaments must not silently substitute bots", "No hidden bots
+ * presented as humans", "Never silently insert AI into a ranked public game".
+ * The server answers for AI seats only at a table of this mode, and the
+ * database refuses an AI seat anywhere else (`guard_ai_seat_placement`), so a
+ * computer player cannot appear at a public, private, tournament, daily,
+ * career or Quick Play table by any route.
+ */
+export const AI_SEAT_MODES = ["ai_table"] as const;
+
+export function seatsComputerPlayers(mode: string): boolean {
+  return (AI_SEAT_MODES as readonly string[]).includes(mode);
 }

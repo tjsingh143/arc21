@@ -39,6 +39,40 @@ export const SERVER_XP_PER_SETTLED_HAND = 5;
 /** Mirrors `DAILY_REPEATABLE_XP_CAP`; guarded by the same test. */
 export const SERVER_DAILY_REPEATABLE_XP_CAP = 300;
 
+/**
+ * Modes whose settled hands are written to the player's own record — lifetime
+ * statistics and repeatable XP, the latter being the weekly XP leaderboard's
+ * entire input.
+ *
+ * AN ALLOWLIST, for the reason `ACCURACY_ELIGIBLE_MODES` is one: a mode added
+ * later records NOTHING until somebody decides on purpose that it should. Until
+ * Refresh C the recording was unconditional, which was true of every mode that
+ * then existed and would have quietly made the first new one count.
+ *
+ * Every server mode before Refresh C is listed, so their behaviour is unchanged.
+ * `practice` never reaches the server at all.
+ *
+ * `ai_table` IS ABSENT, deliberately. The specification's computer seats are
+ * "explicitly labeled unranked", and a hand against a computer player feeding
+ * the weekly XP board — or a lifetime record the player reads as how they
+ * play against people — is ranking by another name. An AI table records no
+ * statistics and pays no XP; its decisions are not graded either (it is not in
+ * `GRADED_MODES`). Whether that should ever change is a product decision, and
+ * this list is where it would be made.
+ */
+export const SETTLEMENT_RECORDING_MODES = [
+  "solo",
+  "private_table",
+  "public_table",
+  "tournament",
+  "daily_challenge",
+  "career",
+] as const;
+
+export function recordsHandSettlement(mode: string): boolean {
+  return (SETTLEMENT_RECORDING_MODES as readonly string[]).includes(mode);
+}
+
 /** Column-for-column with `public.player_stats`, minus the identity columns. */
 export interface StatsDelta {
   handsPlayed: number;

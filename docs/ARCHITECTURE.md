@@ -231,6 +231,62 @@ for insurance, the staged or minimum bet for betting. The engine never plays
 basic strategy on an absent user's behalf: doing so would silently alter both
 their chips and their recorded decision accuracy.
 
+### AI Tables (Astra Refresh C)
+
+An `ai_table` session seats one person between computer-controlled seats
+(`AI_TABLE_*` in `shared/blackjack/rules.ts`: three seats, the person in the
+middle, 5,000 table chips each, bets 20–500). A computer player is a
+PARTICIPANT, never an authority: it is dealt from the same CSPRNG shoe, offered
+the same `getLegalActions`, and settled by the same engine as anybody else.
+
+- **Representation.** `SeatState.isAi` (engine), `PublicSeat.isAi` (wire,
+  present only when true so every other table's payload is unchanged), and
+  `game_session_seats.is_ai` (database). An AI seat never carries an account:
+  `createGame` refuses it and so does a CHECK constraint. The engine never READS
+  the flag — `tests/engine/ai-seat.test.ts` plays identical hands with and
+  without it and requires identical states and events.
+- **What a computer player sees.** `decideAiSeatAction` takes an
+  `AiSeatObservation` and nothing else, and the only builder of one,
+  `observeAiSeat`, takes the `PublicGameState` that `toPublicState` produced: the
+  seat's own cards and stack, the dealer's upcard, the engine's legal set and
+  the published ruleset. Never the shoe, the hole card or a random source. The
+  driver also runs `assertNoHiddenCardLeak` on every observation in production.
+- **How it decides.** Flat table-minimum bets; insurance and even money
+  declined; every play from `adviseAction`, the same solved chart that grades
+  players; STAND where the chart is silent; never `NEXT_HAND`.
+- **When it acts.** Inside the person's own command transaction
+  (`_shared/ai-seat-driver.ts`, called by `game-command` after `applyCommand`):
+  computer players stake once every person has locked, answer insurance at once,
+  and play their turns until the table waits on the person, rests at
+  HAND_COMPLETE, or ends. Each decision goes through `assertCommandIsLegal`,
+  `toEngineCommand` and `applyCommand` — the person's own path — and bumps the
+  version once. One command can therefore carry several AI decisions, all in one
+  event batch, one idempotency record and one broadcast; a replay returns that
+  record and never re-runs them. A drive is bounded by one hand (≤ 46 decisions
+  per AI seat) and throws at 64, rolling the command back.
+- **Economy and records.** Closed: no buy-in, no ledger row, `escrow_chips` 0,
+  and `ai_table` is absent from `WALLET_BACKED_MODES`, so a cash-out returns
+  nothing. A computer seat never keeps a table open, so the session ends when its
+  person leaves. AI tables record no statistics and no XP
+  (`SETTLEMENT_RECORDING_MODES`) and are neither graded nor counted for accuracy.
+  A broke person may reset to the table stack between hands, as at a private
+  table.
+- **No clocks.** Like a solo table: nothing waits on the person but the person.
+  So a leave asked mid-hand is held until the PERSON finishes the hand, and the
+  table says exactly that (`UNTIMED_SESSION_MODES`, audit C-4).
+- **Admission.** Every seat-taking path in every mode takes the player's
+  `seat_admission` advisory lock in `assertNoOtherLiveSeat`, so an AI table and
+  another table opened together cannot both seat the player (audit C-1). A
+  private deal seats every member, so it takes EVERY member's lock, in one global
+  order, and checks each under them; one ineligible member refuses the whole
+  deal (C-1 closure finding, Refresh C §13). Each
+  `OPEN_AI_TABLE` request id is recorded in `private.ai_table_open_requests`, so
+  a replay — even after the table has closed — is answered with its original
+  table and opens nothing (audit C-2).
+
+The full record — decisions, evidence, deferrals — is
+[Refresh C](./astra-refresh/refresh-c.md).
+
 ### Realtime ordering
 
 Events carry a monotonic `seq`. Clients track `lastAppliedSeq`:

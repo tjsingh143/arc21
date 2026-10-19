@@ -22,7 +22,9 @@ export {
 export {
   BROKE_AT_PRIVATE_TABLE_BODY,
   BROKE_AT_PRIVATE_TABLE_TITLE,
+  FREE_RESET_TABLE_MODES,
   mayResetPrivateStack,
+  offersFreeReset,
   RESET_PRIVATE_STACK_LABEL,
   type BrokeSeatView,
 } from "./broke-affordance.js";
@@ -54,16 +56,21 @@ export {
   ACTIVE_SESSION_MODES,
   ACTIVE_SESSION_ROUTE,
   canResume,
+  chipsReturnToWallet,
   describeActiveSession,
   describeActiveSessionMode,
   parseActiveSession,
   parseActiveSessionRows,
   resolveTableSeat,
+  handCompletionForMode,
   resumeTargetFor,
   type ActiveSession,
   type ActiveSessionMode,
   type ResumeTarget,
+  type HandCompletion,
   type TableSeatResolution,
+  UNTIMED_SESSION_MODES,
+  WALLET_BACKED_SESSION_MODES,
 } from "./active-session.js";
 
 export {
@@ -86,7 +93,11 @@ export {
 } from "./outcome-announcement.js";
 
 export {
+  COMPUTER_PLAYER_ACCESSIBILITY_LABEL,
+  COMPUTER_PLAYER_LABEL,
   describeSeatBetting,
+  describeSeatHandDetail,
+  describeSeatIdentity,
   seatPresence,
   type SeatPresence,
   type SeatPresenceView,

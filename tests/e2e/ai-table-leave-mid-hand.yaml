@@ -1,0 +1,196 @@
+# Arc 21 — leaving an AI Table MID-HAND (Astra Refresh C, audit finding C-4).
+#
+# WHAT IT PROVES, in order:
+#   * a leave asked while the person still owes a decision is HELD, not
+#     performed: the server refuses a cash-out mid-hand (SESSION_BUSY), and the
+#     table says so in words that are TRUE at a table with no clock — the hand
+#     waits for the person, so they are told to finish it, and NOT that they
+#     "do not need to do anything else" (the sentence the audit caught);
+#   * the action dock stays live while the leave is held, and finishing the hand
+#     is what completes it: the poll sends the held cash-out at the boundary and
+#     the screen leaves the table by itself;
+#   * the seat was really given up, asked of the SERVER: the AI Table screen
+#     re-reads `my_active_session()` and offers Sit down with nothing to return to.
+#
+# BEFORE RUNNING — the same as `ai-table.yaml`:
+#   supabase start
+#   supabase functions serve --no-verify-jwt
+#   npx tsx scripts/e2e-account.ts
+#   .env.local present, and a Release build of the tree under test.
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro --device <UDID> test tests/e2e/ai-table-leave-mid-hand.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          optional: true
+
+- runFlow: sign-in.yaml
+
+- openLink: arc21://table/ai
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-stack"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "ai-table-start"
+    direction: DOWN
+    timeout: 15000
+- assertNotVisible:
+    id: "ai-table-resume-card"
+- tapOn:
+    id: "ai-table-start"
+- extendedWaitUntil:
+    visible: "Leave table"
+    timeout: 45000
+
+# --- Reach a hand where the PERSON owes a decision --------------------------
+# A natural settles inside the deal and a dealer ace offers insurance first, so
+# deal until Stand is on screen. Each state is checked at the TOP level of an
+# iteration (see `career-node.yaml`), and every tap is optional.
+- repeat:
+    while:
+      notVisible:
+        id: "action-stand"
+    times: 10
+    commands:
+      # The dock can sit below the fold at the person's turn; see `ai-table.yaml`.
+      - scrollUntilVisible:
+          element:
+            id: "action-stand"
+          direction: DOWN
+          timeout: 3000
+          optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "insurance-decline"
+          commands:
+            - tapOn:
+                id: "insurance-decline"
+                optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "table-next-hand"
+          commands:
+            - tapOn:
+                id: "table-next-hand"
+                optional: true
+      - runFlow:
+          when:
+            visible:
+              id: "chip-50"
+          commands:
+            - tapOn:
+                id: "chip-50"
+                optional: true
+            - tapOn:
+                id: "bet-deal"
+                optional: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+- assertVisible:
+    id: "action-stand"
+
+# --- Ask to leave while the hand is live ------------------------------------
+- scrollUntilVisible:
+    element: "Leave table"
+    direction: UP
+    timeout: 10000
+- tapOn: "Leave table"
+- extendedWaitUntil:
+    visible: "Leave this table?"
+    timeout: 15000
+- tapOn:
+    text: "Leave table"
+    index: 1
+- extendedWaitUntil:
+    visible:
+      id: "table-leaving"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "table-leaving"
+    direction: DOWN
+    timeout: 10000
+# What is TRUE where there is no clock: the hand waits for the person.
+- assertVisible: ".*Finish your hand to leave.*"
+- assertNotVisible: ".*do not need to do anything.*"
+- takeScreenshot: ai-table-leave-held
+# Still at the table, still able to play.
+- scrollUntilVisible:
+    element:
+      id: "action-stand"
+    direction: DOWN
+    timeout: 10000
+
+# --- Finish the hand; the held leave completes by itself --------------------
+- repeat:
+    while:
+      visible:
+        id: "action-stand"
+    times: 6
+    commands:
+      - scrollUntilVisible:
+          element:
+            id: "action-stand"
+          direction: DOWN
+          timeout: 3000
+          optional: true
+      - tapOn:
+          id: "action-stand"
+          optional: true
+      - waitForAnimationToEnd:
+          timeout: 3000
+- extendedWaitUntil:
+    notVisible:
+      id: "table-leaving"
+    timeout: 45000
+- extendedWaitUntil:
+    notVisible: "Leave table"
+    timeout: 45000
+- takeScreenshot: ai-table-left-after-hand
+
+# THE SEAT WAS ACTUALLY GIVEN UP, asked of the server.
+- openLink: arc21://table/ai
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Open"
+          optional: true
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-stack"
+    timeout: 30000
+- scrollUntilVisible:
+    element:
+      id: "ai-table-start"
+    direction: DOWN
+    timeout: 15000
+- assertNotVisible:
+    id: "ai-table-resume-card"
+- assertVisible:
+    id: "ai-table-start"
+    enabled: true

@@ -52,6 +52,7 @@ import { toPublicState } from "../../shared/blackjack/public-state.js";
 import type { PublicGameState } from "../../shared/blackjack/public-state.js";
 import type { LegalActionSet } from "../../shared/blackjack/legal-actions.js";
 import { betAndDeal, harness } from "../helpers/engine-harness.js";
+import { aiTable, personBets } from "../helpers/ai-table-harness.js";
 
 /*
  * COMPILE-TIME. Not a runtime assertion — the value is never read. If the
@@ -100,11 +101,21 @@ function snapshots(): { phase: string; payload: PublicGameState }[] {
   // An ace up, so the insurance offer is live and its fields are populated.
   const insurance = betAndDeal(harness({ shoe: "10S AD 6H 9C 5H" }), 100);
 
+  /*
+   * An AI table, with a COMPUTER PLAYER IN THE FIRST SEAT. `keyPaths` reads one
+   * representative element of every array, so a table whose first seat is a
+   * person would never show `seats[].isAi` to the comparison at all — the field
+   * would be absent from both sides and the round trip would "pass" without
+   * having looked. Refresh C added the field; this is what makes it compared.
+   */
+  const aiSeated = personBets(aiTable({ shoe: "10S 9H 10D 6C 7S 7H 9D 10C" }), 100);
+
   return [
     { phase: "BETTING_OPEN", payload: toPublicState(betting.state) },
     { phase: "PLAYER_TURNS", payload: toPublicState(dealt.state) },
     { phase: "HAND_COMPLETE", payload: toPublicState(settled.state) },
     { phase: "INSURANCE_OFFER", payload: toPublicState(insurance.state) },
+    { phase: "PLAYER_TURNS (AI table)", payload: toPublicState(aiSeated.state) },
   ];
 }
 
@@ -159,6 +170,26 @@ describe("the sanitised snapshot contract", () => {
     // Before the fix this read `undefined`, and the button it gates was
     // therefore never rendered at any server table.
     expect(parsed.legalActions.s1?.canStartNextHand).toBe(true);
+  });
+
+  /**
+   * The AI seat marker survives the parse, and only where the engine sent it.
+   * Named for the same reason `canStartNextHand` is: a general sweep that
+   * happens to cover a field is worth pinning to the field.
+   */
+  it("carries isAi on a computer seat, and nowhere else", () => {
+    const payload = toPublicState(
+      personBets(aiTable({ shoe: "10S 9H 10D 6C 7S 7H 9D 10C" }), 100).state,
+    );
+    const parsed = publicGameStateSchema.parse(payload);
+    expect(parsed.seats.map((seat) => seat.isAi ?? null)).toEqual([true, null, true]);
+    expect("isAi" in parsed.seats[1]!).toBe(false);
+
+    // Only `true` is a value the engine produces, so only `true` is accepted.
+    const asFalse = { ...payload, seats: payload.seats.map((seat) => ({ ...seat, isAi: false })) };
+    expect(publicGameStateSchema.safeParse(asFalse).success).toBe(false);
+    const asString = { ...payload, seats: payload.seats.map((seat) => ({ ...seat, isAi: "yes" })) };
+    expect(publicGameStateSchema.safeParse(asString).success).toBe(false);
   });
 
   /**

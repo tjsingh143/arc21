@@ -27,6 +27,23 @@ attacker's control.
 **A hidden button is not a security boundary.** Every action is validated
 server-side on authoritative state regardless of what the UI rendered.
 
+## Computer players at AI Tables (Refresh C)
+
+| Attack | Control |
+|--------|---------|
+| Command, seat, fund or configure a computer player | `OPEN_AI_TABLE` is strict and names nothing about the table; a computer seat has no account (`user_id` null by CHECK), so no JWT maps to it, and only the server's driver ever acts for one — inside the person's own command transaction |
+| Make a computer player decide on hidden cards | Its only input is an `AiSeatObservation` built from `toPublicState`'s output; `assertNoHiddenCardLeak` runs on every observation in production |
+| Have a computer player act illegally or out of turn | Every AI decision passes `assertCommandIsLegal` and `applyCommand`, the person's path; illegal ones are refused with the same codes |
+| Plant a bot at a public, private, tournament, daily, career or Quick Play table | `guard_ai_seat_placement` refuses an AI seat anywhere but an `ai_table`, in the database |
+| Cash AI-table chips into the wallet | `ai_table` is not in `WALLET_BACKED_MODES`; a cash-out returns 0; no ledger row is ever written for the table |
+| Farm XP, statistics or accuracy against computer players | `ai_table` is absent from `SETTLEMENT_RECORDING_MODES`, `GRADED_MODES` and `ACCURACY_ELIGIBLE_MODES` |
+| Replay a command to make computer players act twice | The person's command is the unit of idempotency; a replay returns the stored response before the driver runs |
+| Hold an AI table and another table at once by opening both together | Every admission takes the player's `seat_admission` advisory lock in `assertNoOtherLiveSeat` (and `OPEN`/`OPEN_AI_TABLE` before their idempotency lookups), so the second waits and is refused `SESSION_ALREADY_ACTIVE` (audit C-1; deterministic interleaving test). A private deal takes every member's lock in one global order and checks each, so neither the host nor a member already seated elsewhere can be dealt a second seat, and one such member refuses the whole deal (C-1 closure finding) |
+| Re-send an old AI-table open to be reseated after leaving | `private.ai_table_open_requests` answers a replayed request id with its original table, closed or not; an id spent on the other open action is `IDEMPOTENCY_CONFLICT` (audit C-2) |
+
+The engine never reads the AI flag, so a computer player cannot be dealt, paid or
+settled differently from a person. See [Refresh C](./astra-refresh/refresh-c.md).
+
 ---
 
 ## Pseudonymous identity and abuse (Refresh B)

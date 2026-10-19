@@ -3,13 +3,36 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Current local software verdict:** **REFRESH B: PASS**, October 4, 2026.
+**Latest integrated refresh verdict:** **REFRESH B: PASS**, October 4, 2026.
 **KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**.
 See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
 for closure evidence and external/unproven items. The implementation is now
 published in this repository, with both hosted CI jobs passing at
-`059ee0ba9b848254fecd024daae7e2a60be374aa`. Store submission and cloud deployment
-remain unverified. Refresh C/D/E has not begun here.
+`059ee0ba9b848254fecd024daae7e2a60be374aa`
+([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)). Store
+submission and cloud deployment remain unverified.
+
+**Refresh C (AI Tables): final independent verdict reported in the approved
+publication handoff — ASTRA REFRESH C: PASS.** Earlier independent reviews
+returned FAIL; the four findings and subsequent private-admission closure
+finding were repaired (§13–14). The final handoff reports 439 server tests,
+3,056 unit tests, 672 database assertions, 18 private-admission regressions and
+63 migrations replayed. Those results precede this integration step; a complete
+prior audit hash manifest was not located during publication.
+
+Refresh C is committed as `554defeb76c073703004bc10fa3c5ef8a63b88d2`,
+published on `refresh-c-ai-tables`, and proposed in open
+[PR #5](https://github.com/tjsingh143/arc21/pull/5). It is not integrated into
+`main` or deployed. The combined tree's validation and hosted CI are reported in
+that PR separately from the prior independent PASS. Neither establishes store
+or production readiness. Refresh D/E have not begun.
+
+For release, Refresh C adds two forward migrations,
+`20261005120000_ai_tables.sql` and `20261017120000_ai_table_open_requests.sql`,
+which must reach the database with or before the Edge Functions and client that
+use them — the functions write `game_session_seats.is_ai`, the `ai_table` mode
+and `private.ai_table_open_requests`. Each migration is one transaction by
+design (see [Refresh C §8](./astra-refresh/refresh-c.md)).
 
 **Historical Refresh A verification:** 2026-09-14 PDT.
 

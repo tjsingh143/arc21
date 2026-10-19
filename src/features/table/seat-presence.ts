@@ -30,6 +30,8 @@
  * shape being copied.
  */
 
+import { formatChips } from "../../design/format-chips.js";
+
 /** The least a caller must hold. `PublicSeat` satisfies it. */
 export interface SeatPresenceView {
   readonly connected: boolean;
@@ -39,6 +41,50 @@ export interface SeatPresenceView {
   readonly originalBet: number;
   readonly insuranceBet: number;
   readonly hands: readonly unknown[];
+  /** Present, and true, only for a computer player. See `PublicSeat.isAi`. */
+  readonly isAi?: true;
+}
+
+/**
+ * The label a COMPUTER PLAYER carries, or null for a person.
+ *
+ * The specification's computer seats are "explicitly labeled", and the label is
+ * read from the server's flag and from nothing else. A display name is free text
+ * a person chooses — somebody may call themselves "AI Player 1" — so a seat is
+ * labelled a computer player because the snapshot SAYS it is one, never because
+ * of what it is called. `tests/table/seat-presence.test.ts` holds that line.
+ */
+export const COMPUTER_PLAYER_LABEL = "AI";
+
+export function describeSeatIdentity(seat: { readonly isAi?: true }): string | null {
+  return seat.isAi === true ? COMPUTER_PLAYER_LABEL : null;
+}
+
+/** What a screen reader hears for the label, spelled out. */
+export const COMPUTER_PLAYER_ACCESSIBILITY_LABEL = "Computer player";
+
+/**
+ * The line under one of ANOTHER seat's hands: its wager, and once the hand is
+ * settled, what it came to — "Bet 40 · Won 40", "Bet 20 · Lost 20",
+ * "Bet 20 · Push".
+ *
+ * Every hand, not only the first. A seat that splits plays two to four hands,
+ * and a table that drew only the first left the others' cards and results
+ * invisible — at an AI table, where a computer player splits whenever the chart
+ * says so, that is most of what there is to follow. Read from the snapshot's
+ * own `outcome`, so nothing here works out who won.
+ */
+export function describeSeatHandDetail(hand: {
+  readonly wager: number;
+  readonly outcome?: { readonly kind: string; readonly net: number };
+}): string | undefined {
+  if (hand.wager <= 0) return undefined;
+  const bet = `Bet ${formatChips(hand.wager)}`;
+  if (hand.outcome === undefined) return bet;
+  const { net } = hand.outcome;
+  if (net > 0) return `${bet} · Won ${formatChips(net)}`;
+  if (net < 0) return `${bet} · Lost ${formatChips(Math.abs(net))}`;
+  return `${bet} · Push`;
 }
 
 export type SeatPresence =
@@ -91,5 +137,12 @@ export function seatPresence(seat: SeatPresenceView): SeatPresence {
 export function describeSeatBetting(seat: SeatPresenceView): string | null {
   if (!seat.connected) return null;
   if (seat.sittingOut) return "Sitting out this hand";
-  return seat.betLocked ? "Bet placed" : "Yet to bet";
+  if (seat.betLocked) return "Bet placed";
+  /*
+   * A computer player stakes only once the person has locked a bet — the server
+   * asks it no sooner, so that the last computer player to lock can never deal
+   * the hand while the person is still choosing. "Yet to bet" would read as a
+   * player taking their time; this says what it is waiting for.
+   */
+  return seat.isAi === true ? "Bets when you deal" : "Yet to bet";
 }
