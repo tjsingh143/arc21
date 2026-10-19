@@ -2,12 +2,23 @@
 
 A **simulated** blackjack game. Expo (iOS/Android) + Supabase. Virtual chips only.
 
-Read `docs/LAUNCH_STATE.md` for where the build actually is (it points to the
-Astra Refresh A baseline audit, the current release evidence), and
-`docs/AUDIT.md` for how strongly each area has been verified.
+Read `docs/LAUNCH_STATE.md` for the current integrated milestone and release
+evidence, and `docs/AUDIT.md` for how strongly each area has been verified.
 `docs/IMPLEMENTATION_STATUS.md` is a historical tracker.
 
 ---
+
+## Documentation and contribution attribution
+
+Use neutral, evidence-based descriptions of implementation and tests. Do not
+claim that the repository owner, an AI model, an assistant or a coding agent
+authored, implemented or repaired the project. Avoid synthetic credit,
+AI co-author trailers and model signatures. Ordinary Git author/committer
+metadata is not evidence of who personally wrote code. Keep independently
+reported audit provenance and historical checkpoints intact, but never
+present those reviews as implementation authorship. Following a merge, keep
+`README.md`, `docs/LAUNCH_STATE.md` and `docs/RELEASE.md` synchronized
+with actual GitHub status and verified CI.
 
 ## Absolute invariants
 

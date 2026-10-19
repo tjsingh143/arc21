@@ -31,7 +31,21 @@ verify behavior through the running app and backend, not just helper tests.
   `docs/ARCHITECTURE.md`, `docs/DATABASE.md`, and `docs/SECURITY.md`.
   Current release index: `docs/LAUNCH_STATE.md`; verification and external
   activation requirements: `docs/astra-refresh/baseline-audit.md` and
-  `docs/RELEASE.md`. Refresh B implementation/evidence: `docs/astra-refresh/refresh-b.md`. Phase reports and Claude checkpoints are historical evidence.
+  `docs/RELEASE.md`. Refresh B implementation/evidence: `docs/astra-refresh/refresh-b.md`. Phase reports and earlier checkpoints are historical evidence.
+
+## Documentation, authorship and provenance
+
+- Describe features, changes, repairs and test outcomes in neutral technical
+  language. Do not claim that the repository owner or any AI model, assistant,
+  coding agent or other person authored or implemented the work.
+- Do not add AI co-author trailers, model signatures or synthetic attribution.
+  Git author/committer metadata is a record of Git operations, not proof of
+  who wrote particular code.
+- Preserve factual audit results and historical evidence, with their dates
+  and scope; distinguish audit provenance from implementation credit.
+- After publishing or merging a milestone, update `README.md`,
+  `docs/LAUNCH_STATE.md`, and `docs/RELEASE.md` to reflect the actual
+  GitHub state without changing historical checkpoint records retroactively.
 
 ## Authority and invariants
 

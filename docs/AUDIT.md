@@ -659,8 +659,8 @@ conditional.
 
 ### 576 lines of dead code
 `src/features/home/career-summary.ts`, `mode-catalogue.ts` and `shell-ui.tsx`
-were written by an agent whose Home screen was later replaced. Nothing imported
-them. One of them asserted, in a comment, that `src/features/career` "does not
+belonged to an earlier Home-screen implementation that was later
+replaced. Nothing imported them. One of them asserted, in a comment, that `src/features/career` "does not
 exist in this build" — which had become false. Deleted.
 
 An orphan scan across `src/` and `shared/` now reports **zero** unreferenced

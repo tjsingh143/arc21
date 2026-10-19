@@ -363,8 +363,8 @@ It bet, waited for cards and tapped "Leave table". A run whose dealer showed an
 ace failed there, and the saved hierarchy had `insurance-decline` and
 `insurance-take` in it and nothing else. `CLAUDE.md` already records this
 assumption failing two SERVER tests — "the cascade after betting closes stops in
-three places, not two" — and the flow I wrote for F-06 this same phase made it
-again, in a file whose whole purpose is a hand that is still live.
+three places, not two" — and the F-06 flow from this same phase repeated it, in a file
+whose whole purpose is a hand that is still live.
 
 About one hand in thirteen. Fixed by answering each state at the top level of an
 iteration and only then asserting `action-stand`, which is what makes the refusal
