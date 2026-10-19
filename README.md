@@ -14,31 +14,43 @@ mathematically transparent. Expo (React Native) client, Supabase backend.
 
 ## Status
 
-The latest completed feature milestone is **Refresh B**, which adds pseudonymous
-players, account securing, server-confirmed session restoration, and ordered
-notification preferences. Its bounded closure review passed on October 4, 2026,
-with no known release-blocking defects in that review's scope.
+**Latest integrated milestone: Refresh C — AI Tables.** The feature was merged
+into `main` on October 19, 2026 via [PR #5](https://github.com/tjsingh143/arc21/pull/5)
+([merge commit](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564)).
+It adds server-authoritative computer opponents, AI-table UI and lifecycle,
+cross-mode admission protections, and two forward database migrations.
 
-The recorded closure run passed **2,907 unit tests, 392 server tests, and 640 SQL
-assertions**. These are checkpoint results, not a claim that every check was
-re-run for a documentation update. The published implementation also passed
-both hosted CI jobs at commit `059ee0ba9b848254fecd024daae7e2a60be374aa`
-([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)).
+The final independent Refresh-C review reported **PASS**. The integrated
+feature-branch revision also passed [both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/39218823512):
+3,056 unit tests, 3,030 coverage tests with all gates satisfied, 439 server
+tests, 672 database assertions, and a clean replay of 63 migrations. Expo
+Doctor passed 21/21 checks and the iOS Hermes bundle completed at 6.5 MB.
+See the separate [post-merge `main` workflow](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
+for its independently reported result.
 
-Refresh C/D/E has not begun in this repository. Store submission, cloud
-deployment, Android builds, physical-device testing, and live push delivery
-remain outside the verified release evidence.
+**Previous milestone: Refresh B.** Its October 4, 2026 closure review passed
+2,907 unit tests, 392 server tests and 640 SQL assertions at that checkpoint;
+both [hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/37243705811)
+also passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`.
+These are historical results, not current Refresh-C test totals.
+
+Refresh D and E have not begun. Source integration is **not** a production
+deployment: store submission, hosted application/backend activation, Android
+builds, physical-device testing and live push delivery remain outside the
+verified release evidence.
 
 Where to read the current state:
 
-- [Launch state](docs/LAUNCH_STATE.md) — current release index.
-- [October 11 SDK maintenance](docs/CI_MAINTENANCE_2026_10_11.md) — current
-  SDK 57 patch alignment, portable checks, and retained CI timeout evidence.
+- [Launch state](docs/LAUNCH_STATE.md) — current integration and release index.
+- [Refresh C](docs/astra-refresh/refresh-c.md) — feature, historical findings,
+  fixes and verification.
+- [Release readiness](docs/RELEASE.md) — deployment dependencies and limits.
 - [Refresh B closure](docs/astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
-  — implementation, regression evidence, and remaining limits.
-- [Release readiness](docs/RELEASE.md) — external activation requirements.
+  — prior milestone evidence.
+- [SDK maintenance history](docs/CI_MAINTENANCE_2026_10_11.md) — October 11
+  checkpoint; later patch alignment is recorded in PR #5.
 - [Dependency disposition](docs/astra-refresh/dependency-disposition.md)
-  — retained advisories and the exposure reviewed at the earlier milestone.
+  — historical security-advisory assessment.
 
 ## Getting started
 

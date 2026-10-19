@@ -1,30 +1,36 @@
 # Astra Refresh C — AI Tables
 
-**Current status: final independent verdict reported in the approved publication
-handoff — `ASTRA REFRESH C: PASS`.** The handoff reports 439 server tests,
-3,056 unit tests, 672 database assertions, 18 private-admission regressions and
-63 migrations replayed. A complete prior audit hash manifest was not located
-during publication, so no cryptographic comparison with that snapshot is claimed.
+**Current status: integrated into `main`, not deployed.** The final independent
+review reported **Refresh C: PASS** (439 server tests, 3,056 unit tests,
+672 database assertions, 18 private-admission regressions and 63 migrations).
+A complete prior audit hash manifest was unavailable during publication, so
+a direct hash comparison to that unavailable snapshot is not claimed.
 
-The implementation is published as `554defeb76c073703004bc10fa3c5ef8a63b88d2`
-on `refresh-c-ai-tables`, with [PR #5](https://github.com/tjsingh143/arc21/pull/5)
-open. It has not been integrated into `main` or deployed; Refresh D/E have not
-begun. Integration validation and hosted CI are separate from the prior PASS.
+The approved feature commit `554defeb76c073703004bc10fa3c5ef8a63b88d2`
+was integrated through [PR #5](https://github.com/tjsingh143/arc21/pull/5)
+on October 19, 2026, with merge commit
+[`9eba544ca2d7fb115dc75dcdd0ec078cea479564`](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564).
+The [final feature-branch CI](https://github.com/tjsingh143/arc21/actions/runs/39218823512)
+passed both jobs after Expo SDK 57 patch alignment; the separate
+[post-merge workflow](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
+provides the `main` result. Refresh D/E have not begun. Integration is not
+store approval, cloud deployment, or completion of external activation.
 
-**Historical implementation record:** the sections below retain the earlier
-review findings, repairs and verification on their original terms. The October
-14 independent review returned FAIL on C-1–C-4; the subsequent closure review
-accepted C-2–C-4 but found the private-admission C-1 bypass. Sections 13–14 record
-the repairs. Their awaiting-review and uncommitted Git-state statements describe
-those checkpoints, before the final PASS and publication recorded above.
+**Historical implementation record:** the sections below retain the original
+review findings, repairs and verification at their respective checkpoints.
+The October 14 independent review reported four findings; a later closure
+review accepted C-2–C-4 and found a private-admission bypass (§13–14).
+Older awaiting-review and uncommitted statements are checkpoint history,
+superseded by the final PASS and GitHub merge recorded here.
 
 - **Starting commit:** `059ee0ba9b848254fecd024daae7e2a60be374aa`
   (`Fix Expo SDK 57 dependency compatibility`), then `main` = `origin/main`.
   The Refresh B checkpoint `2476511c55ea7122ce0eeffeaa87efd4e0e22b23` was
   verified to be its ancestor; `059ee0b` changes only `package.json` and
   `package-lock.json`.
-- **Branch:** `refresh-c-ai-tables`, created from that commit; now published in
-  PR #5, not merged.
+- **Branch history:** `refresh-c-ai-tables` was created from that commit;
+  PR #5 has since been merged into `main`. The remote branch may be retained
+  as a historical reference.
 - **Scope:** AI Tables as a first-class mode. Refresh A and B are complete and
   were not reopened; Refresh D (Home hierarchy) and E (release polish) were not
   begun. The only Play-surface change is one mode card and the screen it opens.
@@ -511,9 +517,9 @@ hosted Realtime behaviour are unverified here, as for Refresh A/B.
    one live seat per player bounds a player to one table at a time, so the cost of
    abuse is serial table creation, exactly as for Quick Play today.
 
-**Known remaining Refresh C implementation blockers:** none known to the
-implementing agent. This is not a verdict; the independent audit decides.
-*(Historical: written before the audit, which then found four. See §13.)*
+**Historical pre-review status:** no implementation blockers were recorded at
+that checkpoint. This was not an independent verdict; the subsequent review
+identified four findings (§13).
 
 **Observations made during the repair, recorded and not changed** (outside the
 four findings):
@@ -563,8 +569,8 @@ tests `tests/server/ai-table.integration.test.ts`,
 separate session; its report is not stored in this repository) ended
 **`ASTRA REFRESH C: FAIL`**: one P1 and three P2 findings, plus the two
 placeholders above. It is reproduced here in substance and is not overwritten.
-The repair below was done by the IMPLEMENTING agent on October 17, 2026; it is
-not a closure verdict. Each regression was run against the unrepaired code first
+The repair described below was completed on October 17, 2026; that work
+preceded a separate closure review and was not itself an independent verdict. Each regression was run against the unrepaired code first
 and failed, then passed against the repair; the server protections were then
 each removed again (mutation) to show the new tests catch their absence.
 
@@ -701,8 +707,8 @@ each removed again (mutation) to show the new tests catch their absence.
 **The review.** A separate independent closure review (October 18, 2026; its
 report and probe log are not in this repository) returned
 **`ASTRA REFRESH C: FAIL`** on one finding and accepted C-2, C-3 and C-4. That
-verdict stands as recorded. The repair below was done by the implementing agent
-and is not a closure verdict.
+verdict stands as recorded. The subsequent repair described below was not
+itself an independent closure verdict.
 
 ### C-1 (closure) — a private deal gave a seated player a second live seat
 

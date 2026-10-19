@@ -1,5 +1,11 @@
 # Astra Refresh B — pseudonymous players
 
+**Historical checkpoint:** This record describes Refresh B as of October 4,
+2026. Statements below that Refresh C/D/E had not begun refer to that earlier
+checkpoint; Refresh C was subsequently integrated into `main` on October 19,
+2026 through [PR #5](https://github.com/tjsingh143/arc21/pull/5).
+See [Launch State](../LAUNCH_STATE.md) for current integration status.
+
 **Closure verification — October 4, 2026: ASTRA REFRESH B: PASS (§26).**
 **KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**
 The H1–H4 repair and immediate regressions are verified. External activation and

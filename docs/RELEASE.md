@@ -3,29 +3,31 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Latest integrated refresh verdict:** **REFRESH B: PASS**, October 4, 2026.
-**KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**.
-See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
-for closure evidence and external/unproven items. The implementation is now
-published in this repository, with both hosted CI jobs passing at
-`059ee0ba9b848254fecd024daae7e2a60be374aa`
-([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)). Store
-submission and cloud deployment remain unverified.
+**Latest integrated feature: Refresh C — AI Tables (October 19, 2026).**
+Its final independent review reported **Refresh C: PASS**; prior failed
+findings and subsequent repairs are recorded in [Refresh C §§13–14](./astra-refresh/refresh-c.md).
+The reported final review totals were 439 server tests, 3,056 unit tests,
+672 database assertions, 18 private-admission regressions and 63 migrations.
 
-**Refresh C (AI Tables): final independent verdict reported in the approved
-publication handoff — ASTRA REFRESH C: PASS.** Earlier independent reviews
-returned FAIL; the four findings and subsequent private-admission closure
-finding were repaired (§13–14). The final handoff reports 439 server tests,
-3,056 unit tests, 672 database assertions, 18 private-admission regressions and
-63 migrations replayed. Those results precede this integration step; a complete
-prior audit hash manifest was not located during publication.
+Refresh C was merged into `main` through
+[PR #5](https://github.com/tjsingh143/arc21/pull/5) at
+[`9eba544ca2d7fb115dc75dcdd0ec078cea479564`](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564).
+The integrated feature-branch revision passed [both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/39218823512):
+lint, typechecks, 3,056 unit tests, 3,030 coverage tests with gates passed,
+Expo Doctor 21/21, the iOS Hermes bundle, 63 migrations, 672 database
+assertions and 439 server tests. The [post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
+has a separate run record.
 
-Refresh C is committed as `554defeb76c073703004bc10fa3c5ef8a63b88d2`,
-published on `refresh-c-ai-tables`, and proposed in open
-[PR #5](https://github.com/tjsingh143/arc21/pull/5). It is not integrated into
-`main` or deployed. The combined tree's validation and hosted CI are reported in
-that PR separately from the prior independent PASS. Neither establishes store
-or production readiness. Refresh D/E have not begun.
+**Previous milestone: Refresh B (October 4, 2026): PASS.** Its closure review
+found zero known release-blocking software defects within the Refresh-B scope.
+The historical evidence and external limitations are in
+[Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026);
+both hosted CI jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`
+([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)).
+
+**Release boundary:** A source merge and green CI are not store approval or
+a production deployment. Hosted migration/application activation and remaining
+platform/device checks have not been established. Refresh D/E have not begun.
 
 For release, Refresh C adds two forward migrations,
 `20261005120000_ai_tables.sql` and `20261017120000_ai_table_open_requests.sql`,
@@ -46,7 +48,7 @@ coverage tests with per-area thresholds, 320 real server tests, 592 SQL
 assertions, a clean reset of all 59 migrations and the final iOS Release
 installed on both simulators. Final postflight confirms wallet/ledger equality,
 restored permissions and running application services. These counts and verdicts
-belong to Refresh A only. Refresh B is published to GitHub; no store submission or cloud deployment is established.
+belong to Refresh A only. Refresh B and C are integrated into GitHub `main`; no store submission or cloud deployment is established.
 
 The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
 four advisories across 18 package entries and explains their actual runtime/build
