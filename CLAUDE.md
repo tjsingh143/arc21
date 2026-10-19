@@ -1464,6 +1464,20 @@ captured only for its own step, so the runtime's own line was invisible until a
 diagnostic step printed `docker logs supabase_edge_runtime_arc21`. Read the
 runtime log before calling a hang load.
 
+**A `commit; begin;` INSIDE A MIGRATION FILE IS ROLLED BACK AFTER THE `begin;`.**
+The Supabase CLI sends a file as one batch whose Sync commits only an implicit
+transaction: the `commit;` commits what precedes it, the `begin;` opens an
+explicit block the batch leaves open, and closing the connection rolls back the
+rest of the file AND its migration-history row — while `supabase migration up`
+prints "Migrations applied". Found on the AI-tables migration's first draft, which
+had copied the split `20260823130000_career_attempts.sql` uses around an enum
+change: only the new enum label survived. Since PostgreSQL 12 `alter type … add
+value` may run inside a transaction as long as the label is not USED before
+commit (a PL/pgSQL body is parsed at first execution, so referencing it there is
+fine). Write a migration as one transaction, and after applying one, check
+`supabase_migrations.schema_migrations` and the objects it should have created
+rather than the CLI's message.
+
 ---
 
 ## Product rules that are easy to get wrong
@@ -1535,6 +1549,14 @@ runtime log before calling a hang load.
   the turn arrives. A fifteen-second action timer is a race a push cannot win;
   what is worth telling somebody is that a hand was played for them. Deduped per
   table, so a player who put their phone down is told once.
+- **An AI Table's computer players are participants, never authority.** They
+  are dealt from the same shoe by the same engine (which never reads `isAi`),
+  decide only from an observation built from `toPublicState`, act on the server
+  inside the person's own command through the person's own legality path, stake
+  only after the person locks, and never start a hand. They exist only at an
+  `ai_table` (a database trigger refuses them anywhere else), never hold an
+  account, and the table is a closed economy that records no statistics, XP or
+  accuracy. See `docs/astra-refresh/refresh-c.md`.
 - **A loss is never the loudest thing a player hears or the largest thing they
   see.** No red flash, no shake, no sting: `tests/audio` asserts the loss cue is
   quieter than the win, and `OutcomeBadge` gives a halo only to a win.

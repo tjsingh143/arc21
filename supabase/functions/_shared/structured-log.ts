@@ -22,6 +22,7 @@ export type CommandOutcome =
   | "private_table_started"
   | "private_stack_reset"
   | "public_seat_taken"
+  | "ai_table_opened"
   | "daily_challenge_started"
   | "sprint_registered"
   | "sprint_withdrawn"
@@ -66,6 +67,12 @@ export interface LogFields {
    * identity or the target of the refused action.
    */
   retryAfterSeconds?: number;
+  /**
+   * How many computer-player decisions an AI Table command carried with it. A
+   * count only — never which actions, never a card — so the log can show that
+   * a command's version moved by more than one without describing a hand.
+   */
+  aiDecisions?: number;
 }
 
 function emit(level: "info" | "warn" | "error", message: string, fields: LogFields, detail?: string): void {

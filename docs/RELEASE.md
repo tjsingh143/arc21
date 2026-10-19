@@ -7,7 +7,18 @@ blocked on, and every defect deliberately carried forward rather than fixed.
 **KNOWN CURRENT REFRESH-B RELEASE-BLOCKING SOFTWARE DEFECTS: 0**.
 See [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
 for closure evidence and external/unproven items. Local checkpoint only; no push
-or deployment. Refresh C/D/E has not begun.
+or deployment.
+
+**Refresh C (AI Tables) is implemented on `refresh-c-ai-tables`. Its independent
+audit returned FAIL; the four findings are repaired and the tree awaits an
+independent closure review, so it carries no passing verdict.** For release it
+adds two forward migrations, `20261005120000_ai_tables.sql` and
+`20261017120000_ai_table_open_requests.sql`, which must reach the database with
+or before the Edge Functions and client that use them — the functions write
+`game_session_seats.is_ai`, the `ai_table` mode and
+`private.ai_table_open_requests`. It is a single transaction by
+design (see [Refresh C §8](./astra-refresh/refresh-c.md)). Refresh D/E have not
+begun.
 
 **Historical Refresh A verification:** 2026-09-14 PDT.
 

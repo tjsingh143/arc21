@@ -1,9 +1,21 @@
 # Arc 21 Launch State
 
+**In progress:** [Astra Refresh C — AI Tables](./astra-refresh/refresh-c.md),
+implemented on branch `refresh-c-ai-tables` from `main` (`059ee0b`). Its
+independent Astra audit (October 14, 2026) returned **ASTRA REFRESH C: FAIL** on
+four findings (C-1 to C-4); all four have since been repaired by the implementing
+agent with regressions that fail on the original code, and **the repaired tree
+awaits a separate independent closure review — Refresh C is NOT approved.** See
+[Refresh C §13](./astra-refresh/refresh-c.md). It adds an unranked,
+closed-economy `ai_table` mode with server-driven, explicitly labelled computer
+seats and two forward migrations (`20261005120000_ai_tables.sql`,
+`20261017120000_ai_table_open_requests.sql`). Not committed, pushed, merged or
+deployed. Refresh D/E have not begun.
+
 **Latest completed work:** [Astra Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
 **PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software
 defects: 0.** Local checkpoint subject: `Complete Astra Refresh B pseudonymous user system`.
-No push or deployment; Refresh C/D/E has not begun. External activation remains.
+No push or deployment. External activation remains.
 
 Read [baseline-audit.md](./astra-refresh/baseline-audit.md) for the historical
 22 verified findings, native/backend evidence, final gates and local checkpoint.

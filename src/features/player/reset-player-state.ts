@@ -1,3 +1,4 @@
+import { useAiTableStore } from "../ai-table/ai-table-store.js";
 import { useCareerServerStore } from "../career/career-server-store.js";
 import { useCosmeticsStore } from "../cosmetics/cosmetics-store.js";
 import { useLoadoutStore } from "../cosmetics/loadout-store.js";
@@ -21,6 +22,11 @@ import { invalidatePlayerScope } from "./player-scope.js";
 export function resetPlayerState(): void {
   invalidatePlayerScope();
   useQuickPlayStore.setState({ opening: false, notice: null });
+  // An AI-table open in flight for the previous player is abandoned by the
+  // scoped setter, which also refuses its `opening: false`; without this the
+  // next player's "Sit down" stayed disabled for the life of the process
+  // (Refresh C audit C-3).
+  useAiTableStore.setState({ opening: false, notice: null });
   usePresenceStore.getState().leave();
   useOnlineTableStore.getState().forgetTable();
   useWalletStore.setState(useWalletStore.getInitialState(), true);

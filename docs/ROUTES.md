@@ -54,6 +54,17 @@ so instead of offering a button that cannot work.
 There is no separate tournament table route: a sprint is a shared table, so it
 opens `/table/[gameId]` like any other.
 
+## AI Tables (Astra Refresh C)
+
+| Path | File | Purpose |
+|------|------|---------|
+| `/table/ai` | `app/table/ai.tsx` | AI Table: the terms before anything opens — the computer players, what they can see, the table chips and that nothing is ranked — then **Sit down**. A player already at an AI table is offered **Return to your AI table**; one seated elsewhere is offered the way back to that table instead. |
+
+Reached from the Play tab's AI Table card, or `arc21://table/ai`. The table
+itself is the shared `/table/[gameId]`, exactly as for every other server mode:
+there is no second blackjack screen, and a computer player's seat is drawn by
+the same code as anybody else's, labelled AI from the snapshot's `isAi`.
+
 ## Progression
 
 | Path | File | Purpose |

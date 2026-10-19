@@ -17,6 +17,10 @@
  */
 
 import {
+  AI_TABLE_PLAYER_SEAT_INDEX,
+  AI_TABLE_SEAT_COUNT,
+  AI_TABLE_STACK,
+  aiTableRules,
   applyCommand,
   ARC_STANDARD_RULES,
   createGame,
@@ -30,6 +34,7 @@ import {
   randomIntBelow,
   isVacatedSeat,
   type GameTiming,
+  type SeatSeed,
 } from "../../../shared/blackjack/index.js";
 import {
   DAILY,
@@ -61,6 +66,7 @@ import {
   type StartPrivateTableRequest,
   type ResetPrivateStackRequest,
   type JoinPublicTableRequest,
+  type OpenAiTableRequest,
   type StartDailyChallengeRequest,
   type RegisterSprintRequest,
   type StartCareerNodeRequest,
@@ -97,9 +103,14 @@ import {
   walletBalance,
 } from "../_shared/session-repository.ts";
 import { previousClosure, settleTableClosure } from "../_shared/close-table.ts";
-import { chipsCameFromWallet } from "../_shared/session-economics.ts";
+import {
+  allowsFreeStackReset,
+  chipsCameFromWallet,
+  freeResetStackFor,
+} from "../_shared/session-economics.ts";
 import { notifyTournamentStarting } from "../_shared/notify.ts";
 import { canCloseSession, sanitise, serverNow, serverRandom } from "../_shared/engine-bridge.ts";
+import { driveAiSeats } from "../_shared/ai-seat-driver.ts";
 
 /**
  * A solo table carries no action deadline.
@@ -168,6 +179,9 @@ Deno.serve(withUnreadBodyDrained(async (request: Request): Promise<Response> => 
     } else if (command.action === "START_PRIVATE_TABLE") {
       response = await withTransaction((tx) => startPrivateTable(tx, identity.userId, command, log));
       log.outcome = "private_table_started";
+    } else if (command.action === "OPEN_AI_TABLE") {
+      response = await withTransaction((tx) => openAiTable(tx, identity.userId, command, log));
+      log.outcome = "ai_table_opened";
     } else if (command.action === "START_DAILY_CHALLENGE") {
       response = await withTransaction((tx) =>
         startDailyChallenge(tx, identity.userId, command, log),
@@ -257,10 +271,15 @@ async function startPrivateTable(
   log: LogFields,
 ): Promise<SessionResponse> {
   // Lock the room so two members tapping "start" together cannot each create a
-  // game for it.
+  // game for it. A PRIVATE room only, as `joinPublicTable` reads a public one
+  // only: a matched public room has joined members and no game until somebody
+  // buys in, and without this its first arrival could deal it as a private
+  // table and seat a matched stranger there.
   const rooms = await tx`
     select id, code, status, host_user_id, max_seats, game_session_id
-    from public.rooms where id = ${command.roomId}::uuid for update
+    from public.rooms
+    where id = ${command.roomId}::uuid and mode = 'private_table'
+    for update
   `;
   const room = rooms[0] as
     | { id: string; status: string; host_user_id: string; game_session_id: string | null }
@@ -291,6 +310,31 @@ async function startPrivateTable(
   }
   if (seated.length < 2) {
     throw new CommandError("ILLEGAL_ACTION", "a private table needs at least two players");
+  }
+
+  /*
+   * EVERY MEMBER IS ADMITTED HERE, NOT ONLY THE HOST.
+   *
+   * This one command gives a seat to everybody in the room, and it used to ask
+   * nobody — so a player already at an AI table, a Quick Play table or a Daily
+   * attempt was dealt a second live seat, by their own hand or by another host's,
+   * and `my_active_session()` then named only the newer one. Reproduced by the
+   * Refresh C closure review without any race, and in
+   * `tests/server/private-admission.integration.test.ts`.
+   *
+   * All members' admission locks are taken, in the one global order, BEFORE any
+   * of them is checked, and the checks run under them: so no other admission of
+   * any member can commit between a check and the inserts below, and one
+   * ineligible member refuses the whole deal while nothing has been written.
+   */
+  await lockSeatAdmissions(tx, seated.map((member) => member.user_id));
+  for (const member of seated) {
+    try {
+      await assertNoOtherLiveSeat(tx, member.user_id, null);
+    } catch (error) {
+      if (!(error instanceof CommandError)) throw error;
+      throw new CommandError(error.code, `member ${member.user_id}: ${error.internalDetail ?? ""}`);
+    }
   }
 
   const gameId = crypto.randomUUID();
@@ -350,13 +394,16 @@ async function startPrivateTable(
 }
 
 /**
- * Put a broke seat back on the private table's fixed stack.
+ * Put a broke seat back on the table's own fixed stack.
  *
  * Three guards, and all three matter:
  *
- *   - **private tables only.** A free reset at a wallet-backed table would mint
- *     chips out of nothing. The mode is read from the session row, never from
- *     the request.
+ *   - **closed economies with a free reset only** — a private table, or an AI
+ *     table (`FREE_STACK_RESET_MODES`). A free reset at a wallet-backed table
+ *     would mint chips out of nothing. The mode is read from the session row,
+ *     never from the request, and so is the stack it restores. The wire action
+ *     keeps its original name, `RESET_PRIVATE_STACK`: renaming it would break
+ *     every client that already sends it, for no change in what it does.
  *   - **between hands only.** Resetting mid-hand would change a stack with a
  *     wager already committed against it.
  *   - **only when actually broke.** Otherwise this is a "refill to full"
@@ -373,8 +420,9 @@ async function resetPrivateStack(
 ): Promise<SessionResponse> {
   const session = await loadSession(tx, command.gameId);
   if (!session) throw new CommandError("NOT_A_PARTICIPANT", "no such table");
-  if (session.mode !== "private_table") {
-    throw new CommandError("ILLEGAL_ACTION", "only a private table can reset a stack");
+  const tableStack = freeResetStackFor(session.mode);
+  if (!allowsFreeStackReset(session.mode) || tableStack === null) {
+    throw new CommandError("ILLEGAL_ACTION", `a ${session.mode} table cannot reset a stack`);
   }
 
   const seat = await findSeat(tx, command.gameId, userId);
@@ -425,7 +473,7 @@ async function resetPrivateStack(
     version: state.version + 1,
     seats: state.seats.map((candidate) =>
       candidate.seatId === seat.id
-        ? { ...candidate, stack: PRIVATE_TABLE_STACK, sittingOut: false }
+        ? { ...candidate, stack: tableStack, sittingOut: false }
         : candidate,
     ),
   };
@@ -437,7 +485,7 @@ async function resetPrivateStack(
     status: "private_stack_reset",
     gameId: command.gameId,
     seatId: seat.id,
-    stack: PRIVATE_TABLE_STACK,
+    stack: tableStack,
     publicState: sanitise(next),
   };
 }
@@ -465,41 +513,74 @@ async function resetPrivateStack(
  * the same relationship the tier's unlock level already has with this function.
  * Being matched is not being seated, and nothing stops a matched player opening
  * a solo table first, so the queue's refusal cannot be the only one.
+ *
+ * IT IS ONLY A CONTROL BECAUSE OF THE LOCK IN ITS FIRST LINE. The reads below
+ * answer against COMMITTED rows, and the seat they are guarding against is
+ * inserted later in the same transaction — so without a lock two admissions by
+ * one player, in two different modes, both found no seat and both inserted one.
+ * Measured by the Refresh C audit and reproduced deterministically in
+ * `tests/server/ai-table.integration.test.ts` (C-1): an AI table and a Quick Play
+ * table opened together were BOTH answered 200, five times in five. Taking the
+ * lock here rather than in each caller means no mode can be added without it.
  */
 async function assertNoOtherLiveSeat(
   tx: Tx,
   userId: string,
   exceptGameId: string | null,
 ): Promise<void> {
-  const seated = await tx<{ game_session_id: string }[]>`
-    select s.game_session_id
-    from public.game_session_seats s
-    join public.game_sessions g on g.id = s.game_session_id
-    where s.user_id = ${userId}::uuid
-      and s.status <> 'left'
-      and g.status in ('lobby', 'active')
-      and (${exceptGameId}::uuid is null or s.game_session_id <> ${exceptGameId}::uuid)
-    limit 1
+  await lockSeatAdmission(tx, userId);
+
+  /*
+   * ONE STATEMENT, so one READ COMMITTED snapshot answers all three questions.
+   *
+   * The sprint dealer turns a pending entry into a seat in one commit, without
+   * taking any entrant's admission lock (it holds the fourth registrant's, and
+   * taking the others' after that would break the lock order). Read as two
+   * statements, a deal committed between them was invisible to both: the seat
+   * read ran before it and the entry read after it, so the check passed for a
+   * player who now held a tournament seat. One snapshot sees the entry or the
+   * seat, never neither. Made deterministic in
+   * `tests/server/private-admission.integration.test.ts`.
+   */
+  const [facts] = await tx<
+    { elsewhere: string | null; own: boolean; queued: string | null }[]
+  >`
+    select
+      (select s.game_session_id::text
+         from public.game_session_seats s
+         join public.game_sessions g on g.id = s.game_session_id
+        where s.user_id = ${userId}::uuid
+          and s.status <> 'left'
+          and g.status in ('lobby', 'active')
+          and (${exceptGameId}::uuid is null or s.game_session_id <> ${exceptGameId}::uuid)
+        limit 1) as elsewhere,
+      exists (
+        select 1 from public.game_session_seats s
+         where s.user_id = ${userId}::uuid
+           and s.game_session_id = ${exceptGameId}::uuid
+           and s.status <> 'left'
+      ) as own,
+      (select e.tournament_id::text
+         from public.tournament_entries e
+         join public.tournaments t on t.id = e.tournament_id
+        where e.user_id = ${userId}::uuid
+          and e.status = 'registered'
+          and t.status = 'registering'
+        limit 1) as queued
   `;
-  if (seated.length > 0) {
-    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${seated[0]?.game_session_id}`);
+  if (!facts) throw new CommandError("INTERNAL", "seat admission check returned no row");
+
+  if (facts.elsewhere !== null) {
+    throw new CommandError("SESSION_ALREADY_ACTIVE", `already seated in ${facts.elsewhere}`);
   }
 
   /*
    * A player returning to a table they already hold is not taking a new seat, so
-   * nothing further is asked of them. Reached only when `exceptGameId` named a
-   * game — the query above has already proved there is no seat anywhere ELSE.
+   * nothing further is asked of them. `own` is true only when `exceptGameId`
+   * named a game — and `elsewhere` has already proved there is no seat anywhere
+   * ELSE.
    */
-  if (exceptGameId !== null) {
-    const own = await tx<{ id: string }[]>`
-      select s.id from public.game_session_seats s
-      where s.user_id = ${userId}::uuid
-        and s.game_session_id = ${exceptGameId}::uuid
-        and s.status <> 'left'
-      limit 1
-    `;
-    if (own.length > 0) return;
-  }
+  if (facts.own) return;
 
   /*
    * A PAID SPRINT ENTRY IS A SEAT ALREADY BOUGHT, even though no seat row exists
@@ -515,21 +596,57 @@ async function assertNoOtherLiveSeat(
    * The entry is refundable (`WITHDRAW_SPRINT`) and expires by itself, so this
    * refusal always names something the player can do.
    */
-  const queued = await tx<{ tournament_id: string }[]>`
-    select e.tournament_id
-    from public.tournament_entries e
-    join public.tournaments t on t.id = e.tournament_id
-    where e.user_id = ${userId}::uuid
-      and e.status = 'registered'
-      and t.status = 'registering'
-    limit 1
-  `;
-  if (queued.length > 0) {
-    throw new CommandError(
-      "SESSION_ALREADY_ACTIVE",
-      `waiting for tournament ${queued[0]?.tournament_id}`,
-    );
+  if (facts.queued !== null) {
+    throw new CommandError("SESSION_ALREADY_ACTIVE", `waiting for tournament ${facts.queued}`);
   }
+}
+
+/**
+ * ONE SEAT ADMISSION AT A TIME PER PLAYER, across every mode.
+ *
+ * A transaction-scoped advisory lock keyed on the player, held to commit. Every
+ * path that can give a player a seat reaches it through `assertNoOtherLiveSeat`,
+ * so a second admission by the same player — whatever its mode — waits for the
+ * first to commit or roll back, and its own check (a fresh statement under READ
+ * COMMITTED) then sees the seat the first one inserted.
+ *
+ * A caller whose idempotency lookup precedes the check (`open`, `openAiTable`)
+ * takes it FIRST as well, so a concurrent retry of one request waits and then
+ * finds the first request's record instead of being refused by its seat.
+ * Re-taking it is free: transaction advisory locks stack in one session.
+ *
+ * LOCK ORDER. Wherever a room row, the daily challenge row or the sprint
+ * registration lock is taken, it is taken BEFORE this one, and nothing holding
+ * this lock then waits on any of those; the wallet (`apply_wallet_delta`) is
+ * always taken AFTER it. So it cannot join a cycle. The key text is distinctive
+ * on purpose: the C-1 regression recognises a request queued on it.
+ *
+ * A command that seats SEVERAL players (`startPrivateTable`) takes all of their
+ * locks through `lockSeatAdmissions`, in one global order, before checking any
+ * of them; see there for why that cannot deadlock either.
+ */
+async function lockSeatAdmission(tx: Tx, userId: string): Promise<void> {
+  await tx`select pg_advisory_xact_lock(hashtext('seat_admission:' || ${userId}::text))`;
+}
+
+/**
+ * `lockSeatAdmission` for every player one command is about to seat.
+ *
+ * Ordered by the LOCK KEY itself, then the id — not by seat or by id alone — so
+ * any two multi-player admissions request shared keys in the same order even
+ * when two ids hash alike, and two private deals sharing members can only queue,
+ * never wait on each other in a circle. Single-player admissions hold one key at
+ * a time and never wait on a second, so they cannot close a cycle with this.
+ * Nothing taken after these locks (seat inserts, the engine row of a brand-new
+ * game) is held by anybody waiting for one of them, and no wallet is touched.
+ */
+async function lockSeatAdmissions(tx: Tx, userIds: readonly string[]): Promise<void> {
+  const ordered = await tx<{ user_id: string }[]>`
+    select distinct u::text as user_id, hashtext('seat_admission:' || u::text) as key
+    from unnest(${userIds as string[]}::uuid[]) as u
+    order by key, user_id
+  `;
+  for (const row of ordered) await lockSeatAdmission(tx, row.user_id);
 }
 
 /**
@@ -858,6 +975,263 @@ async function describePrivateTable(
   };
 }
 
+// ---------------------------------------------------------------------------
+// OPEN_AI_TABLE
+// ---------------------------------------------------------------------------
+
+/**
+ * An AI table carries no clock, for the reason a solo table does not.
+ *
+ * Timers exist so an absent PERSON cannot stall other people. The other seats
+ * here are computer players, who act inside the person's own commands and are
+ * never kept waiting by anything, so a deadline would only ever be used to
+ * stand a hand on the person's behalf — silently changing their chips for no
+ * one's benefit.
+ */
+const AI_TABLE_TIMING = null;
+
+/**
+ * A computer player's name: "AI Player 1", "AI Player 2", in seating order.
+ *
+ * The name says what the seat is, but it is not how anything KNOWS what the
+ * seat is — that is `is_ai` on the seat row and `isAi` on the engine seat.
+ * Names are free text, and a person can call themselves anything.
+ */
+function aiSeatName(ordinal: number): string {
+  return `AI Player ${ordinal}`;
+}
+
+/**
+ * Sit the player down at a new AI table, or return them to the one they hold.
+ *
+ * WHAT IT DOES NOT DO is move a chip. Every seat starts on `AI_TABLE_STACK`
+ * table chips that come from nowhere and go nowhere — no buy-in, no ledger
+ * row, `escrow_chips` zero for life — because a computer player has no wallet,
+ * and a chip won from one that could leave the table would be a chip minted.
+ * See `session-economics.ts`.
+ *
+ * WHAT IT GUARANTEES:
+ *
+ *   - ONE ADMISSION AT A TIME PER PLAYER, IN ANY MODE. `lockSeatAdmission` is
+ *     the first thing it does, and it is the same lock every other mode's
+ *     admission takes — so a double tap, a response-loss retry or a Quick Play
+ *     open sent at the same moment waits, then finds the first. Before Refresh
+ *     C's repair this lock was private to AI opens (`ai_table_open:`), which
+ *     serialised AI opens with each other and with nothing else (audit C-1).
+ *   - ONE REQUEST, ONE TABLE — FOR EVER. The request id is recorded in
+ *     `private.ai_table_open_requests` in the transaction that answers it, and
+ *     a replay is answered from that record, including after the table has
+ *     closed. "The AI table you are at" alone was not enough: once the player
+ *     left there was no such table, and the byte-identical original request
+ *     opened a second one (audit C-2). A request id already spent on a Quick
+ *     Play buy-in is a different operation and is refused, not reinterpreted.
+ *   - RESUMES. A NEW request from a player already seated at an AI table is
+ *     answered with that table (`resumed: true`), and recorded too.
+ *   - ONE LIVE SEAT. Anywhere else, the player is refused exactly as every other
+ *     mode refuses them, and the refusal names somewhere they can go back to.
+ *   - ONE PERSON. The player's seat is the only one with an account; the
+ *     database refuses a second (`guard_ai_seat_placement`).
+ */
+async function openAiTable(
+  tx: Tx,
+  userId: string,
+  command: OpenAiTableRequest,
+  log: LogFields,
+): Promise<SessionResponse> {
+  await lockSeatAdmission(tx, userId);
+
+  // This request has been answered before: answer it the same way, whatever has
+  // happened to that table since. Asked under the lock, so a concurrent copy has
+  // either committed its record (and is found here) or not started.
+  const answered = await tx<{ game_session_id: string }[]>`
+    select game_session_id from private.ai_table_open_requests
+    where user_id = ${userId}::uuid and client_request_id = ${command.clientRequestId}::uuid
+  `;
+  const answeredGameId = answered[0]?.game_session_id;
+  if (answeredGameId) {
+    log.gameId = answeredGameId;
+    return await describeAnsweredAiTable(tx, answeredGameId, userId);
+  }
+
+  // The same id already bought a Quick Play table. `open` refuses the reverse.
+  if (await findLedgerEntry(tx, buyInKey(userId, command.clientRequestId))) {
+    throw new CommandError("IDEMPOTENCY_CONFLICT", "request id already opened a Quick Play table");
+  }
+
+  // Already at an AI table: that table is the answer.
+  const held = await tx<{ game_session_id: string }[]>`
+    select s.game_session_id
+    from public.game_session_seats s
+    join public.game_sessions g on g.id = s.game_session_id
+    where s.user_id = ${userId}::uuid
+      and s.status <> 'left'
+      and g.status in ('lobby', 'active')
+      and g.mode = 'ai_table'
+    order by g.started_at desc nulls last, s.joined_at desc
+    limit 1
+  `;
+  const heldGameId = held[0]?.game_session_id;
+  if (heldGameId) {
+    log.gameId = heldGameId;
+    const resumed = await describeAiTable(tx, heldGameId, userId, true);
+    await recordAiTableRequest(tx, userId, command.clientRequestId, heldGameId);
+    return resumed;
+  }
+
+  // A new table is a new seat. Below the resume branch on purpose: returning to
+  // the AI table a player already holds takes no new seat.
+  await assertNoOtherLiveSeat(tx, userId, null);
+
+  const profile = await loadProfile(tx, userId);
+  const gameId = crypto.randomUUID();
+  log.gameId = gameId;
+
+  await tx`
+    insert into public.game_sessions
+      (id, mode, ruleset_id, host_user_id, status, max_seats, escrow_chips, started_at)
+    values
+      (${gameId}::uuid, 'ai_table', ${await resolveRulesetId(tx)}::uuid, ${userId}::uuid,
+       'active', ${AI_TABLE_SEAT_COUNT}::int, 0, now())
+  `;
+
+  // In dealing order. The person sits at `AI_TABLE_PLAYER_SEAT_INDEX`; every
+  // other seat is a computer player with no account and no buy-in.
+  const seats: SeatSeed[] = [];
+  let playerSeatId: string | null = null;
+  let aiOrdinal = 0;
+  for (let index = 0; index < AI_TABLE_SEAT_COUNT; index += 1) {
+    const isPlayer = index === AI_TABLE_PLAYER_SEAT_INDEX;
+    const displayName = isPlayer ? profile.displayName : aiSeatName((aiOrdinal += 1));
+    const seatRows = await tx<{ id: string }[]>`
+      insert into public.game_session_seats
+        (game_session_id, seat_index, user_id, display_name, stack, buy_in, status, is_ai)
+      values
+        (${gameId}::uuid, ${index}::int, ${isPlayer ? userId : null}::uuid, ${displayName},
+         ${AI_TABLE_STACK}::bigint, 0, 'active', ${!isPlayer})
+      returning id
+    `;
+    const seatId = seatRows[0]?.id;
+    if (!seatId) throw new CommandError("INTERNAL", "seat insert returned no id");
+    if (isPlayer) playerSeatId = seatId;
+    seats.push(
+      isPlayer
+        ? { seatId, userId, displayName, stack: AI_TABLE_STACK }
+        : { seatId, displayName, stack: AI_TABLE_STACK, isAi: true },
+    );
+  }
+  if (playerSeatId === null) throw new CommandError("INTERNAL", "no seat for the player");
+  log.seatId = playerSeatId;
+
+  // The shoe, from the CSPRNG — the same source every other table is dealt from.
+  // A computer player gets no shoe of its own and no say in this one.
+  const now = serverNow();
+  const random = serverRandom();
+  const created = createGame({
+    gameId,
+    rules: aiTableRules(),
+    seats,
+    random,
+    timing: AI_TABLE_TIMING,
+    now,
+  });
+  const opened = startSession(created, { now, random });
+
+  /*
+   * Asked here as everywhere a table's state is about to be stored, so the
+   * invariant "a stored AI table never waits on a computer player" has no
+   * exceptions. At a fresh betting round it is a no-op by design: computer
+   * players stake only once the person has locked a bet.
+   */
+  const drive = driveAiSeats(opened.state, { now, random });
+
+  await insertEngineState(tx, gameId, drive.state);
+  await syncSessionRow(tx, gameId, drive.state, { status: "active", escrowChips: 0 });
+  await recordAiTableRequest(tx, userId, command.clientRequestId, gameId);
+  const published = await appendEvents(
+    tx,
+    gameId,
+    [...opened.events, ...drive.events],
+    drive.state,
+  );
+  log.eventCount = published.length;
+  log.stateVersion = drive.state.version;
+
+  return {
+    status: "ai_table_opened",
+    gameId,
+    seatId: playerSeatId,
+    tableStack: AI_TABLE_STACK,
+    resumed: false,
+    publicState: sanitise(drive.state),
+  };
+}
+
+/**
+ * Remember which table answered this request, in the transaction that answers
+ * it. Under `lockSeatAdmission`, so the lookup above cannot have missed a copy
+ * of it; a unique violation here would be a defect, and rolls the answer back.
+ */
+async function recordAiTableRequest(
+  tx: Tx,
+  userId: string,
+  clientRequestId: string,
+  gameId: string,
+): Promise<void> {
+  await tx`
+    insert into private.ai_table_open_requests (user_id, client_request_id, game_session_id)
+    values (${userId}::uuid, ${clientRequestId}::uuid, ${gameId}::uuid)
+  `;
+}
+
+/**
+ * The answer for a REPLAYED request: the table it was answered with, as that
+ * table stands now — the same shape `describeExistingSession` gives a replayed
+ * Quick Play open. Unlike `describeAiTable` it does not insist the seat is
+ * still live: a replay after the person left is answered with the closed table
+ * (`SESSION_COMPLETE`), which seats nobody and opens nothing.
+ */
+async function describeAnsweredAiTable(
+  tx: Tx,
+  gameId: string,
+  userId: string,
+): Promise<SessionResponse> {
+  const locked = await lockEngineState(tx, gameId);
+  const seat = await findSeat(tx, gameId, userId);
+  if (!locked || !seat) {
+    throw new CommandError("NOT_A_PARTICIPANT", `no seat for ${userId} in ${gameId}`);
+  }
+  return {
+    status: "ai_table_opened",
+    gameId,
+    seatId: seat.id,
+    tableStack: AI_TABLE_STACK,
+    resumed: true,
+    publicState: sanitise(locked.state),
+  };
+}
+
+/** The answer for an AI table the player already holds. */
+async function describeAiTable(
+  tx: Tx,
+  gameId: string,
+  userId: string,
+  resumed: boolean,
+): Promise<SessionResponse> {
+  const locked = await lockEngineState(tx, gameId);
+  const seat = await findSeat(tx, gameId, userId);
+  if (!locked || !seat || seat.status === "left") {
+    throw new CommandError("NOT_A_PARTICIPANT", `no live seat for ${userId} in ${gameId}`);
+  }
+  return {
+    status: "ai_table_opened",
+    gameId,
+    seatId: seat.id,
+    tableStack: AI_TABLE_STACK,
+    resumed,
+    publicState: sanitise(locked.state),
+  };
+}
+
 async function open(
   tx: Tx,
   userId: string,
@@ -865,6 +1239,10 @@ async function open(
   log: LogFields,
 ): Promise<SessionResponse> {
   const idempotencyKey = buyInKey(userId, command.clientRequestId);
+
+  // Before the lookup, so a concurrent copy of this request waits and then finds
+  // the first one's ledger row. See `lockSeatAdmission`.
+  await lockSeatAdmission(tx, userId);
 
   // The buy-in ledger row IS the idempotency record for OPEN: it is unique, it
   // is written in the same transaction as the table, and it names the session
@@ -879,6 +1257,16 @@ async function open(
     }
     log.gameId = existing.referenceId;
     return await describeExistingSession(tx, userId, existing.referenceId);
+  }
+
+  // The same id already answered an AI-table open: a different operation, so it
+  // is refused rather than spent a second time on a buy-in. See `openAiTable`.
+  const spentOnAiTable = await tx`
+    select 1 from private.ai_table_open_requests
+    where user_id = ${userId}::uuid and client_request_id = ${command.clientRequestId}::uuid
+  `;
+  if (spentOnAiTable.length > 0) {
+    throw new CommandError("IDEMPOTENCY_CONFLICT", "request id already answered an AI-table open");
   }
 
   const tier = tierFor(command.tier);

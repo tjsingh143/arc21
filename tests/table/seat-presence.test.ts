@@ -22,7 +22,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  COMPUTER_PLAYER_ACCESSIBILITY_LABEL,
   describeSeatBetting,
+  describeSeatHandDetail,
+  describeSeatIdentity,
   seatPresence,
   type SeatPresenceView,
 } from "../../src/features/table/seat-presence";
@@ -133,5 +136,66 @@ describe("a seat eliminated from a tournament", () => {
   it("is not described as having left, because they did not choose to", () => {
     const presence = seatPresence(eliminated);
     expect(presence.kind === "departed" && presence.note).not.toMatch(/\bleft\b/i);
+  });
+});
+
+/**
+ * A COMPUTER PLAYER, LABELLED FROM THE SERVER'S FLAG (Astra Refresh C).
+ *
+ * The specification's computer seats are "explicitly labeled", and the label
+ * must come from what the snapshot SAYS the seat is — never from its name, which
+ * is free text a person chooses.
+ */
+describe("a computer player's seat", () => {
+  it("is labelled AI, and spelled out for a screen reader", () => {
+    expect(describeSeatIdentity({ isAi: true })).toBe("AI");
+    expect(COMPUTER_PLAYER_ACCESSIBILITY_LABEL).toBe("Computer player");
+  });
+
+  it("is labelled because of the flag, not because of a name", () => {
+    // A person who calls themselves "AI Player 1" is still a person.
+    const person = { ...present(), displayName: "AI Player 1" };
+    expect(describeSeatIdentity(person)).toBeNull();
+    // And a computer player is labelled whatever it is called.
+    const named = { ...present({ isAi: true }), displayName: "Ada" };
+    expect(describeSeatIdentity(named)).toBe("AI");
+  });
+
+  it("says what it is waiting for before it bets", () => {
+    // Computer players stake once the person has locked a bet; "Yet to bet"
+    // would read as a player taking their time.
+    expect(describeSeatBetting(present({ isAi: true }))).toBe("Bets when you deal");
+    expect(describeSeatBetting(present({ isAi: true, betLocked: true }))).toBe("Bet placed");
+    expect(describeSeatBetting(present({ isAi: true, sittingOut: true }))).toBe(
+      "Sitting out this hand",
+    );
+  });
+
+  it("is departed, like anybody's, once it has left", () => {
+    const left = present({ isAi: true, connected: false });
+    expect(seatPresence(left).kind).toBe("departed");
+    expect(describeSeatBetting(left)).toBeNull();
+  });
+});
+
+describe("another seat's hand line", () => {
+  it("states the wager, and once settled what the hand came to", () => {
+    expect(describeSeatHandDetail({ wager: 40 })).toBe("Bet 40");
+    expect(describeSeatHandDetail({ wager: 40, outcome: { kind: "WIN", net: 40 } })).toBe(
+      "Bet 40 · Won 40",
+    );
+    expect(describeSeatHandDetail({ wager: 20, outcome: { kind: "BUST", net: -20 } })).toBe(
+      "Bet 20 · Lost 20",
+    );
+    expect(describeSeatHandDetail({ wager: 20, outcome: { kind: "PUSH", net: 0 } })).toBe(
+      "Bet 20 · Push",
+    );
+    expect(describeSeatHandDetail({ wager: 20, outcome: { kind: "SURRENDER", net: -10 } })).toBe(
+      "Bet 20 · Lost 10",
+    );
+  });
+
+  it("says nothing for a hand with no wager", () => {
+    expect(describeSeatHandDetail({ wager: 0 })).toBeUndefined();
   });
 });

@@ -19,6 +19,7 @@ import { ScreenHeader } from "../../src/components/ui/ScreenHeader";
 import { AppText } from "../../src/components/ui/AppText";
 import { Button } from "../../src/components/ui/Button";
 import { colors, layout, radius, spacing } from "../../src/design/tokens";
+import { AI_TABLE_SEAT_COUNT } from "../../shared/blackjack";
 import {
   modeAccessibilityHint,
   modeAccessibilityLabel,
@@ -85,6 +86,20 @@ const MODES: Mode[] = [
     // Reachable now. The screen itself states what an account is needed for and
     // what the buy-in costs, rather than this card refusing on its behalf.
     reason: "Online play uses your server-recorded chips.",
+  },
+  {
+    title: "AI Table",
+    purpose: "You and computer players, each one marked AI, at one table.",
+    structure: `${AI_TABLE_SEAT_COUNT} seats · table chips only · unranked`,
+    availability: "online",
+    route: "/table/ai",
+    /*
+     * Online because the computer players act on the SERVER, inside the
+     * person's own commands — nothing on this device plays them, so nothing on
+     * this device could play them differently. The setup screen states the
+     * terms before a table opens.
+     */
+    reason: "Dealt on the server. No chips leave your balance.",
   },
   {
     title: "Sprint Tournament",

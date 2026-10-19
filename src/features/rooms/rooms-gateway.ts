@@ -408,7 +408,11 @@ export function createSupabaseRoomsGateway(
         return {
           ok: false,
           reason: "refused",
-          message: "That table could not be dealt. Only the host deals, and everyone must be seated.",
+          // The last clause is the server's one-live-seat rule: a member still at
+          // another table refuses the whole deal, so the host can ask them to
+          // leave it, or remove them, and deal again.
+          message:
+            "That table could not be dealt. Only the host deals, everyone must be seated, and nobody can still be playing at another table.",
         };
       }
 

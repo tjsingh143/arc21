@@ -47,6 +47,13 @@ export const publicSeatSchema = z.strictObject({
   connected: z.boolean(),
   sittingOut: z.boolean(),
   betLocked: z.boolean(),
+  /**
+   * A computer-controlled seat at an AI Table. Only ever `true`, and present only
+   * on such a seat — see `PublicSeat.isAi`, which this mirrors key for key.
+   * `z.literal(true)` rather than `z.boolean()` because the engine never sends
+   * `false`, and accepting a value nothing produces is how a schema drifts.
+   */
+  isAi: z.literal(true).optional(),
 });
 
 export const publicRulesSummarySchema = z.strictObject({

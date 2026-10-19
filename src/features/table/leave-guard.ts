@@ -21,6 +21,7 @@
 
 import { canCloseSeat, type ClosableTable } from "../../../shared/blackjack/table-closure.js";
 import { formatChips } from "../../design/format-chips.js";
+import type { HandCompletion } from "./active-session.js";
 
 /**
  * Screen options for `table/[gameId]`.
@@ -156,11 +157,67 @@ export const LEAVING_AT_BOUNDARY_NOTICE =
 /** The way back out of it, for a player who changes their mind. */
 export const STAY_AT_TABLE_LABEL = "Stay at the table";
 
-export function describeLeaveTableConfirmation(stack: number): string {
-  return (
-    `Your seat closes and ${formatChips(stack)} chips return to your balance. ` +
-    "You cannot rejoin this table afterwards."
-  );
+/**
+ * Where a seat's chips go when it closes, as far as this screen knows.
+ *
+ *   `wallet`   Quick Play and a public table: the stack returns to the balance.
+ *   `table`    a closed economy — a private table, a tournament, the daily
+ *              challenge, a career node, an AI table. The chips are the table's
+ *              own and end with it; NOTHING returns to the balance.
+ *   `unknown`  the mode has not been read yet, so nothing is claimed either way.
+ *
+ * Astra Refresh C added it. The dialog used to say "N chips return to your
+ * balance" at every table, which is true of the two wallet-backed modes and
+ * false of every other — and an AI table, whose own entry screen says "nothing
+ * goes back to it", would have contradicted itself on the way out.
+ */
+export type ChipDestination = "wallet" | "table" | "unknown";
+
+export function describeLeaveTableConfirmation(
+  stack: number,
+  destination: ChipDestination = "wallet",
+): string {
+  switch (destination) {
+    case "wallet":
+      return (
+        `Your seat closes and ${formatChips(stack)} chips return to your balance. ` +
+        "You cannot rejoin this table afterwards."
+      );
+    case "table":
+      return (
+        `Your seat closes. This table's ${formatChips(stack)} chips stay with it — ` +
+        "nothing is added to your balance. You cannot rejoin this table afterwards."
+      );
+    case "unknown":
+      return "Your seat closes. You cannot rejoin this table afterwards.";
+  }
+}
+
+/**
+ * The held-leave notice, in the words that are true for this table.
+ *
+ * `LEAVING_AT_BOUNDARY_NOTICE` promises the chips "come back automatically",
+ * which only a wallet-backed table can keep; everywhere else the notice says
+ * only that the player is on their way out — and, from `completion`, what will
+ * actually end the hand. Where a CLOCK does, nothing more is needed of them.
+ * Where the table has none (an AI table, the daily challenge, a career node),
+ * the hand waits at their turn until they play it, so saying they need do
+ * nothing would be a completion the server cannot deliver (Refresh C audit
+ * C-4). The leave itself is unchanged: the poll still completes it at the first
+ * boundary `canCloseSeat` accepts, and the action dock stays live meanwhile.
+ *
+ * The wallet-backed wording is left exactly as it was; `online-leave-mid-hand`
+ * asserts it on a Quick Play table.
+ */
+export function describeLeavingAtBoundary(
+  destination: ChipDestination,
+  completion: HandCompletion = "unknown",
+): string {
+  if (destination === "wallet") return LEAVING_AT_BOUNDARY_NOTICE;
+  if (destination === "unknown" || completion === "unknown") return "Leaving when this hand ends.";
+  return completion === "clock"
+    ? "Leaving when this hand ends. You do not need to do anything else."
+    : "Leaving when this hand ends. Finish your hand to leave — this table has no clock, so it waits for you.";
 }
 
 /**

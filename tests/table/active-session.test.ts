@@ -22,6 +22,10 @@ import {
   ACTIVE_SESSION_MODES,
   ACTIVE_SESSION_ROUTE,
   canResume,
+  chipsReturnToWallet,
+  handCompletionForMode,
+  UNTIMED_SESSION_MODES,
+  WALLET_BACKED_SESSION_MODES,
   describeActiveSession,
   resolveTableSeat,
   describeActiveSessionMode,
@@ -35,7 +39,10 @@ import {
   type ActiveSessionGateway,
   type ActiveSessionOutcome,
 } from "../../src/features/table/index.js";
-import { ALL_SESSION_MODES } from "../../supabase/functions/_shared/session-economics.js";
+import {
+  ALL_SESSION_MODES,
+  WALLET_BACKED_MODES,
+} from "../../supabase/functions/_shared/session-economics.js";
 
 const GAME = "b3bcfb9b-8199-452b-b808-c5ce4d8b74c5";
 const SEAT = "41745c30-26b5-40fe-8e81-406a448c5a3c";
@@ -134,11 +141,32 @@ describe("what the player is told", () => {
   });
 
   it("claims nothing about a wallet for a closed economy", () => {
-    // A private table, a tournament and a career node are closed economies:
-    // their chips never came from a wallet and never return to one.
-    for (const mode of ["private_table", "tournament", "daily_challenge", "career"] as const) {
+    // A private table, a tournament, a career node and an AI table are closed
+    // economies: their chips never came from a wallet and never return to one.
+    for (const mode of [
+      "private_table",
+      "tournament",
+      "daily_challenge",
+      "career",
+      "ai_table",
+    ] as const) {
       expect(describeActiveSession(session({ mode }))).not.toContain("buy-in");
     }
+  });
+
+  it("names an AI table plainly, and sends the player back to it", () => {
+    // Astra Refresh C. The generic sentence would read "a AI Table table".
+    const ai = session({ mode: "ai_table", tier: null });
+    expect(describeActiveSessionMode("ai_table")).toBe("AI Table");
+    expect(describeActiveSession(ai)).toBe(
+      "You are still seated at your AI table. Return to it to play on or to leave.",
+    );
+    // The same one route every other mode resumes through.
+    expect(resumeTargetFor(ai).pathname).toBe(ACTIVE_SESSION_ROUTE);
+  });
+
+  it("reads an AI table row from my_active_session(), so a killed app finds it again", () => {
+    expect(parseActiveSession(row({ mode: "ai_table", tier: null }))?.mode).toBe("ai_table");
   });
 
   it("never names a chip figure it has not read", () => {
@@ -314,5 +342,36 @@ describe("resolving the seat when the route did not name one", () => {
     expect(
       resolveTableSeat({ gameId: null, paramSeatId: null, checked: true, session: session() }),
     ).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("which tables send chips back to the wallet", () => {
+  it("agrees with the server, whose list is the one enforced", () => {
+    expect([...WALLET_BACKED_SESSION_MODES].sort()).toEqual([...WALLET_BACKED_MODES].sort());
+  });
+
+  it("is never an AI table", () => {
+    expect(chipsReturnToWallet("ai_table")).toBe(false);
+    expect(chipsReturnToWallet("solo")).toBe(true);
+    expect(chipsReturnToWallet("public_table")).toBe(true);
+  });
+});
+
+describe("which tables wait for the person to finish a hand (Refresh C, C-4)", () => {
+  it("is every mode the server opens with no clock, the AI table included", () => {
+    expect([...UNTIMED_SESSION_MODES].sort()).toEqual(["ai_table", "career", "daily_challenge", "solo"]);
+    expect(handCompletionForMode("ai_table")).toBe("player");
+  });
+
+  it("is never a table whose clock stands an absent player's hand", () => {
+    for (const mode of ["public_table", "private_table", "tournament"] as const) {
+      expect(handCompletionForMode(mode)).toBe("clock");
+    }
+  });
+
+  it("classifies every mode the app can resume", () => {
+    for (const mode of ACTIVE_SESSION_MODES) {
+      expect(["player", "clock"]).toContain(handCompletionForMode(mode));
+    }
   });
 });

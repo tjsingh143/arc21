@@ -24,17 +24,32 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  FREE_RESET_TABLE_MODES,
   mayResetPrivateStack,
+  offersFreeReset,
   type BrokeSeatView,
 } from "../../src/features/table/index.js";
+import {
+  ALL_SESSION_MODES,
+  FREE_STACK_RESET_MODES,
+  WALLET_BACKED_MODES,
+} from "../../supabase/functions/_shared/session-economics.js";
 
-/** A connected seat, sat out for want of chips, in a private table's betting window. */
+/**
+ * A connected seat, sat out for want of chips, in a private table's betting window.
+ *
+ * `canStake: true` by default so that every case below which varies one field
+ * from this one is about THAT field. The broke-but-not-yet-sat-out shape — the
+ * only shape an AI table can produce, since it has no clock — has its own
+ * section further down.
+ */
 function stuck(overrides: Partial<BrokeSeatView> = {}): BrokeSeatView {
   return {
-    isPrivateTable: true,
+    freeResetTable: true,
     phase: "BETTING_OPEN",
     sittingOut: true,
     connected: true,
+    canStake: true,
     ...overrides,
   };
 }
@@ -55,14 +70,14 @@ describe("offering a broke private seat its free reset", () => {
   it("is the only thing true of a seat with no legal action left", () => {
     const view = stuck();
     expect(mayResetPrivateStack(view)).toBe(true);
-    expect(mayResetPrivateStack({ ...view, isPrivateTable: false })).toBe(false);
+    expect(mayResetPrivateStack({ ...view, freeResetTable: false })).toBe(false);
   });
 
   it("is never offered at a wallet-backed table, where it would mint chips", () => {
     // Solo, public and career tables are backed by the global wallet. A free
     // reset there is chips out of nothing, which is why the server refuses it
     // on the session's own mode — this only decides what an honest client draws.
-    expect(mayResetPrivateStack(stuck({ isPrivateTable: false }))).toBe(false);
+    expect(mayResetPrivateStack(stuck({ freeResetTable: false }))).toBe(false);
   });
 
   it("is not offered while a seat is playing", () => {
@@ -92,5 +107,68 @@ describe("offering a broke private seat its free reset", () => {
       expect(mayResetPrivateStack(stuck({ phase })), phase).toBe(false);
     }
     expect(mayResetPrivateStack(stuck({ phase: "BETTING_OPEN" }))).toBe(true);
+  });
+});
+
+/**
+ * THE AI TABLE'S SHAPE OF THE SAME STUCK SEAT (Astra Refresh C).
+ *
+ * Nothing sits a broke seat out except a lapsed betting clock, and an AI table
+ * carries no clock — so a player who ran out of chips there is NOT sitting out.
+ * They are connected, in the betting window, and offered no bet by the engine.
+ * The original predicate required `sittingOut`, so at an AI table it would never
+ * have been true: "Waiting for the next hand." with no deadline ever coming to
+ * change it, which is exactly the dead table this file exists to prevent.
+ */
+describe("offering the reset to a broke seat nothing has sat out", () => {
+  /** Connected, not sitting out, and unable to put a chip on the felt. */
+  const brokeAtAnAiTable = (overrides: Partial<BrokeSeatView> = {}) =>
+    stuck({ sittingOut: false, canStake: false, ...overrides });
+
+  it("offers it to a connected seat that can no longer stake the minimum", () => {
+    expect(mayResetPrivateStack(brokeAtAnAiTable())).toBe(true);
+  });
+
+  it("does not offer it to a seat that can still stake, or already has", () => {
+    // `canStake` is the server's `canPlaceBet || canLockBet`, or `betLocked`: a
+    // seat with any of those is playing, however small its stack.
+    expect(mayResetPrivateStack(brokeAtAnAiTable({ canStake: true }))).toBe(false);
+  });
+
+  it("is still never offered at a wallet-backed table", () => {
+    expect(mayResetPrivateStack(brokeAtAnAiTable({ freeResetTable: false }))).toBe(false);
+  });
+
+  it("is still never offered to a seat that has left", () => {
+    expect(mayResetPrivateStack(brokeAtAnAiTable({ connected: false }))).toBe(false);
+  });
+
+  it("is still offered in the betting window and nowhere else", () => {
+    for (const phase of ["HAND_COMPLETE", "PLAYER_TURNS", "INSURANCE_OFFER", "SESSION_COMPLETE"]) {
+      expect(mayResetPrivateStack(brokeAtAnAiTable({ phase })), phase).toBe(false);
+    }
+  });
+});
+
+describe("which tables offer the reset at all", () => {
+  it("is exactly a private table and an AI table", () => {
+    expect([...FREE_RESET_TABLE_MODES].sort()).toEqual(["ai_table", "private_table"]);
+    expect(offersFreeReset("private_table")).toBe(true);
+    expect(offersFreeReset("ai_table")).toBe(true);
+  });
+
+  it("agrees with the server, which is the list that is enforced", () => {
+    // Two copies of one answer, compared, so the client cannot draw a control
+    // the server refuses — or hide one the server would honour.
+    expect([...FREE_RESET_TABLE_MODES].sort()).toEqual([...FREE_STACK_RESET_MODES].sort());
+  });
+
+  it("never names a wallet-backed mode, where a free reset would mint chips", () => {
+    for (const mode of WALLET_BACKED_MODES) expect(offersFreeReset(mode), mode).toBe(false);
+  });
+
+  it("answers for every mode the server knows", () => {
+    const offered = ALL_SESSION_MODES.filter((mode) => offersFreeReset(mode));
+    expect(offered.sort()).toEqual(["ai_table", "private_table"]);
   });
 });

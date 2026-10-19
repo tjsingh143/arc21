@@ -16,11 +16,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AI_SEAT_MODES,
   ALL_SESSION_MODES,
+  allowsFreeStackReset,
   chipsCameFromWallet,
+  FREE_STACK_RESET_MODES,
+  freeResetStackFor,
   isKnownSessionMode,
+  seatsComputerPlayers,
   WALLET_BACKED_MODES,
 } from "../../supabase/functions/_shared/session-economics.js";
+import { AI_TABLE_STACK, PRIVATE_TABLE_STACK } from "../../shared/blackjack/index.js";
 
 describe("modes whose chips came out of a wallet", () => {
   it("is exactly solo and public tables", () => {
@@ -58,7 +64,8 @@ describe("every mode is classified", () => {
     // `supabase/tests/16_sprint_and_daily.test.sql` holds the database's
     // `game_mode` enum to this exact list, so a new mode fails the suite until
     // it is placed on one side of the line or the other. `career` was added in
-    // the closure mission and failed here and there, as intended.
+    // the closure mission and failed here and there, as intended; `ai_table`
+    // was added in Astra Refresh C and did the same, and is classified below.
     expect([...ALL_SESSION_MODES]).toEqual([
       "practice",
       "solo",
@@ -67,6 +74,7 @@ describe("every mode is classified", () => {
       "tournament",
       "daily_challenge",
       "career",
+      "ai_table",
     ]);
   });
 
@@ -88,5 +96,55 @@ describe("every mode is classified", () => {
     // throws instead, which is why both predicates exist rather than one.
     expect(chipsCameFromWallet("something_new")).toBe(false);
     expect(isKnownSessionMode("something_new")).toBe(false);
+  });
+});
+
+/**
+ * AN AI TABLE IS A CLOSED ECONOMY (Astra Refresh C).
+ *
+ * Every seat at one — the person's and each computer player's — starts on
+ * `AI_TABLE_STACK` chips the server created. A computer player has no wallet, so
+ * a chip the person wins from one was never debited from anybody: if an AI
+ * table's stack could reach a wallet, every hand a computer player lost would be
+ * chips minted on demand. The server-side proof is in
+ * `tests/server/ai-table.integration.test.ts`, which wins and leaves and reads the
+ * wallet; this pins the classification that makes it so.
+ */
+describe("the AI table", () => {
+  it("is never wallet-backed: its chips can never cross into a wallet", () => {
+    expect(chipsCameFromWallet("ai_table")).toBe(false);
+    expect(WALLET_BACKED_MODES as readonly string[]).not.toContain("ai_table");
+    expect(isKnownSessionMode("ai_table")).toBe(true);
+  });
+
+  it("is the one mode that seats computer players", () => {
+    expect([...AI_SEAT_MODES]).toEqual(["ai_table"]);
+    for (const mode of ALL_SESSION_MODES) {
+      expect(seatsComputerPlayers(mode), mode).toBe(mode === "ai_table");
+    }
+  });
+
+  it("lets a broke player start again from the table's own stack, as a private table does", () => {
+    expect([...FREE_STACK_RESET_MODES].sort()).toEqual(["ai_table", "private_table"]);
+    expect(allowsFreeStackReset("ai_table")).toBe(true);
+    expect(freeResetStackFor("ai_table")).toBe(AI_TABLE_STACK);
+    expect(freeResetStackFor("private_table")).toBe(PRIVATE_TABLE_STACK);
+  });
+
+  it("never offers a free reset where the chips came from a wallet — that would mint them", () => {
+    for (const mode of WALLET_BACKED_MODES) {
+      expect(allowsFreeStackReset(mode), mode).toBe(false);
+      expect(freeResetStackFor(mode), mode).toBeNull();
+    }
+    for (const mode of FREE_STACK_RESET_MODES) {
+      expect(chipsCameFromWallet(mode), mode).toBe(false);
+    }
+  });
+
+  it("names no reset figure for any mode without a reset", () => {
+    for (const mode of ALL_SESSION_MODES) {
+      if (!allowsFreeStackReset(mode)) expect(freeResetStackFor(mode), mode).toBeNull();
+    }
+    expect(freeResetStackFor("something_new")).toBeNull();
   });
 });
