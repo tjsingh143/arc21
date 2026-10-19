@@ -14,33 +14,36 @@ mathematically transparent. Expo (React Native) client, Supabase backend.
 
 ## Status
 
-The last completed work is **Astra Refresh A**, an independent production-readiness
-baseline audit of the release candidate (September 14, 2026 PDT):
+The latest completed feature milestone is **Refresh B**, which adds pseudonymous
+players, account securing, server-confirmed session restoration, and ordered
+notification preferences. Its bounded closure review passed on October 4, 2026,
+with no known release-blocking defects in that review's scope.
 
-```
-ASTRA BASELINE AUDIT: PASS
-KNOWN CURRENT RELEASE-BLOCKING SOFTWARE DEFECTS: 0
-```
+The recorded closure run passed **2,907 unit tests, 392 server tests, and 640 SQL
+assertions**. These are checkpoint results, not a claim that every check was
+re-run for a documentation update. The published implementation also passed
+both hosted CI jobs at commit `059ee0ba9b848254fecd024daae7e2a60be374aa`
+([run](https://github.com/tjsingh143/arc21/actions/runs/37243705811)).
 
-Refresh B has not begun. Release activation still depends on external owner
-actions (store developer accounts, a Supabase cloud project, a domain for the
-privacy and support pages, push credentials), and the audit does not claim an Android build, a physical-device pass, live push delivery
-or a cloud deployment. No external audit or certification has taken place.
+Refresh C/D/E has not begun in this repository. Store submission, cloud
+deployment, Android builds, physical-device testing, and live push delivery
+remain outside the verified release evidence.
 
 Where to read the current state:
 
-- [docs/LAUNCH_STATE.md](docs/LAUNCH_STATE.md) — current release index.
-- [docs/astra-refresh/baseline-audit.md](docs/astra-refresh/baseline-audit.md) —
-  Refresh A findings, evidence and final gates.
-- [docs/RELEASE.md](docs/RELEASE.md) — what stands between this repository and a
-  store build, and every open activation requirement.
-- [docs/astra-refresh/dependency-disposition.md](docs/astra-refresh/dependency-disposition.md)
-  — retained npm advisories and their actual exposure.
+- [Launch state](docs/LAUNCH_STATE.md) — current release index.
+- [October 11 SDK maintenance](docs/CI_MAINTENANCE_2026_10_11.md) — current
+  SDK 57 patch alignment, portable checks, and retained CI timeout evidence.
+- [Refresh B closure](docs/astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
+  — implementation, regression evidence, and remaining limits.
+- [Release readiness](docs/RELEASE.md) — external activation requirements.
+- [Dependency disposition](docs/astra-refresh/dependency-disposition.md)
+  — retained advisories and the exposure reviewed at the earlier milestone.
 
 ## Getting started
 
-Requires Node 22+ (CI and every recorded local run use Node 26), plus Docker and
-the Supabase CLI for the backend.
+Requires Node 22+, plus Docker and the Supabase CLI for the backend. Hosted CI
+pins Node 26; the October 11 portable maintenance checks also passed on Node 24.19.0.
 
 ```bash
 npm ci
@@ -48,11 +51,19 @@ npm run typecheck
 npm run lint
 npm run test:unit            # unit suites, no stack required
 
-supabase start
-supabase db reset && supabase test db
-supabase functions serve --no-verify-jwt   # the functions still verify JWTs
-npm run test:server          # fails, rather than skips, without the stack
+npm run db:start            # applies the documented local PostgREST pin
+supabase db reset --local
+supabase test db
 ```
+
+Keep the Edge Functions running in a second terminal:
+
+```bash
+supabase functions serve --no-verify-jwt   # the functions still verify JWTs
+```
+
+Then run `npm run test:server` in the first terminal. It fails rather than skips
+when the backend is absent.
 
 Copy `.env.example` to `.env.local` to point the app at a server; without it the
 app runs Practice offline and says that no server is configured. Only
@@ -116,3 +127,15 @@ The engine exists to make these true, and the test suite exists to keep them tru
 - The shoe is never reshuffled mid-hand, and a card is never fabricated.
 - Identity comes from the verified JWT; the server is authoritative for every
   wallet, seat, result and score.
+
+## Code excerpts
+
+[Verified code excerpts](docs/CODE_SAMPLES.md) provide direct source links for the main implementation boundaries.
+
+## Review material
+
+[Project portfolio](https://drive.google.com/drive/folders/1TZOI26W1vDebR4cEnA-JnhNpGNTCFuOY) contains the project overview, architecture,
+code examples, testing notes, and supporting evidence. Portfolio measurements
+retain their stated snapshot and verification boundaries.
+
+[Review entry point](https://drive.google.com/file/d/1MLABU2Y_iZAQuzPHN2MqA0qQuWsqjAL-/view?usp=drivesdk) · [Overview](https://drive.google.com/file/d/1JOdDQEyl_TtFdlJOov9uHfI00MnqHFAV/view?usp=drivesdk) · [Testing](https://drive.google.com/file/d/1BXVJ2G-8JGh8UvxOyzuIS9rvEPVNktPm/view?usp=drivesdk) · [Code samples](https://drive.google.com/file/d/13V14LeAI4aziC_QEEYzQYtlsF2ndLjG4/view?usp=drivesdk)

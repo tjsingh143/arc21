@@ -1,21 +1,30 @@
 # Astra Refresh C — AI Tables
 
-**Status: IMPLEMENTATION RECORD, written by the implementing agent. This is NOT an
-audit verdict.** The independent Astra audit of October 14, 2026 returned
-**`ASTRA REFRESH C: FAIL`** on four findings (C-1 to C-4). All four have been
-repaired with regressions that fail on the original code (§13). A separate
-independent closure review then returned **`ASTRA REFRESH C: FAIL`** again on C-1
-alone — the private-table deal bypassed the repair — and accepted C-2, C-3 and
-C-4; that is repaired in §14. The tree awaits independent reverification; nothing
-here claims `ASTRA REFRESH C: PASS`.
+**Current status: final independent verdict reported in the approved publication
+handoff — `ASTRA REFRESH C: PASS`.** The handoff reports 439 server tests,
+3,056 unit tests, 672 database assertions, 18 private-admission regressions and
+63 migrations replayed. A complete prior audit hash manifest was not located
+during publication, so no cryptographic comparison with that snapshot is claimed.
+
+The implementation is published as `554defeb76c073703004bc10fa3c5ef8a63b88d2`
+on `refresh-c-ai-tables`, with [PR #5](https://github.com/tjsingh143/arc21/pull/5)
+open. It has not been integrated into `main` or deployed; Refresh D/E have not
+begun. Integration validation and hosted CI are separate from the prior PASS.
+
+**Historical implementation record:** the sections below retain the earlier
+review findings, repairs and verification on their original terms. The October
+14 independent review returned FAIL on C-1–C-4; the subsequent closure review
+accepted C-2–C-4 but found the private-admission C-1 bypass. Sections 13–14 record
+the repairs. Their awaiting-review and uncommitted Git-state statements describe
+those checkpoints, before the final PASS and publication recorded above.
 
 - **Starting commit:** `059ee0ba9b848254fecd024daae7e2a60be374aa`
-  (`Fix Expo SDK 57 dependency compatibility`), current `main` = `origin/main`.
+  (`Fix Expo SDK 57 dependency compatibility`), then `main` = `origin/main`.
   The Refresh B checkpoint `2476511c55ea7122ce0eeffeaa87efd4e0e22b23` was
   verified to be its ancestor; `059ee0b` changes only `package.json` and
   `package-lock.json`.
-- **Branch:** `refresh-c-ai-tables`, created from that commit. Not pushed, not
-  merged.
+- **Branch:** `refresh-c-ai-tables`, created from that commit; now published in
+  PR #5, not merged.
 - **Scope:** AI Tables as a first-class mode. Refresh A and B are complete and
   were not reopened; Refresh D (Home hierarchy) and E (release polish) were not
   begun. The only Play-surface change is one mode card and the screen it opens.

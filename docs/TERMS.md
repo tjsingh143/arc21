@@ -161,5 +161,5 @@ fabrication, so this section names the gap instead.
 | The publisher's legal identity | The owner's decision |
 
 **These terms have not been reviewed by a lawyer.** They are an honest
-description of the product written by the people who built it, which is a
-starting point for that review and not a substitute for it.
+description of the product and a starting point for that review, not a
+substitute for it.
