@@ -19,7 +19,7 @@ appId: com.arc21.app
 - takeScreenshot: pending-before-tab-return
 - tapOn: Home
 - assertVisible:
-    id: home-practice
+    id: home-screen
 - tapOn: Social
 - extendedWaitUntil:
     visible:

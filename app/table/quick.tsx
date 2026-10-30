@@ -184,7 +184,7 @@ export default function QuickPlaySetup() {
   if (signedOut || unconfigured) {
     return (
       <SafeAreaView style={styles.screen} edges={["top"]}>
-        <BackBar label="Back to Play" />
+        <BackBar />
         <ScrollView contentContainerStyle={styles.content}>
           <SurfaceCard>
             <AppText variant="sectionTitle">Practice plays the same game</AppText>
@@ -205,7 +205,7 @@ export default function QuickPlaySetup() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
-      <BackBar label="Back to Play" />
+      <BackBar />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <SurfaceCard>
           <AppText variant="overline" color="textSecondary">

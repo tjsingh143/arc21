@@ -149,6 +149,18 @@ appId: com.arc21.app
       - tapOn:
           text: "Cancel"
           optional: true
+# THE HELD SEAT IS NAMED ON HOME FIRST (Refresh D). Relaunched, Home asks the
+# server which table this player still holds and offers the way back above
+# every new table. Asserted, not tapped — the return itself is taken below
+# through the AI Table screen, for the reason the next comment gives.
+- extendedWaitUntil:
+    visible:
+      id: "home-resume-card"
+    timeout: 45000
+- assertVisible: ".*still seated at your AI table.*"
+- assertVisible:
+    id: "home-resume"
+- takeScreenshot: ai-table-home-resume
 # A DEEP LINK, not the tab bar: after an in-session stop/launch the driver's
 # coordinate taps are unreliable, and `arc21://table/ai` lands directly.
 - openLink: arc21://table/ai

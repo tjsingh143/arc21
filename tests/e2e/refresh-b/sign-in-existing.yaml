@@ -45,7 +45,7 @@ appId: com.arc21.app
       - tapOn: Not Now
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 15000
 - assertVisible:
     id: header-chips
@@ -55,11 +55,15 @@ appId: com.arc21.app
       visible: Open
     commands:
       - tapOn: Open
+# Scroll to the LAST line asserted: `scrollUntilVisible` stops as soon as its
+# target enters the viewport, and "Secured player" can land on the bottom edge
+# with the email beneath it still off-screen.
 - scrollUntilVisible:
     element:
-      text: Secured player
+      text: ${EMAIL}
     direction: DOWN
     timeout: 40000
+- assertVisible: Secured player
 - assertVisible: ${EMAIL}
 - takeScreenshot: signed-in-intended-secured-player
 - openLink: arc21://home
@@ -69,4 +73,4 @@ appId: com.arc21.app
     commands:
       - tapOn: Open
 - assertVisible:
-    id: home-practice
+    id: home-screen

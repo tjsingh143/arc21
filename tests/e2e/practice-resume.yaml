@@ -98,7 +98,7 @@ appId: com.arc21.app
 
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 30000
 # THE TAP THAT OPENS PRACTICE, INSIDE A `repeat`.
 #
@@ -110,16 +110,25 @@ appId: com.arc21.app
 #
 # `repeat` is the fix CLAUDE.md already prescribes for the onboarding tap above,
 # and it is self-limiting here for the same reason: once the tap lands, the app
-# is on Practice and `home-practice` is no longer visible, so the remaining
-# iterations skip.
+# is on Practice and Home is no longer showing, so the remaining iterations skip.
+#
+# Scrolled to first, inside each iteration, as practice-hand.yaml explains: a
+# server-confirmed player's Home puts Practice in the third tier, below the fold.
 - repeat:
     times: 3
     commands:
       - runFlow:
           when:
             visible:
-              id: "home-practice"
+              id: "home-screen"
           commands:
+            - scrollUntilVisible:
+                element:
+                  id: "home-practice"
+                direction: DOWN
+                centerElement: true
+                timeout: 15000
+                optional: true
             # `optional`, because the branch above and this tap are two
             # separate reads of the screen: the tap that LANDS navigates
             # away, and a `when` evaluated against a hierarchy captured
@@ -194,6 +203,18 @@ appId: com.arc21.app
 - stopApp
 - launchApp:
     clearState: false
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 30000
+# Scrolled to the Practice card first: where it sits on Home depends on whether
+# the server has confirmed a player (Refresh D), and the title is asserted only
+# once it is on screen. The card is inert now, so its title is its own element.
+- scrollUntilVisible:
+    element:
+      id: "home-practice"
+    direction: DOWN
+    timeout: 20000
 - extendedWaitUntil:
     visible: ".*Resume your session.*"
     timeout: 30000

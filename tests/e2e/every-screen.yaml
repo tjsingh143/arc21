@@ -46,8 +46,12 @@ appId: com.arc21.app
 # Account routes are real now. Onboarding used to answer both with a note saying
 # Arc 21 had no account service — true when written, false three phases later,
 # and nobody came back to it.
-- assertVisible: "Create Account"
-- assertVisible: "Sign In"
+#
+# Refresh B (2476511) then removed account creation from onboarding and labelled
+# sign-in "Recover a player", while this flow still asserted "Create Account"
+# and "Sign In". The way into an existing player is asserted by its id now.
+- assertVisible:
+    id: "onboarding-sign-in"
 # Tapped inside a `repeat`: a tap issued while the screen is still settling can
 # be swallowed, and the single-tap version then sat here until the wait below
 # gave up.
@@ -64,11 +68,17 @@ appId: com.arc21.app
 
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 40000
 
 # --- Home ------------------------------------------------------------------
 - assertVisible: ".*Blackjack, without the noise.*"
+# No server, so no player: Practice leads Home and one card says why online
+# play cannot open (Refresh D). Both are above the fold in this layout.
+- assertVisible:
+    id: "home-practice"
+- assertVisible:
+    id: "home-online-unavailable"
 
 # --- Play tab --------------------------------------------------------------
 # A tab tap can be SWALLOWED while the previous screen is still settling, and
@@ -77,37 +87,47 @@ appId: com.arc21.app
 # while the failure screenshot showed the app still sitting on Home with the
 # Home tab highlighted — the tap COMPLETED and did nothing. Retrying the tap
 # until the destination appears is the same remedy the onboarding tap already
-# uses above. The assertion below is unchanged; only the tap is now durable.
+# uses above.
+#
+# BY THE PLAY TAB'S OWN ID (Refresh D). This waited for ".*Sprint Tournament.*",
+# and Home now carries a "Sprint Tournament" link whenever online play cannot
+# open — so that regex would be satisfied on Home, the tab would never be
+# tapped, and every Play assertion below would run against Home and pass.
 - repeat:
     while:
-      notVisible: ".*Sprint Tournament.*"
+      notVisible:
+        id: "play-screen"
     times: 4
     commands:
       - tapOn: "Play"
 - extendedWaitUntil:
-    visible: ".*Sprint Tournament.*"
+    visible:
+      id: "play-screen"
     timeout: 15000
-# Server-dependent modes must read as unavailable, not as broken buttons.
-- assertVisible: ".*Needs an account.*"
+# Server-dependent modes must read as unavailable, not as broken buttons. This
+# asserted ".*Needs an account.*", copy the app stopped rendering in Refresh B
+# (2476511) while this flow was not re-run; the Play tab now states the reason
+# once, above the modes, beside a way into Practice.
+- assertVisible:
+    id: "play-online-unavailable"
+- assertVisible: ".*no server configured.*"
 
 # --- Sprint Tournament -----------------------------------------------------
-# `scrollUntilVisible`, not `tapOn`. These are the last two cards on the Play
-# tab and sit below the fold: a bare `tapOn` found "Daily Challenge" in the
-# accessibility tree, tapped where it was NOT on screen, and the flow carried on
-# against an unchanged Play tab. A title present in the tree is not a title the
-# finger can reach.
+# `scrollUntilVisible`, not `tapOn`: the card sits below the fold, and a bare
+# `tapOn` once found a card in the accessibility tree, tapped where it was NOT
+# on screen, and the flow carried on against an unchanged Play tab. A title
+# present in the tree is not a title the finger can reach.
 - scrollUntilVisible:
-    # REGEX, not the bare title. Each mode card is now ONE accessibility
-    # element whose label carries the title, the purpose, the structure and the
-    # note about needing an account — because a labelled Pressable replaces its
-    # children on iOS, and until this phase a screen reader heard only the
-    # title. Exact-text selectors on these cards stopped matching the moment
-    # that was fixed, and correctly so: there is no bare "Sprint Tournament"
-    # node any more.
-    element: ".*Sprint Tournament.*"
+    # By testID. Each mode card is ONE accessibility element whose label
+    # carries the title, the badge, the purpose, the structure and the facts
+    # line, so its wording is copy; the id is the card.
+    element:
+      id: "play-mode-sprint"
     direction: DOWN
+    centerElement: true
     timeout: 15000
-- tapOn: ".*Sprint Tournament.*"
+- tapOn:
+    id: "play-mode-sprint"
 - extendedWaitUntil:
     visible: ".*Four players, equal stacks, one elimination.*"
     timeout: 20000
@@ -140,10 +160,13 @@ appId: com.arc21.app
 
 # --- Daily Challenge -------------------------------------------------------
 - scrollUntilVisible:
-    element: ".*Daily Challenge.*"
+    element:
+      id: "play-mode-daily"
     direction: DOWN
+    centerElement: true
     timeout: 15000
-- tapOn: ".*Daily Challenge.*"
+- tapOn:
+    id: "play-mode-daily"
 - extendedWaitUntil:
     visible: ".*Everyone plays the same shoe.*"
     timeout: 20000

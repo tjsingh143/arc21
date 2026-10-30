@@ -26,6 +26,7 @@ import { useBorderColor } from "../../src/design/accessibility";
 import { colors, layout, MIN_TOUCH_TARGET, radius, spacing } from "../../src/design/tokens";
 import { useAuthStore } from "../../src/features/auth";
 import { selectFriends, useFriendsStore } from "../../src/features/friends";
+import { PLAY_MODES, recordingSentence } from "../../src/features/home/product-hierarchy";
 import { usePushRegistration } from "../../src/features/notifications";
 import { useSettings } from "../../src/features/settings/use-settings";
 import { useRoomInvites } from "../../src/features/rooms/use-room-invites";
@@ -233,7 +234,7 @@ export default function PrivateTableLobby() {
             chips being handed between accounts.
           </AppText>
           <AppText variant="caption" color="textDisabled">
-            Unranked. Hands here do not count towards leaderboards.
+            {recordingSentence(PLAY_MODES["private-table"])}
           </AppText>
         </SurfaceCard>
 

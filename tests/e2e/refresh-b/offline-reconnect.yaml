@@ -11,7 +11,7 @@ appId: com.arc21.app
       id: header-chips
     timeout: 30000
 - assertVisible:
-    id: home-practice
+    id: home-screen
 - takeScreenshot: offline-player-connected-later
 - openLink: arc21://profile
 - runFlow:

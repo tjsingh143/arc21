@@ -23,7 +23,12 @@ Refresh C adds unranked, closed-economy AI Tables with server-driven,
 explicitly labelled computer seats and two forward migrations
 (`20261005120000_ai_tables.sql`, `20261017120000_ai_table_open_requests.sql`).
 The code is integrated into `main`, **not deployed** to production or stores.
-Refresh D/E have not begun; external activation and platform checks remain.
+External activation and platform checks remain.
+
+**Refresh D (Home and Play product hierarchy): local implementation awaiting
+independent review** — see [refresh-d.md](./astra-refresh/refresh-d.md). Not
+published to GitHub, not merged into `main`, not deployed; no client-server
+contract, migration or Edge Function changed. Refresh E has not begun.
 
 **Previous integrated refresh:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
 **PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software

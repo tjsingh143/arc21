@@ -74,7 +74,7 @@ appId: com.arc21.app
 
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     # Matches every-screen.yaml. The first render after a fresh Metro bundle can
     # take most of half a minute on a dev build; 30s failed while 40s passed on
     # the same commit, which is latency rather than a broken screen.
@@ -90,16 +90,28 @@ appId: com.arc21.app
 #
 # `repeat` is the fix CLAUDE.md already prescribes for the onboarding tap above,
 # and it is self-limiting here for the same reason: once the tap lands, the app
-# is on Practice and `home-practice` is no longer visible, so the remaining
-# iterations skip.
+# is on Practice and Home is no longer showing, so the remaining iterations skip.
+#
+# SCROLLED TO FIRST, INSIDE EACH ITERATION (Refresh D). With a server-confirmed
+# player, Home leads with chip tables and AI Tables and Practice sits in the
+# third tier, below the fold — and `tapOn` does not scroll. Without one,
+# Practice leads and the scroll is a no-op. Inside the loop, because the player
+# can be confirmed between two iterations, which moves Practice down.
 - repeat:
     times: 3
     commands:
       - runFlow:
           when:
             visible:
-              id: "home-practice"
+              id: "home-screen"
           commands:
+            - scrollUntilVisible:
+                element:
+                  id: "home-practice"
+                direction: DOWN
+                centerElement: true
+                timeout: 15000
+                optional: true
             # `optional`, because the branch above and this tap are two
             # separate reads of the screen: the tap that LANDS navigates
             # away, and a `when` evaluated against a hierarchy captured

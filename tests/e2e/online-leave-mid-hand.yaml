@@ -192,7 +192,7 @@ appId: com.arc21.app
 # is where it sat on "Reading the table…" until the app was killed.
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 90000
 
 # And the seat really is gone: the setup screen would refuse a second buy-in
