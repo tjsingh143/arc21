@@ -17,7 +17,7 @@ appId: com.arc21.app
     clearState: false
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 30000
 - assertNotVisible:
     id: header-chips

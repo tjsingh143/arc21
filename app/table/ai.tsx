@@ -92,7 +92,7 @@ export default function AiTableSetup() {
   if (!configured || userId === null) {
     return (
       <SafeAreaView style={styles.screen} edges={["top"]}>
-        <BackBar label="Back to Play" />
+        <BackBar />
         <ScrollView contentContainerStyle={styles.content}>
           <SurfaceCard>
             <AppText variant="sectionTitle">Practice plays the same game</AppText>
@@ -115,7 +115,7 @@ export default function AiTableSetup() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
-      <BackBar label="Back to Play" />
+      <BackBar />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <AppText variant="pageTitle" accessibilityRole="header">

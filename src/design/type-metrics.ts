@@ -80,6 +80,23 @@ export type TypographyToken = keyof typeof typeMetrics;
 export const MAX_FIXED_CONTROL_FONT_SCALE = 1.6;
 
 /**
+ * Upper bound on Dynamic Type scaling for a product TITLE on a Home or Play
+ * card or link tile — "Sprint Tournament", "Leaderboards".
+ *
+ * Stacking gives a title the card's whole width, but a single word still cannot
+ * wrap except mid-word, and at React Native's largest multiplier (3.571)
+ * "Tournament" in the 19pt card title is ~359pt against a 324pt column on a
+ * 390pt phone. 2.9 is the widest word's fit in the narrowest column — a 375pt
+ * iPhone, 309pt of text — at 3.07, less 5% for the gap between a CoreText
+ * measurement and the device. It bites only at the two largest accessibility
+ * sizes; the body copy beneath the title still scales all the way.
+ *
+ * The widths and the arithmetic are in `tests/design/font-scale-stacking.test.ts`,
+ * which fails on any title word nobody has measured.
+ */
+export const MAX_TITLE_FONT_SCALE = 2.9;
+
+/**
  * The text scale at which iOS's own "accessibility sizes" begin, and therefore
  * the point above which a row of FIXED-COUNT controls should reflow onto more
  * rows instead of squeezing each one narrower.

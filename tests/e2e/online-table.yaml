@@ -224,7 +224,7 @@ appId: com.arc21.app
 # Home offers "Resume your last setup" instead.
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 45000
 
 # THE SEAT WAS ACTUALLY GIVEN UP, and this is the only assertion here that the

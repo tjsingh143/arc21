@@ -10,6 +10,7 @@ import { Pressable, StyleSheet, View, type StyleProp, type ViewStyle } from "rea
 
 import { useBorderColor } from "../../design/accessibility";
 import { colors, MIN_TOUCH_TARGET, radius, spacing } from "../../design/tokens";
+import { MAX_TITLE_FONT_SCALE } from "../../design/type-metrics";
 import { AppText } from "./AppText";
 
 export interface SurfaceCardProps {
@@ -98,36 +99,86 @@ export function SurfaceCard({
   );
 }
 
-/** Small labelled tile used in rows on Home. */
+/**
+ * Small labelled tile used in rows on Home and Play.
+ *
+ * The label carries the DETAIL as well as the name. It used to be the name
+ * alone with the detail as a hint — and a hint is spoken last, only when hints
+ * are on, and is not part of the element's text — so "Daily Challenge" was
+ * announced without "Same shoe for everyone", which is the half that says what
+ * it is. A labelled pressable replaces its children on iOS, so whatever the
+ * tile shows has to be in the label.
+ */
 export function Tile({
   label,
   detail,
   onPress,
   disabled = false,
   testID,
+  accessibilityLabel,
+  accessibilityHint,
 }: {
   label: string;
   detail: string;
   onPress?: () => void;
   disabled?: boolean;
   testID?: string;
+  /** Defaults to the label and the detail together. */
+  accessibilityLabel?: string;
+  /** What activating it does. Nothing a player needs in order to choose. */
+  accessibilityHint?: string;
 }) {
   return (
     <SurfaceCard
       onPress={onPress}
       disabled={disabled}
       testID={testID}
-      accessibilityLabel={label}
-      accessibilityHint={detail}
+      accessibilityLabel={accessibilityLabel ?? `${label}. ${detail}.`}
+      accessibilityHint={accessibilityHint}
       style={styles.tile}
     >
-      <AppText variant="bodyStrong" color={disabled ? "textDisabled" : "textPrimary"}>
+      <AppText
+        variant="bodyStrong"
+        color={disabled ? "textDisabled" : "textPrimary"}
+        maxFontSizeMultiplier={MAX_TITLE_FONT_SCALE}
+      >
         {label}
       </AppText>
       <AppText variant="caption" color="textSecondary">
         {detail}
       </AppText>
     </SurfaceCard>
+  );
+}
+
+/**
+ * The heading above a group of cards — one tier of Home or Play.
+ *
+ * Announced as a header, so a screen-reader user can move between tiers with
+ * the headings rotor instead of hearing every card in between. The visible
+ * overline is upper-cased by its typography token, so an E2E flow should
+ * select it by `testID`, never by its title as written here.
+ */
+export function SectionHeading({
+  title,
+  summary,
+  testID,
+}: {
+  title: string;
+  summary?: string;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.sectionHeading} testID={testID}>
+      <AppText variant="overline" color="textSecondary" accessibilityRole="header">
+        {title}
+      </AppText>
+      {summary ? (
+        <AppText variant="caption" color="textSecondary">
+          {summary}
+        </AppText>
+      ) : null}
+    </View>
   );
 }
 
@@ -171,6 +222,9 @@ const styles = StyleSheet.create({
   },
   disabled: {
     opacity: 0.55,
+  },
+  sectionHeading: {
+    gap: spacing.xs,
   },
   unavailable: {
     borderRadius: radius.small,

@@ -34,7 +34,10 @@ both [hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/372437058
 also passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`.
 These are historical results, not current Refresh-C test totals.
 
-Refresh D and E have not begun. Source integration is **not** a production
+Refresh D (Home and Play product hierarchy) has a local implementation awaiting
+independent review, recorded in
+[refresh-d.md](./docs/astra-refresh/refresh-d.md); it is not published to
+GitHub or merged. Refresh E has not begun. Source integration is **not** a production
 deployment: store submission, hosted application/backend activation, Android
 builds, physical-device testing and live push delivery remain outside the
 verified release evidence.

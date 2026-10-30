@@ -25,6 +25,10 @@ verify behavior through the running app and backend, not just helper tests.
   for a computer seat from an observation built ONLY from `toPublicState`;
   `ai-seat-driver.ts` runs those decisions inside the person's own command, through
   `assertCommandIsLegal` and `applyCommand`. Record: `docs/astra-refresh/refresh-c.md`.
+- Home/Play hierarchy (Refresh D): `src/features/home/product-hierarchy.ts` is the
+  one definition of the tiers (chip play → AI Tables → Practice and progress), each
+  mode's entry route and its claims; both tabs render it, and the claims are tested
+  against the server allowlists. Record: `docs/astra-refresh/refresh-d.md`.
 - `supabase/migrations/` is the database/deployment authority, including product
   catalogues. `seed.sql` is not a substitute for deployable catalogue migrations.
 - Product and accepted rule choices: `docs/BLACKJACK_RULES.md`,

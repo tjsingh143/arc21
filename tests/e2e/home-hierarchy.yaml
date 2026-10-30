@@ -1,0 +1,213 @@
+# Arc 21 — Refresh D: Home and Play lead with chip play, then AI Tables, then
+# Practice and progress, for a server-confirmed player on a real server.
+#
+# WHAT IT PROVES, in order:
+#   * Home leads with a table of other people: once the server has confirmed
+#     the player (the header shows a balance), "Find a public table" is on
+#     screen without scrolling, in the card headed "With other people";
+#   * the public table and Quick Play open their own setup screens, and
+#     nothing is queued, bought or dealt;
+#   * Quick Play is presented as SOLO, and the private table is offered for
+#     friends — and it opens the existing lobby, not a table, whose line says
+#     what a private hand counts toward;
+#   * the AI Tables card follows and opens the existing AI Table TERMS screen
+#     (`/table/ai`), never a table: nothing is opened by this flow;
+#   * Practice is still on Home, below them, and still opens;
+#   * Play lists the same order, with the public table first, Quick Play under
+#     "Solo, against the dealer", the AI Table in its own section and Practice
+#     after it — and says nothing about online play being unavailable.
+#
+# The ORDER is proven exactly in `tests/home/product-hierarchy.test.ts`; this
+# flow proves the device renders it and that every entry it adds lands on the
+# mode's own setup screen. The offline and unconfigured layouts are walked by
+# `every-screen.yaml` (no server) and `refresh-b/offline-practice.yaml`.
+#
+# BEFORE RUNNING — the same as `ai-table.yaml`:
+#   supabase start
+#   npx tsx scripts/e2e-account.ts
+#   .env.local must be PRESENT, and the build must be a Release build of the
+#   commit under test (`npx expo run:ios --configuration Release`).
+#
+#   export JAVA_HOME=/opt/homebrew/opt/openjdk
+#   maestro --device <UDID> test tests/e2e/home-hierarchy.yaml
+#
+# Check `uptime` first: below about load 12 Maestro is reliable.
+
+appId: com.arc21.app
+---
+- launchApp:
+    clearState: true
+
+- runFlow:
+    when:
+      visible: "Open"
+    commands:
+      - tapOn:
+          text: "Cancel"
+          optional: true
+
+# --- Sign in ---------------------------------------------------------------
+# Exits on Home with `header-chips` shown: the server has answered for this
+# player, which is what moves Home to the connected layout.
+- runFlow: sign-in.yaml
+
+# --- Home: tables with other people first ----------------------------------
+- extendedWaitUntil:
+    visible:
+      id: "home-public-table"
+    timeout: 30000
+- assertVisible:
+    id: "home-people-card"
+- assertVisible: "Find a public table"
+- assertVisible:
+    id: "home-private-table"
+# No layout-unavailable card for a ready player.
+- assertNotVisible:
+    id: "home-online-unavailable"
+- takeScreenshot: home-hierarchy-top
+
+# The public table opens its setup screen, not a table: nothing is queued or
+# bought until a stakes card is pressed, which this flow never does.
+- tapOn:
+    id: "home-public-table"
+- extendedWaitUntil:
+    visible: "Your chips are at stake here"
+    timeout: 30000
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 15000
+
+# Quick Play, labelled solo. The overline is upper-cased by its token, so the
+# card is found by id and its plain-case sentence is what is asserted.
+- scrollUntilVisible:
+    element:
+      id: "home-quick-play"
+    direction: DOWN
+    centerElement: true
+    timeout: 15000
+- assertVisible: ".*Just you and the dealer.*"
+# It opens the setup screen for a confirmed player — `quick-balance` renders
+# only on that branch, never on the signed-out fallback — and deals nothing.
+- tapOn:
+    id: "home-quick-play"
+- extendedWaitUntil:
+    visible:
+      id: "quick-balance"
+    timeout: 30000
+# Below the stakes and assistance choices; scrolled to, never pressed.
+- scrollUntilVisible:
+    element:
+      id: "quick-deal"
+    direction: DOWN
+    timeout: 15000
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 15000
+
+# --- Home: AI Tables second -------------------------------------------------
+- scrollUntilVisible:
+    element:
+      id: "home-ai-table"
+    direction: DOWN
+    centerElement: true
+    timeout: 15000
+- assertVisible: ".*computer players, each labelled AI.*"
+- takeScreenshot: home-hierarchy-ai
+- tapOn:
+    id: "home-ai-table"
+# The terms screen, before anything opens. `ai-table-start` is "Sit down", which
+# this flow never presses.
+- extendedWaitUntil:
+    visible:
+      id: "ai-table-stack"
+    timeout: 30000
+- assertVisible:
+    id: "ai-table-start"
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 15000
+
+# --- Home: Practice and progress third --------------------------------------
+- scrollUntilVisible:
+    element:
+      id: "home-practice"
+    direction: DOWN
+    timeout: 20000
+- takeScreenshot: home-hierarchy-practice
+
+# --- Home: the private table opens the lobby --------------------------------
+- scrollUntilVisible:
+    element:
+      id: "home-private-table"
+    direction: UP
+    centerElement: true
+    timeout: 20000
+- tapOn:
+    id: "home-private-table"
+# The lobby's own header, which it renders in every state — `room-create` would
+# be absent if this shared fixture account were still holding a room.
+- extendedWaitUntil:
+    visible: ".*Two to five friends, one dealer, one shoe.*"
+    timeout: 30000
+# What a private hand counts toward, as the server records it: XP that reaches
+# the weekly XP board, and no strategy accuracy. It once said "Unranked".
+- assertVisible: ".*earn XP for the weekly XP leaderboard.*not toward strategy accuracy.*"
+- tapOn:
+    id: "back-bar"
+- extendedWaitUntil:
+    visible:
+      id: "home-screen"
+    timeout: 15000
+
+# --- Play: the same order ---------------------------------------------------
+- repeat:
+    while:
+      notVisible:
+        id: "play-screen"
+    times: 4
+    commands:
+      - tapOn: "Play"
+- extendedWaitUntil:
+    visible:
+      id: "play-screen"
+    timeout: 15000
+- assertNotVisible:
+    id: "play-online-unavailable"
+- assertVisible:
+    id: "play-section-chips"
+- assertVisible:
+    id: "play-mode-public-table"
+- takeScreenshot: play-hierarchy-top
+- scrollUntilVisible:
+    element:
+      id: "play-mode-quick-play"
+    direction: DOWN
+    timeout: 15000
+- assertVisible: ".*Quick Play. Online. Just you and the dealer.*Solo · .*"
+- scrollUntilVisible:
+    element:
+      id: "play-mode-ai-table"
+    direction: DOWN
+    timeout: 15000
+- assertVisible: ".*AI Table. Online. You and computer players.*Unranked.*"
+- takeScreenshot: play-hierarchy-ai
+- scrollUntilVisible:
+    element:
+      id: "play-mode-practice"
+    direction: DOWN
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      id: "play-link-learn"
+    direction: DOWN
+    timeout: 15000
+- takeScreenshot: play-hierarchy-practice

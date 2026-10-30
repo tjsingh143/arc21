@@ -13,14 +13,31 @@ declares no screen list, so no shared file needs editing to add one.
 |------|------|---------|
 | `/` | `app/index.tsx` | Entry. Routes to onboarding on first launch, otherwise the tabs. |
 | `/(onboarding)/welcome` | `app/(onboarding)/welcome.tsx` | Three-page intro + 18+ disclosure. First launch only. |
-| `/(tabs)/home` | `app/(tabs)/home.tsx` | Home base. Quick Play, Career, compact tiles. |
-| `/(tabs)/play` | `app/(tabs)/play.tsx` | Game-mode selector. |
+| `/(tabs)/home` | `app/(tabs)/home.tsx` | Home base. For a server-confirmed player: a held seat's return first, then chip play (a table with other people, then solo Quick Play), then AI Tables, then Practice and progress. Otherwise Practice leads and one card says why online play cannot open. |
+| `/(tabs)/play` | `app/(tabs)/play.tsx` | Game-mode selector, in three sections: Play for chips (with other people; solo against the dealer), AI Tables, Practice and progress. |
 | `/(tabs)/learn` | `app/(tabs)/learn.tsx` | Learning hub linking to the routes below. |
 | `/(tabs)/social` | `app/(tabs)/social.tsx` | Friends, blocked players, private tables, leaderboards. |
 | `+not-found` | `app/+not-found.tsx` | Any `arc21://` URL naming a screen that does not exist. Not a route a control ever points at — it is where expo-router sends what it cannot match, and without it the fallback is expo-router's own light-themed `Unmatched` page whose one control links to the same unmatched path. `tests/e2e/dead-ends.yaml` drives a bad deep link into it and back out. |
 
 Four bottom destinations only: **HOME, PLAY, LEARN, SOCIAL**. Profile opens from
 the avatar in the top-right header, never a fifth tab.
+
+Home and Play render one product hierarchy (Astra Refresh D), defined with every
+mode's route and claims in `src/features/home/product-hierarchy.ts`. Every mode
+card and link there opens the mode's own entry screen below — never
+`/table/[gameId]` directly — and `tests/home/product-hierarchy.test.ts` checks
+that each target exists. The record is
+[`docs/astra-refresh/refresh-d.md`](./astra-refresh/refresh-d.md).
+
+## Chip tables
+
+| Path | File | Purpose |
+|------|------|---------|
+| `/table/public` | `app/table/public.tsx` | Public table: stakes, then a wait for other players. Queueing costs nothing; the buy-in leaves the wallet only when a seat is taken. Reached from Home ("Find a public table") and Play. |
+| `/table/quick` | `app/table/quick.tsx` | Quick Play, SOLO: stakes and assistance, then Deal. Remembers the last setup. Reached from Home and Play. |
+| `/table/lobby` | `app/table/lobby.tsx` | Private table lobby (see Social and private tables below). Also reached from Home ("Private table with friends") and Play. |
+
+Each opens the shared table `/table/[gameId]` only after its own setup.
 
 ## Full-screen (tab bar hidden)
 
@@ -60,7 +77,8 @@ opens `/table/[gameId]` like any other.
 |------|------|---------|
 | `/table/ai` | `app/table/ai.tsx` | AI Table: the terms before anything opens — the computer players, what they can see, the table chips and that nothing is ranked — then **Sit down**. A player already at an AI table is offered **Return to your AI table**; one seated elsewhere is offered the way back to that table instead. |
 
-Reached from the Play tab's AI Table card, or `arc21://table/ai`. The table
+Reached from the Play tab's AI Table card, Home's AI Tables card (Refresh D), or
+`arc21://table/ai`. The table
 itself is the shared `/table/[gameId]`, exactly as for every other server mode:
 there is no second blackjack screen, and a computer player's seat is drawn by
 the same code as anybody else's, labelled AI from the snapshot's `isAi`.
@@ -147,7 +165,7 @@ both screens say so plainly rather than presenting a form that cannot work.
 | Route | Reached from | Renders |
 |-------|--------------|---------|
 | `app/friends/[id].tsx` | A row in Social → Friends | A friend's profile, with Remove and Block behind a confirmation |
-| `app/table/lobby.tsx` | Social → Private table | Open a table or join with a code; once seated, the code, the seat list, **Invite a friend**, and Deal |
+| `app/table/lobby.tsx` | Social → Private table; Home and Play (Refresh D) | Open a table or join with a code; once seated, the code, the seat list, **Invite a friend**, and Deal |
 | `app/notifications/index.tsx` | Social → Notifications | Everything the server has told this player, whether or not a push reached the device. Tapping a row goes where it is about |
 | `app/room/[code].tsx` | `arc21://room/CODE`, or a table-invite notification | Resolves a shared invite. Signed out, malformed and refused are each rendered distinctly |
 

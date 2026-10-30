@@ -19,13 +19,13 @@ appId: com.arc21.app
     times: 3
     while:
       notVisible:
-        id: "home-practice"
+        id: "home-screen"
     commands:
       - tapOn:
           id: "back-bar"
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 10000
 
 # A malformed password-reset link must offer a real recovery destination.

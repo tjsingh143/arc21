@@ -63,7 +63,7 @@ appId: com.arc21.app
 
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 40000
 
 
@@ -155,5 +155,5 @@ appId: com.arc21.app
     id: "not-found-home"
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 30000

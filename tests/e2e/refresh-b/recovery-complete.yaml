@@ -39,7 +39,7 @@ appId: com.arc21.app
       - tapOn: Not Now
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 20000
 - openLink: arc21://settings
 - runFlow:

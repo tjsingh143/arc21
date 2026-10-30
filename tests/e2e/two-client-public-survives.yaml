@@ -147,5 +147,5 @@ appId: com.arc21.app
     index: 1
 - extendedWaitUntil:
     visible:
-      id: "home-practice"
+      id: "home-screen"
     timeout: 60000

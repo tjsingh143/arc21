@@ -27,7 +27,10 @@ both hosted CI jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`
 
 **Release boundary:** A source merge and green CI are not store approval or
 a production deployment. Hosted migration/application activation and remaining
-platform/device checks have not been established. Refresh D/E have not begun.
+platform/device checks have not been established. Refresh D (Home and Play
+hierarchy) is a client-only local implementation awaiting independent review
+([record](./astra-refresh/refresh-d.md)); it adds no migration or function.
+Refresh E has not begun.
 
 For release, Refresh C adds two forward migrations,
 `20261005120000_ai_tables.sql` and `20261017120000_ai_table_open_requests.sql`,

@@ -12,14 +12,20 @@ appId: com.arc21.app
       - tapOn: Open
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 30000
 - tapOn: Play
+# By the card's testID. Its label now also carries the Offline badge and a
+# facts line (Refresh D), and the node count is derived from the catalogue, so
+# a regex over the label's wording would track copy rather than the card.
 - scrollUntilVisible:
-    element: 'Career\. Eighteen challenges.*'
+    element:
+      id: play-mode-career
     direction: DOWN
+    centerElement: true
     timeout: 20000
-- tapOn: 'Career\. Eighteen challenges.*'
+- tapOn:
+    id: play-mode-career
 - extendedWaitUntil:
     visible: First Deal, .* stars.*
     timeout: 20000
@@ -29,12 +35,18 @@ appId: com.arc21.app
     id: back-bar
 - tapOn:
     id: back-bar
+# Play by its own id, not its header subtitle: since Refresh D the Career card
+# sits at the BOTTOM of Play, and Back restores the scroll position it was
+# opened from, so the header is off-screen and the card is what is showing.
 - extendedWaitUntil:
-    visible: Same rules everywhere.
+    visible:
+      id: play-screen
     timeout: 15000
+- assertVisible:
+    id: play-mode-career
 - tapOn: Home
 - assertVisible:
-    id: home-practice
+    id: home-screen
 - stopApp
 - openLink: arc21://career
 - runFlow:
@@ -50,7 +62,7 @@ appId: com.arc21.app
     id: back-bar
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 15000
 - waitForAnimationToEnd
 - takeScreenshot: career-cold-return-home

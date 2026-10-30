@@ -13,7 +13,7 @@ appId: com.arc21.app
       - tapOn: Open
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 30000
 - evalScript: ${output.hostileQuery = new Array(4098).join('%FF')}
 - openLink: arc21://career?x=${output.hostileQuery}
@@ -30,7 +30,7 @@ appId: com.arc21.app
     id: back-bar
 - extendedWaitUntil:
     visible:
-      id: home-practice
+      id: home-screen
     timeout: 15000
 - waitForAnimationToEnd
 - takeScreenshot: hostile-link-home-responsive

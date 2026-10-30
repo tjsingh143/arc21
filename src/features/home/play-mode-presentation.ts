@@ -89,16 +89,26 @@ export function modeNotice(mode: {
  * The specification's acceptance criterion is "Screen readers can identify
  * cards/actions". A card that announces its name and withholds its stakes, its
  * seat count and the fact that it needs an account does not meet it.
+ *
+ * Refresh D added the two remaining things a Play card SHOWS and a screen
+ * reader was not told: the Online/Offline badge beside the title, and the facts
+ * line (who is at the table, whose chips, what it counts toward). Both are
+ * optional so a caller that renders neither is described exactly as before.
  */
 export function modeAccessibilityLabel(mode: {
   readonly title: string;
+  readonly availability?: ModeAvailability;
   readonly purpose: string;
   readonly structure: string;
+  readonly facts?: string;
   readonly playable: boolean;
   readonly reason?: string;
 }): string {
   const notice = modeNotice(mode);
-  const parts = [mode.title, mode.purpose, mode.structure];
+  const parts = [mode.title];
+  if (mode.availability !== undefined) parts.push(modeBadge(mode.availability).label);
+  parts.push(mode.purpose, mode.structure);
+  if (mode.facts !== undefined && mode.facts !== "") parts.push(mode.facts);
   if (notice !== null) parts.push(notice.text);
   // Full stops between the parts, so a screen reader pauses rather than running
   // "High stakesNeeds an account" together.

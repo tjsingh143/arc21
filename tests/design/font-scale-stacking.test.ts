@@ -21,9 +21,17 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_FIXED_CONTROL_FONT_SCALE,
+  MAX_TITLE_FONT_SCALE,
   rowStacksAtFontScale,
   STACK_ABOVE_FONT_SCALE,
+  typeMetrics,
 } from "../../src/design/type-metrics";
+import {
+  HOME_CHIP_FORMAT_LINKS,
+  homeLinks,
+  PLAY_MODES,
+  PLAY_SUPPORT_LINKS,
+} from "../../src/features/home/product-hierarchy";
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
@@ -117,5 +125,72 @@ describe("the screen header", () => {
     // export is the version with nothing to assert.
     expect(HEADER).toMatch(/rowStacksAtFontScale\(fontScale\)/);
     expect(HEADER).not.toMatch(/const STACK_ABOVE_FONT_SCALE/);
+  });
+});
+
+/**
+ * A card or tile title names a product, and a single word cannot wrap except
+ * mid-word. At React Native's largest multiplier, "Tournament" in the 19pt
+ * Play card title is ~359pt wide and "Leaderboards" in the 16pt link tile title
+ * ~350pt, against a 324pt text column on the 390pt iPhone 17e — which drew
+ * "Sprin / t / Tourn / amen / t" and "Lear / n". Stacking the badge and the
+ * tiles gives a title the whole column; only a cap makes the widest word fit it.
+ */
+describe("the product title cap", () => {
+  /*
+   * React Native's OWN multipliers (`RCTAccessibilityManager.mm`), which is
+   * what `fontScale` and `maxFontSizeMultiplier` work in. They are not iOS's
+   * table above: the largest is 3.571, not 3.12.
+   */
+  const RN_ACCESSIBILITY_EXTRA_LARGE = 2.643;
+  const RN_LARGEST = 3.571;
+
+  /*
+   * Each word's width in the system semibold face, per point of font size:
+   * CoreText at 1000pt, which is the display optical size these titles reach
+   * when the cap matters. A title word missing here fails the first test —
+   * measure it before shipping it.
+   */
+  const SEMIBOLD_EM: Record<string, number> = {
+    Public: 2.727, Table: 2.349, Private: 3.07, Sprint: 2.659, Tournament: 5.294,
+    Quick: 2.578, Play: 1.88, Daily: 2.197, Challenge: 4.471, AI: 0.921,
+    Practice: 3.625, Career: 2.977, Learn: 2.497, Leaderboards: 6.128, Friends: 3.286,
+  };
+
+  /** A 375pt iPhone (SE, mini) less 2 × (16 screen padding + 1 border + 16 card padding). */
+  const NARROWEST_COLUMN = 375 - 2 * (16 + 1 + 16);
+  /** The iPhone 17e's column, where the break was photographed. */
+  const IPHONE_17E_COLUMN = 390 - 2 * (16 + 1 + 16);
+
+  const links = [...HOME_CHIP_FORMAT_LINKS, ...PLAY_SUPPORT_LINKS, ...homeLinks({ kind: "unconfigured", message: "" })];
+  const FACES = [
+    { face: "Play card title", size: typeMetrics.sectionTitle.fontSize, titles: Object.values(PLAY_MODES).map((m) => m.title) },
+    { face: "link tile title", size: typeMetrics.bodyStrong.fontSize, titles: links.map((l) => l.label) },
+  ];
+  const widest = (titles: readonly string[]) =>
+    Math.max(...titles.flatMap((title) => title.split(" ")).map((word) => SEMIBOLD_EM[word] ?? Number.NaN));
+
+  it("has a measurement for every word a title can show", () => {
+    for (const { titles } of FACES) {
+      for (const word of titles.flatMap((title) => title.split(" "))) {
+        expect(SEMIBOLD_EM[word], word).toBeTypeOf("number");
+      }
+    }
+  });
+
+  it("sets the widest word of every title on one line in the narrowest column", () => {
+    for (const { face, size, titles } of FACES) {
+      expect(widest(titles) * size * MAX_TITLE_FONT_SCALE, face).toBeLessThanOrEqual(NARROWEST_COLUMN);
+    }
+  });
+
+  it("is needed: uncapped at the largest size, the widest word misses even the 17e's column", () => {
+    for (const { face, size, titles } of FACES) {
+      expect(widest(titles) * size * RN_LARGEST, face).toBeGreaterThan(IPHONE_17E_COLUMN);
+    }
+  });
+
+  it("leaves every size below the two largest alone", () => {
+    expect(MAX_TITLE_FONT_SCALE).toBeGreaterThan(RN_ACCESSIBILITY_EXTRA_LARGE);
   });
 });

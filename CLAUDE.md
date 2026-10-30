@@ -1568,6 +1568,15 @@ rather than the CLI's message.
   `ai_table` (a database trigger refuses them anywhere else), never hold an
   account, and the table is a closed economy that records no statistics, XP or
   accuracy. See `docs/astra-refresh/refresh-c.md`.
+- **Home and Play lead with chip play, then AI Tables, then Practice and
+  progress** — tables with other people before solo Quick Play, which is always
+  described as solo. One definition, `src/features/home/product-hierarchy.ts`:
+  a mode card's claims (who is at the table, whose chips, what it counts toward)
+  are FIELDS tested against `WALLET_BACKED_MODES`, `SETTLEMENT_RECORDING_MODES`,
+  `ACCURACY_ELIGIBLE_MODES` and whether the table runs a clock, never free
+  prose. Without a server-confirmed player Practice leads instead. For Maestro,
+  `home-screen` is Home's anchor: on a connected build `home-practice` sits
+  below the fold, and `tapOn` does not scroll.
 - **A loss is never the loudest thing a player hears or the largest thing they
   see.** No red flash, no shake, no sting: `tests/audio` asserts the loss cue is
   quieter than the win, and `OutcomeBadge` gives a halo only to a win.
