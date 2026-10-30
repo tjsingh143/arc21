@@ -1,5 +1,21 @@
 # Astra Refresh D — Home and Play product hierarchy
 
+**Integration status (October 30, 2026):** Refresh D passed independent Astra
+review and was merged into `main` through
+[PR #6](https://github.com/tjsingh143/arc21/pull/6), merge commit
+[`d6a82c25fd13379b7ac9cd64530432366320b511`](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511).
+The approved implementation commit `6963ba63276852bfd2801b83ae83d9b3b062b699`
+and the Expo SDK 57 patch-alignment commit
+`6439bc5bf013f376e151dccbe5870f609c1a8f87` are preserved. The PR head passed
+[both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/41005500200)
+before the merge, and the separate
+[post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/41112209782)
+on the merge commit also passed both jobs. Integration is not a production or store
+deployment; physical-device VoiceOver (§10.7) remains unverified, and Refresh E
+has not begun. See [Launch State](../LAUNCH_STATE.md) for current status. The
+record below is retained as written at its checkpoints, including the
+uncommitted and awaiting-review statements that follow.
+
 **Current status: local implementation, awaiting independent review.** The
 changes are in the working tree of branch `refresh-d-home-hierarchy`. At the time
 of writing they are uncommitted, not pushed, not merged into `main` and not

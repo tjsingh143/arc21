@@ -14,7 +14,22 @@ mathematically transparent. Expo (React Native) client, Supabase backend.
 
 ## Status
 
-**Latest integrated milestone: Refresh C — AI Tables.** The feature was merged
+**Latest integrated milestone: Refresh D — Home and Play product hierarchy.**
+The feature passed independent Astra review and was merged into `main` on
+October 30, 2026 via [PR #6](https://github.com/tjsingh143/arc21/pull/6)
+([merge commit](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511)).
+Home and Play now lead with chip play, then AI Tables, then Practice and
+progress. It is client-only: no rule, wire contract, migration or Edge Function
+changed. The approved implementation commit
+`6963ba63276852bfd2801b83ae83d9b3b062b699` and the separate Expo SDK 57
+patch-alignment commit `6439bc5bf013f376e151dccbe5870f609c1a8f87` are both
+preserved in `main`'s history. That PR head passed
+[both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/41005500200)
+before the merge, and the separate
+[post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/41112209782)
+on the merge commit also passed both jobs.
+
+**Previous milestone: Refresh C — AI Tables.** The feature was merged
 into `main` on October 19, 2026 via [PR #5](https://github.com/tjsingh143/arc21/pull/5)
 ([merge commit](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564)).
 It adds server-authoritative computer opponents, AI-table UI and lifecycle,
@@ -28,23 +43,22 @@ Doctor passed 21/21 checks and the iOS Hermes bundle completed at 6.5 MB.
 See the separate [post-merge `main` workflow](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
 for its independently reported result.
 
-**Previous milestone: Refresh B.** Its October 4, 2026 closure review passed
+**Earlier milestone: Refresh B.** Its October 4, 2026 closure review passed
 2,907 unit tests, 392 server tests and 640 SQL assertions at that checkpoint;
 both [hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/37243705811)
 also passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`.
-These are historical results, not current Refresh-C test totals.
+These are historical results, not current test totals.
 
-Refresh D (Home and Play product hierarchy) has a local implementation awaiting
-independent review, recorded in
-[refresh-d.md](./docs/astra-refresh/refresh-d.md); it is not published to
-GitHub or merged. Refresh E has not begun. Source integration is **not** a production
+Refresh E has not begun. Source integration is **not** a production
 deployment: store submission, hosted application/backend activation, Android
-builds, physical-device testing and live push delivery remain outside the
-verified release evidence.
+builds, physical-device testing (including VoiceOver on a physical device) and
+live push delivery remain outside the verified release evidence.
 
 Where to read the current state:
 
 - [Launch state](docs/LAUNCH_STATE.md) — current integration and release index.
+- [Refresh D](docs/astra-refresh/refresh-d.md) — Home and Play hierarchy,
+  native verification and remaining limits.
 - [Refresh C](docs/astra-refresh/refresh-c.md) — feature, historical findings,
   fixes and verification.
 - [Release readiness](docs/RELEASE.md) — deployment dependencies and limits.

@@ -1,6 +1,27 @@
 # Arc 21 Launch State
 
-**Latest integrated milestone: Refresh C — AI Tables (October 19, 2026).**
+**Latest integrated milestone: Refresh D — Home and Play product hierarchy
+(October 30, 2026).** Refresh D passed independent Astra review.
+[PR #6](https://github.com/tjsingh143/arc21/pull/6) was merged into `main`
+with a merge commit,
+[`d6a82c25fd13379b7ac9cd64530432366320b511`](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511).
+The approved implementation commit is
+`6963ba63276852bfd2801b83ae83d9b3b062b699`; the separate Expo SDK 57
+patch-alignment commit is `6439bc5bf013f376e151dccbe5870f609c1a8f87`. Both are
+preserved unchanged as ancestors of `main`, and the merge tree is identical to
+the approved PR head. That head passed
+[both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/41005500200)
+before the merge. The separate
+[post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/41112209782)
+on the merge commit also passed both jobs.
+
+Refresh D is client-only — no client-server contract, migration or Edge
+Function changed; see [refresh-d.md](./astra-refresh/refresh-d.md). It is
+integrated into GitHub `main`, **not deployed** to production or stores.
+Physical-device VoiceOver and later release verification remain separate and
+unverified. Refresh E has not begun.
+
+**Previous integrated milestone: Refresh C — AI Tables (October 19, 2026).**
 [PR #5](https://github.com/tjsingh143/arc21/pull/5) was merged into `main`
 as [`9eba544ca2d7fb115dc75dcdd0ec078cea479564`](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564).
 The approved feature commit is `554defeb76c073703004bc10fa3c5ef8a63b88d2`;
@@ -25,12 +46,7 @@ explicitly labelled computer seats and two forward migrations
 The code is integrated into `main`, **not deployed** to production or stores.
 External activation and platform checks remain.
 
-**Refresh D (Home and Play product hierarchy): local implementation awaiting
-independent review** — see [refresh-d.md](./astra-refresh/refresh-d.md). Not
-published to GitHub, not merged into `main`, not deployed; no client-server
-contract, migration or Edge Function changed. Refresh E has not begun.
-
-**Previous integrated refresh:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
+**Earlier integrated refresh:** [Refresh B closure verification](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026),
 **PASS, October 4, 2026 PDT**. **Known current Refresh-B release-blocking software
 defects: 0.** The implementation is published in this repository; both hosted CI
 jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`

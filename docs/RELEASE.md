@@ -3,7 +3,22 @@
 What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
-**Latest integrated feature: Refresh C — AI Tables (October 19, 2026).**
+**Latest integrated feature: Refresh D — Home and Play product hierarchy
+(October 30, 2026).** Refresh D passed independent Astra review and was merged
+into `main` through [PR #6](https://github.com/tjsingh143/arc21/pull/6) at
+[`d6a82c25fd13379b7ac9cd64530432366320b511`](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511),
+a merge commit preserving the approved implementation commit
+`6963ba63276852bfd2801b83ae83d9b3b062b699` and the separate Expo SDK 57
+patch-alignment commit `6439bc5bf013f376e151dccbe5870f609c1a8f87`. The PR head
+passed [both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/41005500200)
+before the merge, and the separate
+[post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/41112209782)
+on the merge commit also passed both jobs. It is client-only and adds no
+migration or Edge Function, so it introduces no new database or function
+activation step
+([record](./astra-refresh/refresh-d.md)).
+
+**Previous integrated feature: Refresh C — AI Tables (October 19, 2026).**
 Its final independent review reported **Refresh C: PASS**; prior failed
 findings and subsequent repairs are recorded in [Refresh C §§13–14](./astra-refresh/refresh-c.md).
 The reported final review totals were 439 server tests, 3,056 unit tests,
@@ -18,7 +33,7 @@ Expo Doctor 21/21, the iOS Hermes bundle, 63 migrations, 672 database
 assertions and 439 server tests. The [post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
 has a separate run record.
 
-**Previous milestone: Refresh B (October 4, 2026): PASS.** Its closure review
+**Earlier milestone: Refresh B (October 4, 2026): PASS.** Its closure review
 found zero known release-blocking software defects within the Refresh-B scope.
 The historical evidence and external limitations are in
 [Refresh B §26](./astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026);
@@ -27,10 +42,8 @@ both hosted CI jobs passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`
 
 **Release boundary:** A source merge and green CI are not store approval or
 a production deployment. Hosted migration/application activation and remaining
-platform/device checks have not been established. Refresh D (Home and Play
-hierarchy) is a client-only local implementation awaiting independent review
-([record](./astra-refresh/refresh-d.md)); it adds no migration or function.
-Refresh E has not begun.
+platform/device checks have not been established, including physical-device
+VoiceOver for Refresh D's Home and Play screens. Refresh E has not begun.
 
 For release, Refresh C adds two forward migrations,
 `20261005120000_ai_tables.sql` and `20261017120000_ai_table_open_requests.sql`,
@@ -51,7 +64,7 @@ coverage tests with per-area thresholds, 320 real server tests, 592 SQL
 assertions, a clean reset of all 59 migrations and the final iOS Release
 installed on both simulators. Final postflight confirms wallet/ledger equality,
 restored permissions and running application services. These counts and verdicts
-belong to Refresh A only. Refresh B and C are integrated into GitHub `main`; no store submission or cloud deployment is established.
+belong to Refresh A only. Refresh B, C and D are integrated into GitHub `main`; no store submission or cloud deployment is established.
 
 The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
 four advisories across 18 package entries and explains their actual runtime/build
