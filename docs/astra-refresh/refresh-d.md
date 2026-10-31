@@ -920,6 +920,8 @@ repository maintenance review, not exhaustive security or native certification.
 - Release guidance uses 63 migrations, scopes the old zero-defect verdict to
   its checkpoint, and exposes current dependency findings. The historical audit
   has an explicit scope banner; its original observations are unchanged.
+  The three older status reports now point to the current index without
+  describing Refresh B as the latest source state.
 - Current asset descriptions identify source and geometry without manual or
   tool-authorship claims. Current milestone summaries omit unnecessary model
   labels; historical audit provenance, filenames, third-party notices and Git
@@ -952,8 +954,8 @@ After dependency maintenance, a clean `npm ci`, `npm run typecheck`,
 The full unit and coverage commands again encountered only the same socket
 restriction: 3,124/3,125 and 3,098/3,099 tests passed respectively. This is not a
 local full-suite pass. The catalogue comparison and
-`node --import tsx scripts/check-contrast.ts` passed. Local Edge Function
-checking could not fetch Zod through Deno's registry connection; hosted CI must
+`node --import tsx scripts/check-contrast.ts` passed. The fresh `npm run bundle:check` also passed (6.7 MB iOS Hermes bundle).
+Local Edge Function checking could not fetch Zod through Deno's registry connection; hosted CI must
 verify all three functions and the running backend before merging.
 
 All relative Markdown file links resolved in the tracked tree. Manifest and

@@ -4,7 +4,7 @@ Six implementation boundaries from the published repository. These excerpts show
 
 Reviewed October 11, 2026. Every code block below is a contiguous, verbatim excerpt from source at commit `059ee0b`. Links pin the exact file and line range. Separate ranges have separate blocks; no code is rewritten or elided inside a block.
 
-The older Drive source copy remains a historical archive. Current source is in GitHub; private repositories require existing access.
+The older Drive source copy remains a historical archive. Current source is in the public GitHub repository; these excerpts remain pinned to their stated historical commit.
 
 ## 1. Randomness refuses a weak fallback
 
