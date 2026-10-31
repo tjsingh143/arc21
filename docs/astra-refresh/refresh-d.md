@@ -886,3 +886,87 @@ are §9.8's 34 plus `src/design/type-metrics.ts` and
 untracked are §9's six. `AGENTS.claude-backup.md` and `.serena/` remain
 untouched. The iPhone 17e was left shut down at `large` text, holding the final
 connected build.
+
+
+## 11. Post-integration repository maintenance — October 30, 2026
+
+### Baseline and scope
+
+Inspected public `tjsingh143/arc21`, `main` at
+`8c98ddb7a3c61b3336ff33bf291cf1067a647e6c`. PR #6 is merged;
+`6963ba6` and `6439bc5` are ancestors, and the merge tree equals the PR head.
+The only other remote branch was the already-merged `refresh-d-home-hierarchy`;
+there were no open PRs, GitHub releases or repository rulesets. The branch was
+retained. `main` was unprotected: CI runs on PRs and main pushes, but no branch
+rule makes those checks mandatory. No deployment or release was performed.
+
+Review covered all 765 tracked paths, repository metadata, the 44-file Refresh D
+diff, current documentation, workflow commands and logs, configuration and
+lockfile consistency, and broad authorship/credential-pattern searches. Home,
+Play, product hierarchy, accessibility components, account-scoped resume state,
+setup-screen integration and associated tests were read against the milestone
+record. No additional Refresh D application defect was established. This is a
+repository maintenance review, not exhaustive security or native certification.
+
+### Corrections
+
+- README now leads with actual capabilities and architecture, describes Refresh
+  D's connected/offline hierarchy, gives native development commands, and links
+  commit-specific verification instead of foregrounding older milestone totals.
+- Architecture removes the uninstalled RNTL claim and documents the shared
+  hierarchy, held-seat behavior and account boundary.
+- Test Plan separates current CI evidence from its retained historical totals
+  and describes the actual coverage gates and required server command.
+- Release guidance uses 63 migrations, scopes the old zero-defect verdict to
+  its checkpoint, and exposes current dependency findings. The historical audit
+  has an explicit scope banner; its original observations are unchanged.
+  The three older status reports now point to the current index without
+  describing Refresh B as the latest source state.
+- Current asset descriptions identify source and geometry without manual or
+  tool-authorship claims. Current milestone summaries omit unnecessary model
+  labels; historical audit provenance, filenames, third-party notices and Git
+  attribution remain intact. AI Tables functionality is unchanged.
+- CI header comments no longer describe the public repository as private or
+  claim that only one Node version has ever been exercised. Workflow steps,
+  coverage thresholds and failure behavior are unchanged.
+- Compatible dependency maintenance and remaining advisories are recorded in
+  [Dependency disposition](dependency-disposition.md). Application/Edge Function
+  Zod versions are aligned; no game rule, migration or API schema was edited.
+
+### Evidence boundaries
+
+The existing [baseline CI run](https://github.com/tjsingh143/arc21/actions/runs/41113669213)
+on `8c98ddb` passed both jobs: 3,125 unit tests, 3,099 coverage tests,
+439 server tests, 672 SQL assertions and 63 migrations. Its lint result was
+0 errors / 21 warnings; Doctor passed 21/21 and the iOS Hermes bundle was 6.5 MB.
+Those are independently inspected hosted results, not local reruns.
+
+Local baseline verification used Node 24.22.1 and a clean `npm ci`. Typecheck
+and lint passed (21 warnings); `npm run test:unit` reported 3,124 passed and one
+failure because this execution environment denied the Unix socket used by the
+`tsx` CLI in the catalogue-generation test. The same generation was separately
+run with `node --import tsx scripts/generate-career-nodes.ts --stdout` and
+compared byte-for-byte with the committed migration. No test was disabled or
+weakened to hide the environment restriction.
+
+After dependency maintenance, a clean `npm ci`, `npm run typecheck`,
+`npm run lint` (0 errors / 21 warnings) and `npm run doctor` (21/21) passed.
+The full unit and coverage commands again encountered only the same socket
+restriction: 3,124/3,125 and 3,098/3,099 tests passed respectively. This is not a
+local full-suite pass. The catalogue comparison and
+`node --import tsx scripts/check-contrast.ts` passed. The fresh `npm run bundle:check` also passed (6.7 MB iOS Hermes bundle).
+Local Edge Function checking could not fetch Zod through Deno's registry connection; hosted CI must
+verify all three functions and the running backend before merging.
+
+All relative Markdown file links resolved in the tracked tree. Manifest and
+lockfile root dependencies matched. The credential-pattern candidate was a
+synthetic configuration test fixture; no real secret was established by this
+bounded scan. GitHub secret-scanning/Dependabot administration was not exposed
+by the available connector, so no claim is made about those private settings.
+The About description and topics were empty; the connector has no repository
+metadata write operation. The README provides the project description.
+
+Physical-device VoiceOver, Android execution, production activation and the
+unlocated accessibility heuristic in §10.7 remain outside this review's proof.
+The earlier checkpoint records above retain their original wording and results.
+Refresh E has not begun.

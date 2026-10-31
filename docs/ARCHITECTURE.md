@@ -27,7 +27,7 @@
 | Validation | Zod at every external boundary |
 | Backend | Supabase — Postgres, Auth, Realtime, Edge Functions |
 | Local storage | Expo SQLite; SecureStore for sensitive values |
-| Tests | Vitest (pure TS), RNTL (components), pgTAP (database), Maestro (E2E) |
+| Tests | Vitest (logic, stores and source-contract checks), pgTAP (database), Maestro (native E2E) |
 
 Native dependency versions are resolved with `npx expo install`, never pinned by
 hand against an incompatible SDK. Development builds are used rather than Expo Go.
@@ -124,6 +124,29 @@ resurrects the deleted identity.
 Presence is now a bounded friend-only RPC projection from verified heartbeats
 and server seat state. The global client-authored Realtime roster is denied.
 Full decisions and evidence are in [Refresh B](./astra-refresh/refresh-b.md).
+
+---
+
+## Home and Play (Refresh D)
+
+`src/features/home/product-hierarchy.ts` defines the modes, entry routes,
+participant types, chip stakes and recording claims shared by both tabs.
+`tests/home/product-hierarchy.test.ts` checks those claims against the server's
+wallet, settlement and accuracy allowlists; display copy does not grant access.
+
+The order is Play for chips (human tables first, then solo modes), AI Tables,
+and Practice and progress. Home shows a held-seat return before new tables and
+refreshes it on focus for the confirmed player. Player-scoped setters discard
+late replies after an account change. A failed lookup is shown as unknown,
+not as evidence that no seat exists.
+
+Without a confirmed player and reachable server, Home leads with offline
+Practice and explains the connection state. Play retains its mode catalogue
+with an availability notice. Setup screens and the server still enforce entry
+requirements. Home cards contain separate buttons; Play cards are single
+labelled controls. At larger text sizes, headers and link rows stack vertically.
+See [Refresh D](./astra-refresh/refresh-d.md) for native evidence and the
+remaining physical-device VoiceOver gap.
 
 ---
 
@@ -231,7 +254,7 @@ for insurance, the staged or minimum bet for betting. The engine never plays
 basic strategy on an absent user's behalf: doing so would silently alter both
 their chips and their recorded decision accuracy.
 
-### AI Tables (Astra Refresh C)
+### AI Tables (Refresh C)
 
 An `ai_table` session seats one person between computer-controlled seats
 (`AI_TABLE_*` in `shared/blackjack/rules.ts`: three seats, the person in the

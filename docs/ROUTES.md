@@ -22,7 +22,7 @@ declares no screen list, so no shared file needs editing to add one.
 Four bottom destinations only: **HOME, PLAY, LEARN, SOCIAL**. Profile opens from
 the avatar in the top-right header, never a fifth tab.
 
-Home and Play render one product hierarchy (Astra Refresh D), defined with every
+Home and Play render one product hierarchy (Refresh D), defined with every
 mode's route and claims in `src/features/home/product-hierarchy.ts`. Every mode
 card and link there opens the mode's own entry screen below — never
 `/table/[gameId]` directly — and `tests/home/product-hierarchy.test.ts` checks
@@ -71,7 +71,7 @@ so instead of offering a button that cannot work.
 There is no separate tournament table route: a sprint is a shared table, so it
 opens `/table/[gameId]` like any other.
 
-## AI Tables (Astra Refresh C)
+## AI Tables (Refresh C)
 
 | Path | File | Purpose |
 |------|------|---------|

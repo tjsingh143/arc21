@@ -1,11 +1,10 @@
 # Arc 21 — Final production-MVP closure ledger
 
-> **Historical release record.** Current source has completed Refresh B; its
-> bounded closure review passed on October 4, 2026. Read
-> [the current launch index](LAUNCH_STATE.md) and
-> [Refresh B closure evidence](astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
-> for the latest repository state. Earlier dates, measurements and decisions
-> below retain their original scope. (Pointer added October 11, 2026.)
+> **Historical release record.** Read [the current launch index](LAUNCH_STATE.md)
+> for the integrated milestone and [the test plan](TEST_PLAN.md) for
+> commit-specific verification. Dates, measurements, wording and decisions below
+> retain their original checkpoint scope. This record does not establish current
+> deployment readiness. (Navigation pointer updated October 30, 2026.)
 
 **Mission:** take the repository as it stands to a production-MVP release candidate
 against the authoritative specification

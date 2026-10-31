@@ -1,43 +1,11 @@
-# Arc 21 — continuous integration.
-#
-# The specification's rule is the whole point of this file: "A pull request must
-# not pass with TypeScript errors or failing engine tests."
-#
-# WHAT HAS ACTUALLY BEEN RUN. Every step below is run locally, in this order,
-# and its output recorded in the phase report — a workflow whose steps have
-# never been run is a wish.
-#
-# The line that used to sit here said "there is no remote and no CI runner has
-# ever executed this workflow". That was true when it was written and is not
-# now: `origin` is a private GitHub repository holding both `main` and the
-# working branch, `gh` is authenticated with the `workflow` scope, and phase 11
-# pushed a branch and opened a pull request specifically so the `pull_request`
-# trigger below would fire on a real runner. Its result is in
-# `docs/phase-reports/phase-11.md`. A comment asserting something about the
-# build that has stopped being true is the kind of claim this repository keeps a
-# list of, so it is corrected here rather than left to be read as current.
-#
-# The half that only a runner can exercise is the plumbing — `actions/checkout`,
-# `actions/setup-node` and `supabase/setup-cli` — none of which can exist on a
-# developer machine.
-#
-# TWO JOBS, AND WHY THE SPLIT MATTERS. `tests/server/**` talks to real Edge
-# Functions over HTTP and SKIPS when no stack is reachable. A skip is not a
-# pass. So `checks` explicitly EXCLUDES that directory rather than running it
-# and quietly skipping it, and `database` runs it with
-# ARC21_REQUIRE_SERVER_STACK=1, which turns the skip into a hard failure. A
-# database job whose stack failed to come up therefore reports a broken stack
-# instead of a green suite that tested nothing. The two together run every test
-# in the repository exactly once: 2,405 + 302 = 2,707 as of phase 12. The
-# numbers move; what must not is that neither half is skipped.
-#
-# Both steps call the npm script rather than repeating its command, so the
-# workflow cannot drift from what a local run does — including the
-# `--maxWorkers=2` the server half needs to stop being load-dependent.
-#
-# Node is pinned to the version every local run was validated on. package.json
-# `engines` permits >=22, but only 26 has been exercised here, and claiming
-# otherwise is the kind of untested assertion this repository keeps a list of.
+# Arc 21 continuous integration.
+# The checks job covers lint, application/Edge Function types, unit tests,
+# per-area coverage, Expo compatibility and iOS bundling. The database job
+# replays migrations, runs pgTAP and requires a reachable server test stack.
+# Unit instrumentation excludes the server suites; they execute against real
+# Edge Functions in the second job with ARC21_REQUIRE_SERVER_STACK=1.
+# Node 26 is the hosted runtime. package.json declares the supported minimum;
+# dated local verification records identify other versions actually exercised.
 
 name: CI
 

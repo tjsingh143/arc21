@@ -12,62 +12,56 @@ mathematically transparent. Expo (React Native) client, Supabase backend.
 
 ---
 
+## What the application supports
+
+- **Play for chips:** public and private tables with other people, Sprint
+  tournaments, solo Quick Play and the Daily Challenge. Chips have no monetary
+  value; each mode explains its buy-in and scoring rules before play.
+- **AI Tables:** one player and two labelled computer opponents, using the
+  shared blackjack engine on the server. These tables use a separate chip stack
+  and award no wallet chips, XP, statistics or accuracy credit.
+- **Practice and progress:** offline Practice, Career challenges, strategy
+  lessons and drills, with server-owned ranked progression when connected.
+- **Persistent player identity:** online play starts with a pseudonymous account;
+  optional email/password recovery secures the same account without merging
+  identities or importing local results.
+
+The TypeScript application uses Expo SDK 57, React Native, Expo Router and
+Zustand. Supabase provides Auth, Postgres, Realtime and Edge Functions. A single
+runtime-neutral engine handles blackjack rules; server transactions enforce
+command replay, seat admission, settlement and wallet/ledger consistency.
+
 ## Status
 
-**Latest integrated milestone: Refresh D — Home and Play product hierarchy.**
-The feature passed independent Astra review and was merged into `main` on
-October 30, 2026 via [PR #6](https://github.com/tjsingh143/arc21/pull/6)
-([merge commit](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511)).
-Home and Play now lead with chip play, then AI Tables, then Practice and
-progress. It is client-only: no rule, wire contract, migration or Edge Function
-changed. The approved implementation commit
-`6963ba63276852bfd2801b83ae83d9b3b062b699` and the separate Expo SDK 57
-patch-alignment commit `6439bc5bf013f376e151dccbe5870f609c1a8f87` are both
-preserved in `main`'s history. That PR head passed
-[both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/41005500200)
-before the merge, and the separate
-[post-merge `main` CI](https://github.com/tjsingh143/arc21/actions/runs/41112209782)
-on the merge commit also passed both jobs.
+**Refresh D is complete and integrated into `main`.**
+[PR #6](https://github.com/tjsingh143/arc21/pull/6) merged on October 30, 2026,
+preserving implementation commit `6963ba6` and SDK patch alignment `6439bc5`.
+Home and Play share one product hierarchy: chip games lead, with human tables
+before solo modes; AI Tables follow; Practice and progress come next. Home
+prioritizes a held-seat return when connected and Practice when online play
+is unavailable. Refresh D changed the client and its tests, with no changes to
+rules, server contracts, migrations or Edge Functions.
 
-**Previous milestone: Refresh C — AI Tables.** The feature was merged
-into `main` on October 19, 2026 via [PR #5](https://github.com/tjsingh143/arc21/pull/5)
-([merge commit](https://github.com/tjsingh143/arc21/commit/9eba544ca2d7fb115dc75dcdd0ec078cea479564)).
-It adds server-authoritative computer opponents, AI-table UI and lifecycle,
-cross-mode admission protections, and two forward database migrations.
+[CI on the post-merge documentation commit `8c98ddb`](https://github.com/tjsingh143/arc21/actions/runs/41113669213)
+passed both jobs: 3,125 unit tests, 3,099 coverage tests with all configured
+gates, 439 server tests, 672 database assertions and a clean replay of 63
+migrations. Typechecks, Expo Doctor (21/21) and the iOS Hermes bundle passed.
+Lint reported 0 errors and 21 warnings. These are results for that commit,
+not a claim that later revisions were tested by the same run.
 
-The final independent Refresh-C review reported **PASS**. The integrated
-feature-branch revision also passed [both hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/39218823512):
-3,056 unit tests, 3,030 coverage tests with all gates satisfied, 439 server
-tests, 672 database assertions, and a clean replay of 63 migrations. Expo
-Doctor passed 21/21 checks and the iOS Hermes bundle completed at 6.5 MB.
-See the separate [post-merge `main` workflow](https://github.com/tjsingh143/arc21/actions/runs/39305983730)
-for its independently reported result.
+**Refresh E has not begun.** Source integration is not production deployment.
+Store submission, hosted activation, Android builds, physical-device testing
+(including VoiceOver), and live push delivery remain unverified. Dependency
+advisories also remain; see the [release boundaries](docs/RELEASE.md).
 
-**Earlier milestone: Refresh B.** Its October 4, 2026 closure review passed
-2,907 unit tests, 392 server tests and 640 SQL assertions at that checkpoint;
-both [hosted CI jobs](https://github.com/tjsingh143/arc21/actions/runs/37243705811)
-also passed at `059ee0ba9b848254fecd024daae7e2a60be374aa`.
-These are historical results, not current test totals.
-
-Refresh E has not begun. Source integration is **not** a production
-deployment: store submission, hosted application/backend activation, Android
-builds, physical-device testing (including VoiceOver on a physical device) and
-live push delivery remain outside the verified release evidence.
-
-Where to read the current state:
-
-- [Launch state](docs/LAUNCH_STATE.md) — current integration and release index.
-- [Refresh D](docs/astra-refresh/refresh-d.md) — Home and Play hierarchy,
-  native verification and remaining limits.
-- [Refresh C](docs/astra-refresh/refresh-c.md) — feature, historical findings,
-  fixes and verification.
-- [Release readiness](docs/RELEASE.md) — deployment dependencies and limits.
-- [Refresh B closure](docs/astra-refresh/refresh-b.md#26-closure-verification-audit--october-4-2026)
-  — prior milestone evidence.
-- [SDK maintenance history](docs/CI_MAINTENANCE_2026_10_11.md) — October 11
-  checkpoint; later patch alignment is recorded in PR #5.
-- [Dependency disposition](docs/astra-refresh/dependency-disposition.md)
-  — historical security-advisory assessment.
+- [Launch state](docs/LAUNCH_STATE.md) — integration history and current index.
+- [Refresh D record](docs/astra-refresh/refresh-d.md) — implementation, native
+  verification, checkpoint limitations and maintenance review.
+- [Release readiness](docs/RELEASE.md) — activation requirements and open gaps.
+- [Test plan](docs/TEST_PLAN.md) — commands, gates and evidence boundaries.
+- [Refresh C](docs/astra-refresh/refresh-c.md),
+  [Refresh B](docs/astra-refresh/refresh-b.md) and
+  [Refresh A](docs/astra-refresh/baseline-audit.md) — historical milestone evidence.
 
 ## Getting started
 
@@ -94,13 +88,26 @@ supabase functions serve --no-verify-jwt   # the functions still verify JWTs
 Then run `npm run test:server` in the first terminal. It fails rather than skips
 when the backend is absent.
 
-Copy `.env.example` to `.env.local` to point the app at a server; without it the
-app runs Practice offline and says that no server is configured. Only
+Copy `.env.example` to `.env.local` and set the public Supabase URL and key to
+connect the app to the local stack. Without server configuration, Practice,
+Career practice and Learn remain available offline. Only
 `EXPO_PUBLIC_` values reach the bundle — never put a server secret there.
+
+To run a native development build on a configured simulator/device:
+
+```bash
+npm run ios      # macOS with Xcode and an iOS simulator
+npm run android  # Android SDK with an emulator or device
+npm start        # start Metro for an installed development build
+```
+
+These are development commands; Android execution is not part of the recorded
+verification. Native projects are generated by Expo. Use a development build,
+not Expo Go, and see [release readiness](docs/RELEASE.md) for store builds.
 
 The full command set (Edge Function typecheck, coverage gates, contrast, bundle
 check, iOS Release builds and Maestro flows) is in [AGENTS.md](AGENTS.md), and
-the hard-won operational notes behind it are in [CLAUDE.md](CLAUDE.md).
+operational notes are in [CLAUDE.md](CLAUDE.md).
 
 ## Layout
 
@@ -130,7 +137,7 @@ Current reference:
 - [Blackjack rules](docs/BLACKJACK_RULES.md) — Arc Standard, settlement, fairness invariants
 - [Database](docs/DATABASE.md) — schema, ledger, migrations
 - [Security](docs/SECURITY.md) — threat model, RLS, money integrity
-- [Test plan](docs/TEST_PLAN.md) and [audit grades](docs/AUDIT.md)
+- [Test plan](docs/TEST_PLAN.md) and [historical audit grades](docs/AUDIT.md)
 - [Privacy](docs/PRIVACY.md), [Terms](docs/TERMS.md), [Responsible play](docs/RESPONSIBLE_PLAY.md)
 - [Store listing](docs/STORE_LISTING.md), [Routes](docs/ROUTES.md), [Asset licenses](docs/ASSET_LICENSES.md)
 

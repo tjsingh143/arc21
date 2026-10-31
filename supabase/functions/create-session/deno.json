@@ -38,6 +38,6 @@
     "./table-closure.js": "../../../shared/blackjack/table-closure.ts",
     "./types.js": "../../../shared/blackjack/types.ts",
     "postgres": "npm:postgres@3.4.7",
-    "zod": "npm:zod@4.4.3"
+    "zod": "npm:zod@4.6.6"
   }
 }
