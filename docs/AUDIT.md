@@ -1,5 +1,10 @@
 # Arc 21 — Audit
 
+> Historical audit through phase 12 (September 4, 2026). The grades, wording
+> and measurements below describe those checkpoints, not the post-Refresh D
+> tree. See [Launch State](LAUNCH_STATE.md) and [Test Plan](TEST_PLAN.md) for
+> current integration and commit-specific CI evidence.
+
 Date: 2026-08-15 · cosmetics, app art and onboarding rows updated 2026-08-18 (phase 14, session 1)
 · rate limiting, the authorization surface, migration recovery and the daily tie-breaks updated 2026-08-18 (phase 14, session 2)
 · network faults, reconnect, stale-version recovery and the password-reset deep link updated 2026-08-21 (phase 14, session 3)

@@ -11,39 +11,67 @@ with seeded sources and preordered shoes, never with statistical assertions.
 > RNG plumbing are tested instead — including an explicit assertion that biased
 > values in the modulo tail are *rejected* rather than folded in.
 
-## Targets
+## Current checks and evidence
 
-| Area | Target | Current |
-|------|--------|---------|
-| Engine, strategy, money primitives | ≥ 90% statements **and** branches | 97.23% / 92.73% |
-| Core application logic | ≥ 75% meaningful | Practice store covered; UI components pending |
+The [CI run on `8c98ddb`](https://github.com/tjsingh143/arc21/actions/runs/41113669213)
+(October 30, 2026, after the Refresh D merge) passed both jobs:
 
-Coverage thresholds are enforced in `vitest.config.mts`; the suite fails below
-them. Percentage is never chased by testing generated constants — state branches
-matter far more than line counts.
+| Check | Recorded result |
+|---|---|
+| Unit suite | 156 files, 3,125 tests passed |
+| Coverage suite | 154 files, 3,099 tests passed; all configured gates satisfied |
+| Server integration | 39 files, 439 tests passed against the running local stack |
+| Database | 33 pgTAP files, 672 assertions; 63 migrations replayed from empty |
+| Typechecks | Application and all three Edge Functions passed |
+| Lint | 0 errors, 21 warnings |
+| Expo Doctor / iOS bundle | 21/21 checks; 6.5 MB Hermes bundle |
+
+These results apply to the named commit. Native observations are recorded
+separately in [Refresh D §§9–10](astra-refresh/refresh-d.md); CI does not run
+Maestro, Android builds or physical-device VoiceOver.
+
+`vitest.config.mts` is the threshold authority. Engine, strategy and progression
+have 90% gates for statements, branches, functions and lines. Practice, Career
+and selected server-side pure modules have separate per-area gates. This is
+not blanket component-render coverage: Vitest uses Node, and native behavior
+is checked through Maestro. Server tests execute outside unit instrumentation.
+Coverage excludes the two solver/generation suites as documented in the config;
+the unit job still runs them.
 
 ## Commands
 
 ```bash
-npm test              # full suite
-npm run test:coverage # with coverage and thresholds
-npm run typecheck     # tsc --noEmit
+npm ci
+npm run typecheck
+npm run lint
+npm run check:functions
+npm run test:unit
+npm run test:coverage
+npm run contrast:check
+npm run doctor
+npm run bundle:check
+npm run db:start
+supabase db reset --local
+supabase test db
+# In a second terminal, keep the functions running:
+supabase functions serve --no-verify-jwt
+# In the first terminal:
+npm run test:server
 ```
 
----
+The server script sets `ARC21_REQUIRE_SERVER_STACK=1` and fails when the stack
+is absent. Plain `npm test` can skip unavailable server tests, so it does not
+substitute for that required check. The local gateway flag does not disable
+JWT verification inside the functions. Native build and Maestro commands are
+in [AGENTS.md](../AGENTS.md).
 
-## Status
+## Historical test inventory
 
-**1,060 JavaScript tests across 48 files, 237 pgTAP assertions across 15 SQL files,
-and 4 Maestro flows on a real simulator. Typecheck clean.**
-
-```bash
-npm test                                  # 1060 passing
-supabase test db                          # 237 passing
-maestro test tests/e2e/practice-hand.yaml # a hand, on device
-maestro test tests/e2e/career-node.yaml   # a career node to its stars
-maestro test tests/e2e/every-screen.yaml  # all 14 destinations render
-```
+The original inventory below recorded **1,060 JavaScript tests across 48 files,
+237 pgTAP assertions across 15 SQL files, and 4 Maestro flows**. Its per-suite
+counts and measured coverage (97.23% statements / 92.73% branches for the
+then-reported core) are historical, not current totals. Later milestone records
+and the commit-specific CI result above supersede those totals.
 
 ### What each layer can and cannot prove
 

@@ -4,7 +4,7 @@ What stands between this repository and a build in a store, what each item is
 blocked on, and every defect deliberately carried forward rather than fixed.
 
 **Latest integrated feature: Refresh D — Home and Play product hierarchy
-(October 30, 2026).** Refresh D passed independent Astra review and was merged
+(October 30, 2026).** Refresh D passed independent review and was merged
 into `main` through [PR #6](https://github.com/tjsingh143/arc21/pull/6) at
 [`d6a82c25fd13379b7ac9cd64530432366320b511`](https://github.com/tjsingh143/arc21/commit/d6a82c25fd13379b7ac9cd64530432366320b511),
 a merge commit preserving the approved implementation commit
@@ -56,7 +56,7 @@ design (see [Refresh C §8](./astra-refresh/refresh-c.md)).
 
 **ASTRA BASELINE AUDIT: PASS**
 
-**KNOWN CURRENT RELEASE-BLOCKING SOFTWARE DEFECTS: 0**
+**Release-blocking software defects reported at the Refresh A checkpoint: 0.**
 
 The independent [baseline audit](./astra-refresh/baseline-audit.md) records checkpoint-specific
 software evidence: all 22 product findings verified, 2,446 unit tests, 2,420
@@ -66,10 +66,13 @@ installed on both simulators. Final postflight confirms wallet/ledger equality,
 restored permissions and running application services. These counts and verdicts
 belong to Refresh A only. Refresh B, C and D are integrated into GitHub `main`; no store submission or cloud deployment is established.
 
-The [dependency disposition](./astra-refresh/dependency-disposition.md) retains
-four advisories across 18 package entries and explains their actual runtime/build
-exposure; this is not a clean npm audit. No reachable release-blocking exploit
-was established in the audited paths.
+The [dependency disposition](./astra-refresh/dependency-disposition.md) separates
+the historical Refresh A assessment from the October 30 maintenance review.
+The refreshed lockfile still reports 12 affected package entries (5 low, 7 high),
+including Expo tooling and the bundled deep-link decoder. These are unresolved
+dependency findings, not a clean security audit or proof of runtime exploitation.
+Compatible updates removed the reported critical and moderate entries; the
+remaining fixes must preserve SDK compatibility and pass the full gates.
 
 The activation requirements and verification gaps below remain open. Phase-12
 measurements, pricing and store-policy statements below are historical, not
@@ -84,7 +87,7 @@ different wordings.
 
 ---
 
-## The short answer
+## Historical phase-12 release measurements
 
 The app builds, installs and runs. `app.json` declares version **1.0.0**,
 `ios.buildNumber` **1** and `android.versionCode` **1**; `expo-doctor` reports
@@ -118,7 +121,7 @@ written.
 | **Google Play Console** | $25 once | Play submission and the Data safety declaration | `com.arc21.app`, `versionCode`, an app-bundle build profile, and the Play half of the listing copy |
 | **Expo account + EAS project id** | free tier | `eas build`, `eas submit`, and `getExpoPushTokenAsync` — **no device can be issued a push token without it**, which is why push is graded ABSENT in AUDIT.md | `eas.json`, schema-validated. `eas config` has never run: it needs the account |
 | **A domain and hosting** | varies | The privacy-policy URL Apple requires, the support URL both stores require, and the **account-deletion request page Google Play requires in addition to the in-app path** | The text those pages must serve, in PRIVACY.md and TERMS.md, and the deletion route itself (`delete_own_account()`, Settings → Delete account). Publish them at stable URLs and record the URLs in STORE_LISTING.md's "Support and marketing URLs" section |
-| **A Supabase cloud project** | free tier | Deploying the 61 migrations, the three Edge Functions, and the function secrets; and filling the public build configuration | Local migration/function evidence and Refresh-B activation settings are recorded in [Refresh B](./astra-refresh/refresh-b.md); `.env.example` names the environment variables |
+| **A Supabase cloud project** | free tier | Deploying the 63 migrations, the three Edge Functions, and the function secrets; and filling the public build configuration | Local migration/function evidence and Refresh-B activation settings are recorded in [Refresh B](./astra-refresh/refresh-b.md); `.env.example` names the environment variables |
 | **APNs key / FCM credentials** | with the accounts above | A real push. The sender records `mocked` rather than `sent` when no credentials exist, so this fails honestly rather than silently | `send-notifications`, the token schema, the four `PermissionMoment`s, and the no-op adapter |
 | **A physical iOS device** | — | Removing the largest verification gap below | Simulator coverage, on iPhone 17 Pro and 17 Pro Max / iOS 26.5, against a **Release** build |
 | **An Android SDK, and an emulator or device** | free | Building and running the Android app at all | The generated Gradle project (`npx expo prebuild --platform android`), `targetSdk 36`, and a permission set with no `SYSTEM_ALERT_WINDOW`. **Nothing Android has ever been compiled or run**: this machine has no Android SDK, no `adb` and no emulator |

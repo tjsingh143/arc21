@@ -1,4 +1,47 @@
-# Refresh A dependency disposition
+# Dependency disposition
+
+## Post-Refresh D maintenance — October 30, 2026
+
+A fresh `npm audit --json` against the lockfile at `8c98ddb` reported 19 affected
+package entries: 5 low, 3 moderate, 10 high and 1 critical. This agrees with
+[that commit's CI install log](https://github.com/tjsingh143/arc21/actions/runs/41113669213).
+Entry counts include dependency-chain propagation and are not distinct exploits.
+
+Maintenance updates stay within the existing SDK and package major versions:
+
+- Vitest and coverage-v8 **4.1.12**, including the mocker fixes
+  [GHSA-qxg6-89mg-rqv8](https://github.com/vitest-dev/vitest/security/advisories/GHSA-qxg6-89mg-rqv8)
+  and [GHSA-xp26-3454-mjgp](https://github.com/advisories/GHSA-xp26-3454-mjgp).
+- Application and all four Deno import maps use Zod **4.6.6**, the patched
+  version for [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
+  Existing request-size limits remain in place; the update does not establish
+  that the old version was exploitable through an ARC 21 endpoint.
+- Compatible lockfile updates: shell-quote **1.12.0**, brace-expansion
+  **1.1.21 / 5.0.12**, source-map-js **1.2.2**, Vite **8.3.5**, and their resolved
+  tooling dependencies. The shell-quote update includes
+  [GHSA-pqg4-j6r4-53mv](https://github.com/ljharb/shell-quote/security/advisories/GHSA-pqg4-j6r4-53mv).
+
+A fresh `npm audit --package-lock-only --json` after these changes reports
+**12 affected entries: 5 low and 7 high; no moderate or critical entries**.
+The remaining advisory-bearing packages are:
+
+| Package | Remaining boundary |
+|---|---|
+| `decode-uri-component@0.2.2` | Bundled through query-string/Expo Router. The existing deep-link reachability regression checks the active resolver; the new feed also includes GHSA-qr28-fpjm-wq7f. The old September disposition is not fresh native proof. |
+| `image-size@1.2.1` | Metro asset parsing during builds. No application image-upload endpoint is implemented. Untrusted build assets remain a risk. |
+| `deepmerge@4.3.1` | Expo configuration tooling; retain a trusted project/configuration boundary. |
+| `zod@3.25.76` under `@expo/cli` | Expo's tooling dependency, separate from the patched application and Deno validator. Do not force a Zod 4 override into a Zod 3 consumer. |
+
+The other eight entries propagate these findings through parent packages.
+No `npm audit fix --force`, SDK downgrade/upgrade or incompatible override was
+applied. These unresolved advisories need compatible upstream remediation and
+reverification; green CI is not a clean security assessment. This maintenance
+review does not certify the absence of exploitable vulnerabilities.
+
+## Historical Refresh A disposition
+
+The following record retains its September package versions, feed results and
+native evidence. It is not the current dependency inventory.
 
 Reconciled September 14, 2026 after compatible security patches.
 `dependency-audit-september14.json` in the durable September 11 evidence directory
